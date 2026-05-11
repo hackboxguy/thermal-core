@@ -19,9 +19,14 @@ CORE_ONLY_RUNNER = build/test/core_only_runner
 WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc \
              -Wl,--wrap=free -Wl,--wrap=read -Wl,--wrap=write
 
-.PHONY: all test build verify-portability clean
+# --- Replay tests ---
+REPLAY_BIN_DIR     = build/replay
+REPLAY_GOLDEN_DIR  = test/replay/golden
+CURVE_REPLAY       = $(REPLAY_BIN_DIR)/curve_replay
 
-all: test build verify-portability
+.PHONY: all test build verify-portability replay regen-replay-goldens clean
+
+all: test build verify-portability replay
 
 # --- Unit tests ---
 test: $(TEST_BINS)
@@ -34,9 +39,9 @@ test: $(TEST_BINS)
 	echo "Tests: $$pass passed, $$fail failed"; \
 	[ "$$fail" = "0" ]
 
-build/test/test_%: test/unit/test_%.c test/unit/harness.h core/thermal_config.h
+build/test/test_%: test/unit/test_%.c test/unit/harness.h core/thermal_config.h $(CORE_ARCHIVE)
 	@mkdir -p build/test
-	$(CC) $(CFLAGS_BASE) -o $@ $<
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
@@ -65,6 +70,32 @@ $(CORE_ONLY_RUNNER): test/unit/core_only_runner.c test/unit/harness.h \
 	@mkdir -p build/test
 	$(CC) $(CFLAGS_BASE) $(WRAP_FLAGS) \
 		-o $@ test/unit/core_only_runner.c $(CORE_ARCHIVE)
+
+# --- Replay: C driver + golden + Python reference, all byte-equal ---
+$(CURVE_REPLAY): test/replay/curve_replay.c core/thermal_curve.h \
+                 core/thermal_types.h $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+replay: $(CURVE_REPLAY)
+	@echo "--- Replay: curve_sweep (C) ---"
+	@$(CURVE_REPLAY) > $(REPLAY_BIN_DIR)/curve_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/curve_sweep.csv \
+	         $(REPLAY_BIN_DIR)/curve_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: curve_sweep (Python reference) ---"
+	@python3 test/reference/curve.py > $(REPLAY_BIN_DIR)/curve_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/curve_sweep.csv \
+	         $(REPLAY_BIN_DIR)/curve_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
+
+regen-replay-goldens: $(CURVE_REPLAY)
+	@mkdir -p $(REPLAY_GOLDEN_DIR)
+	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
+	@echo "Regenerated $(REPLAY_GOLDEN_DIR)/curve_sweep.csv"
+	@echo "Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
 
 # --- Build (delegates to platform/linux) ---
 build:
