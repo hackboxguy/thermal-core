@@ -1,0 +1,21 @@
+# Pinned Python development dependencies for thermal-core.
+#
+# Update via a deliberate PR. See ci/tool-versions.md for the bump policy
+# (rationale required; CI must stay green on the bump PR alone).
+#
+# Consumers by stage:
+#   Stage 2/3/5 — reference math (pure-integer; numpy/scipy not strictly required,
+#                  pinned anyway so nightly scipy float-check and paper plots have
+#                  a single source of versions).
+#   Stage 9     — thermalcore-probe (UDP reader + CSV + optional plot).
+#   Stage 11    — python-can: CAN frame inspection in integration tests.
+#   Stage 12    — scenario runner (uses ctypes from stdlib for the C plant; cffi
+#                  not pinned here until that decision is final).
+#   Stage 16    — matplotlib figures, pyyaml for the figure manifest.
+
+numpy==2.1.0
+scipy==1.14.0
+pyyaml==6.0.2
+python-can==4.4.2
+jsmin==3.0.1
+matplotlib==3.9.0
