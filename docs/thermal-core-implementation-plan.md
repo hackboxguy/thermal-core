@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.3
+**Document status:** Draft v0.5
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.10)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.13)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -19,6 +19,7 @@ The guiding bet is simple: **every feature lands in the same PR as the automated
 5. **Reproducibility is testable.** A determinism job re-runs the canonical scenarios and asserts the SHA-256 of the telemetry stream is unchanged. Catches accidental nondeterminism (uninitialized memory, time-dependent math, host floating-point drift) before it ships.
 6. **No third-party C unit-test framework.** The C harness lives in `test/unit/harness.h` as ~50 lines of C99 macros. Same harness compiles for ESP32 unit tests later. No Unity, no CMock, no Greatest. This principle constrains the C test runner only — Python-side reference math (numpy, scipy), static analyzers (clang-tidy, cppcheck), coverage tools (lcov), and fuzzers (libFuzzer) are explicitly in scope and pinned in a dev-tools requirements file.
 7. **Hardware-in-the-loop is manual.** Bench-rig scenarios run on demand or in a nightly workflow; they don't gate PRs. The simulator (§4.3) is the release-gate plant.
+8. **Daemons run deterministically under test.** Anything that gates on byte-equal telemetry (scenario tests, determinism job, replay parity) requires the daemon to use an *injectable* clock and a fixed loop order — drain commands for tick N, build snapshot N, step core, publish telemetry/output N — rather than wall-clock + UDP-arrival-order. The deterministic mode is itself a deliverable, landing no later than Stage 9 (`thermalcored --clock=scenario` or equivalent) so the Stage 12 determinism gate has something deterministic to gate on.
 
 ---
 
@@ -84,19 +85,21 @@ The CI workflow is `.github/workflows/ci.yml`. Each row below is a `job:` added 
 |---|---|---|
 | 0 | `build-linux` | gcc + clang, `-Werror`, builds core + harness |
 | 0 | `unit` | runs all unit tests under `ctest` |
+| 0 | `no-heap-no-syscall` | links a guarded unit-test binary that wraps `malloc`/`free`/`open`/`read`/`write`/`mmap`/`sleep` etc. and fails if any are called from `core/`. Pairs with an `nm -u` symbol allowlist over the compiled `core/` objects. Defends the PRD §4.2 portability promise. |
 | 2 | `replay` | runs module/full-step golden replay tests; diff goldens on failure |
-| 4 | `property` | randomly generated configs/commands through validator and `apply_command`; no crashes, no undocumented status |
+| 4 | `property-config` | randomly generated configs through `thermal_core_validate_config()`; no crashes, no undocumented status |
 | 6 | `asan-ubsan` | rebuilds with `-fsanitize=address,undefined` and re-runs unit + replay |
-| 7 | `clang-tidy` | `clang-tidy` on `core/` and `platform/linux/`; new warnings fail |
-| 8 | `cppcheck` | `cppcheck --error-exitcode=1 core/ platform/linux/` |
+| 7 | `clang-tidy` | `clang-tidy` on `core/` initially; expands to include `platform/linux/` when the daemon lands at Stage 9; new warnings fail |
+| 8 | `cppcheck` | `cppcheck --error-exitcode=1 core/`; expands to include `platform/linux/` at Stage 9 |
+| 8 | `property-command` | extends property testing: random typed `thermal_command_t` values through `thermal_core_apply_command()`; no crashes, only documented statuses |
 | 9 | `coverage` | lcov over unit + replay; uploads HTML to the PR as an artifact; **no gate** in v1, visibility only |
-| 9 | `smoke-linux` | starts the daemon, asserts it boots and emits telemetry |
+| 9 | `smoke-linux` | starts the daemon (in `--clock=scenario` deterministic mode), asserts it boots and emits telemetry |
 | 9 | `fuzz-json` | libFuzzer over the JSON loader, 60 s per PR, 30 min nightly |
-| 10 | `fuzz-wire` | libFuzzer over the wire decoder, same shape |
+| 10 | `fuzz-wire` | libFuzzer over the `protocol/` wire decoder, same shape |
 | 12 | `scenario` | runs all canonical scenarios; assertions decide pass/fail |
 | 12 | `determinism` | reruns scenarios twice, compares SHA-256 of telemetry |
-| 13 | `build-esp32` | `idf.py build` for ESP32-C6 (RISC-V) on the ESP-IDF docker image; size-budget assertions |
-| 15 | `replay-parity` | runs a fixed synthetic input stream through host build and ESP32 standalone (over QEMU when available, otherwise nightly via hardware); asserts byte-identical telemetry SHA between host and ESP32 standalone |
+| 13 | `build-esp32` | `idf.py -DIDF_TARGET=esp32c6 build` (RISC-V) on the ESP-IDF docker image; size-budget assertions |
+| 15 | `replay-parity` | **conditional gate.** Runs a fixed synthetic input stream through host build and ESP32 standalone; asserts byte-identical telemetry SHA. Becomes a PR/merge-queue gate **only when** a stable ESP32-C6 RISC-V QEMU path or a reliable self-hosted ESP32 runner exists. Until that infrastructure lands, this is a release/nightly gate. The plan does not promise an always-on PR gate before the runner strategy is real. |
 | nightly | `hil-tolerance` | runs canonical scenarios on the bench (host + ESP32 HIL, or ESP32 standalone) and asserts behavioral bands rather than SHA equality; gated by `[hil]` PR label or scheduled run |
 
 Three workflows in total:
@@ -141,15 +144,25 @@ Bench-rig scenarios run on demand against the ESP32 standalone build and the ESP
 Each stage lists: **Deliverable** (the feature), **Tests added** (the new automated coverage that ships with it), **Regression value** (what about this stage will keep future PRs honest), and **Exit gate** (the CI condition that says "stage done").
 
 ### Stage 0 — Scaffolding
-**Deliverable:** Repo skeleton per PRD §10, but only the directories that will be filled in stage 1. `core/thermal_config.h` with compile-time maxima from PRD §4.2. `test/unit/harness.h` with the assertion macros. `.github/workflows/ci.yml` running an empty test binary that prints "no tests yet" and exits 0. `Makefile` at `platform/linux/Makefile` and a top-level `Makefile` that delegates to `test/`.
+**Deliverable:** Repo skeleton per PRD §10 (now including the `protocol/` directory placeholder), but only the directories that will be filled in stage 1. `core/thermal_config.h` with compile-time maxima from PRD §4.2. `test/unit/harness.h` with the assertion macros. `.github/workflows/ci.yml` running an empty test binary that prints "no tests yet" and exits 0. `Makefile` at `platform/linux/Makefile` and a top-level `Makefile` that delegates to `test/`.
 
-**Tests added:** One trivial unit test (`TEST_CASE(harness_works) { EXPECT_EQ(1, 1); }`) to prove the harness compiles and links.
+Stage 0 also delivers the **tool-version pinning** that later stages depend on:
+- `requirements-dev.txt` — Python deps for reference math, scenario runner, and `thermalcore-probe` (numpy/scipy/pyyaml/python-can/jsmin/etc., each pinned).
+- `ci/tool-versions.md` — version-of-record for clang-tidy, cppcheck, lcov, libFuzzer/clang, ESP-IDF docker image tag. Pinned by docker image SHA where possible; otherwise by version string.
+- CI installs from these files before running any job; bumping a tool is a deliberate PR.
+
+**Tests added:**
+- One trivial unit test (`TEST_CASE(harness_works) { EXPECT_EQ(1, 1); }`) to prove the harness compiles and links.
+- **No-heap / no-syscall guard:** two complementary mechanisms, both gating from Stage 0.
+  - **Static (authoritative):** `nm -u core/libthermal_core.a | grep -Ef ci/core-symbol-denylist.txt` must produce no output. The denylist contains `malloc`, `calloc`, `realloc`, `free`, `open`, `read`, `write`, `mmap`, `munmap`, `sleep`, `usleep`, `nanosleep`, `printf`, `fopen`, `pthread_*`, etc. This is the canonical check — it answers "did `core/` reach for any of these symbols?" without depending on call-graph attribution.
+  - **Runtime defense:** a separate *core-only* unit-test binary (`test/unit/core_only_runner`) links **only** `core/` objects plus the harness, with `-Wl,--wrap=malloc,--wrap=...` wrappers that `abort()` on entry. Because the binary contains no platform/test code, any wrapped call is necessarily a core call — no caller-attribution magic required.
+  - Both run on every PR. The static check catches dead-code or conditional paths the runtime test doesn't exercise; the runtime check catches dynamic-dispatch cases the static check might miss. Together they pin the PRD §4.2 portability promise.
 
 **Heads-up.** If hand-rolled C99 test harnesses are unfamiliar territory, debug `harness.h` against this trivial assertion before opening Stage 1 — `EXPECT_EQ` macro behavior, ctest registration, and the build wire-up are easier to diagnose against a one-line test than against a failing real test. Better half a day here than half a day mid-Stage 5.
 
-**Regression value:** Establishes the CI gate exists. Any future PR that breaks the build is blocked from merging.
+**Regression value:** Establishes the CI gate exists. Any future PR that breaks the build is blocked from merging. The no-heap/no-syscall guard activates from PR #1 onward, so a stray `malloc` introduced at Stage 5 fails CI immediately rather than at MCU port time.
 
-**Exit gate:** `build-linux` and `unit` green on `main`.
+**Exit gate:** `build-linux`, `unit`, and `no-heap-no-syscall` all green on `main`.
 
 ---
 
@@ -183,22 +196,33 @@ Each stage lists: **Deliverable** (the feature), **Tests added** (the new automa
 ### Stage 3 — IIR filter + sensor pipeline
 **Deliverable:** `core/thermal_filter.c` (Q16.16 IIR), and the sensor-side of the input-snapshot processing in `core/thermal_core.c`. Builds the bridge between `thermal_input_snapshot_t.samples[]` and per-sensor filtered values.
 
-**IIR formula (pinned before tests are written):**
+**IIR formula and implementation form (pinned in PRD §4.5 + decision 32):**
 
 ```
-filtered_next = filtered_prev + alpha_q16 * (sample - filtered_prev)
+filtered_next = filtered_prev + alpha_q16 * (sample - filtered_prev)        // math form
+filtered_next = prev + (int32_t)(((int64_t)alpha_q16 * (sample - prev)) >> 16)   // implementation form, saturating
 ```
 
 With this convention:
 - `alpha_q16 = 0` holds the previous value (no update).
 - `alpha_q16 = Q16_ONE` passes the new sample through unchanged.
-- Intermediate values produce a first-order low-pass with time constant `T = (period_ms / alpha) - period_ms` (approximately, for small alpha).
+- Intermediate values produce a first-order low-pass; smaller `alpha_q16` is heavier filtering.
 
-This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just implements it; test expectations, goldens, and Python reference all derive from the PRD formula.
+The multiplication is performed in `int64_t`; the shift back is by 16; the final cast to `int32_t` saturates. Stage 3 just implements this form; test expectations, goldens, and Python reference all derive from the PRD formula.
+
+**Filter validity lifecycle (also pinned in PRD §4.5 + decision 33):**
+
+- Pre-init: `valid = 0`, `filtered_value` undefined.
+- First valid sample: filter initializes `filtered_value = sample` directly (no IIR step from zero), sets `valid = 1`.
+- Subsequent valid samples: IIR equation advances `filtered_value`; `valid` stays 1.
+- Invalid samples: no arithmetic update; `filtered_value` held; `valid` set to 0.
+- Aggregation skips sensors with filter `valid = 0`.
+- Context signals respect the fail-safe mode for whether a held value remains policy-active.
 
 **Tests added:**
-- **Unit:** step response, impulse response, `alpha = 0` (no update — output holds previous), `alpha = Q16_ONE` (passthrough — output equals input), intermediate alphas converging to the input asymptotically, Q16.16 saturation under extreme values, `valid=0` propagation (filter holds last good value or marks invalid per spec).
-- **Module golden:** a noisy-sensor CSV (1000 samples with simulated jitter) → filtered CSV golden.
+- **Unit:** step response, impulse response, `alpha = 0` (no update — output holds previous), `alpha = Q16_ONE` (passthrough — output equals input), intermediate alphas converging to the input asymptotically, Q16.16 saturation under extreme values.
+- **Lifecycle unit tests:** pre-init read of `filtered_value` is forbidden (asserted via `valid` flag); first-valid-sample initializes filter directly to sample; sequence of valid → invalid → invalid → valid preserves held value but resets `valid` correctly; aggregation skips a filter with `valid = 0` regardless of its held numeric value; context `hold_last` mode keeps a held value policy-active while `assume_stationary` substitutes the failsafe.
+- **Module golden:** a noisy-sensor CSV (1000 samples with simulated jitter, including injected invalid runs) → filtered CSV golden. Captures both numeric trajectory and validity stream.
 - **Reference cross-check:** a small integer-only Python reference (`test/reference/iir.py`) computes the same outputs on the same input using Q16.16 arithmetic; the C output must match exactly. Pure-integer reference avoids float rounding entirely; no scipy dependency needed for this stage.
 
 **Regression value:** Filter math is small but easy to break with off-by-one shifts or accidental int promotion. Module golden catches that immediately; the integer reference catches drift the golden would happily re-baseline.
@@ -213,9 +237,9 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 **Tests added:**
 - **Unit:** aggregation modes including partial-invalid sensors, weighted with edge weights (one weight zero, one weight dominant), trip enter/exit with hysteresis, multiple-active-trip "highest state wins" logic.
 - **Module golden:** a heat-soak ramp CSV (45°C → 90°C → 45°C over 600 ticks) through a multi-trip zone; zone-state output captured to golden.
-- **Property (new layer):** generated configs with 1–8 sensors, randomized trip points, run through validator; must never crash or return undocumented status.
+- **Property (new layer, configs only):** generated configs with 1–8 sensors, randomized trip points, run through `thermal_core_validate_config()`; must never crash or return undocumented status. Random *commands* through `apply_command()` come later, at Stage 8, since `apply_command()` doesn't exist yet.
 
-**CI rigor added:** `property` job — generated configs through `thermal_core_validate_config()`.
+**CI rigor added:** `property-config` job.
 
 **Regression value:** The step-wise governor is the simplest reference behavior; once locked, it's the cross-check for PID and modifier work that follows.
 
@@ -227,7 +251,7 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 **Deliverable:** `core/thermal_pid.c`. Anti-windup per PRD §4.8. dt clamping. Derivative on measurement, optional first-order filter. Saturation telemetry on overflow.
 
 **Tests added:**
-- **Unit:** step response, settling time, anti-windup under sustained saturation, `dt_min_ms`/`dt_max_ms` clamp on missing or extremely late tick, non-monotonic `now_ms` jump (per PRD v0.10 — should clamp via dt, not crash; diagnostic event emitted), gain-change resets integral+derivative (per `CMD_SET_PID` contract), PID-trip-floor interaction (critical trip floors output via `state_pwm[cooling_state]`).
+- **Unit:** step response, settling time, anti-windup under sustained saturation, `dt_min_ms`/`dt_max_ms` clamp on missing or extremely late tick, non-monotonic `now_ms` jump (per PRD §4.8 — should clamp via dt, not crash; diagnostic event emitted), gain-change resets integral+derivative (per `CMD_SET_PID` contract), PID-trip-floor interaction (critical trip floors output via `state_pwm[cooling_state]`).
 - **Module golden:** step-load CSV (50°C → 85°C step), full PID-term telemetry captured. Becomes the golden for tuning regressions.
 - **Reference cross-check:** a pure-integer Q16.16 Python reference (`test/reference/pid.py`) computes the same outputs; the C output must match the Python output exactly. No float, no scipy — same arithmetic in both. An *optional* scipy-based float-reference comparison runs in nightly only, with a documented tolerance, to confirm the Q16.16 design is close enough to the textbook PID it implements.
 
@@ -242,7 +266,7 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 
 **Tests added:**
 - **Unit per detector:** entry conditions, persist_ticks behavior, recovery_ticks behavior, LATCHED requires explicit clear, stuck-sensor advisory mode without correlated context.
-- **Runaway formula (per PRD v0.10):** active when `zone_temp_mc[N] - zone_temp_mc[M] >= rise_mc_threshold` with `M = N - persist_ticks`, AND `min(commanded_pwm[M..N]) >= cooling_pwm_threshold` for the affected actuator set. Test cases: rising temp under high PWM (fires), rising temp under low PWM (doesn't fire), flat temp under high PWM (doesn't fire), oscillating PWM that dips below threshold during the window (doesn't fire because of `min`).
+- **Runaway formula (per PRD §4.7):** active when `zone_temp_mc[N] - zone_temp_mc[M] >= rise_mc_threshold` with `M = N - persist_ticks`, AND `min(commanded_pwm[M..N]) >= cooling_pwm_threshold` for the affected actuator set. Test cases: rising temp under high PWM (fires), rising temp under low PWM (doesn't fire), flat temp under high PWM (doesn't fire), oscillating PWM that dips below threshold during the window (doesn't fire because of `min`).
 - **Module golden:** each fault scenario as a CSV input + golden output: stall raise + recover, stuck sensor with correlated load, runaway under high-PWM rising-temp window.
 - **Regression hook:** the stall scenario includes the spin-up window — catches future regressions where someone "fixes" stall logic and breaks spin-up grace.
 
@@ -256,7 +280,8 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 **Deliverable:** `core/thermal_modifier.c` (acoustic_mask, pre + post stages), `core/thermal_arbitrator.c` (max-wins), slew-rate limiter, `core/thermal_core.c` wiring per the control-loop diagram in PRD §4.6. `thermal_core_step()` is now a complete end-to-end function.
 
 **Tests added:**
-- **Unit:** modifier pre-stage trip offset, modifier post-stage pwm-cap, modifier active-flag semantics, modifier output-domain clamping (interpolated `pwm_cap` clipped into `0..255` after curve eval, per the v0.10 clamp rule), stale-context fail_safe behavior, arbitrator under three-zone-one-actuator load, slew limiter bypass for upward safety overrides.
+- **Unit:** modifier pre-stage trip offset, modifier post-stage pwm-cap, modifier active-flag semantics, modifier output-domain clamping (interpolated `pwm_cap` clipped into `0..255` after curve eval, per PRD §4.3), stale-context fail_safe behavior, arbitrator under three-zone-one-actuator load.
+- **Safety-override unit tests (explicit):** critical-severity trips bypass acoustic caps for affected actuators; shutdown-severity trips bypass acoustic caps **and** request max PWM **and** emit `TEVENT_SHUTDOWN_REQUEST`; slew limiter bypassed for upward safety overrides but obeyed for downward/recovery transitions. Each covered as its own named test case so a future refactor can't accidentally lose one.
 - **Full-step golden (first one):** the full closed loop — a 60-second `thermal_input_snapshot_t` stream driving every module in `thermal_core_step()`. Output frame + telemetry captured. This is the canonical "did anything change anywhere in the loop" canary.
 
 **CI rigor added:** clang-tidy on `core/` only.
@@ -272,44 +297,62 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 
 **Tests added:**
 - **Unit:** each command, valid + each error path; bounds enforcement; monotonicity rejection on curve edit; LATCHED clear gating; `TEVENT_COMMAND_APPLIED` / `_REJECTED` emission with the right `now_ms`.
-- **`INVALID_ARG` vs `BOUNDS` split (per PRD v0.10):** unknown `command_id` → `INVALID_ARG`; unknown target ID → `INVALID_ARG`; `trip_idx >= trip_count` → `BOUNDS`; `point_idx >= curve_count` → `BOUNDS`; `kp > kp_max` → `BOUNDS`; curve edit breaking monotonicity → `BOUNDS`. Every documented path covered.
+- **`INVALID_ARG` vs `BOUNDS` split (per PRD §7.5):** unknown `command_id` → `INVALID_ARG`; unknown target ID → `INVALID_ARG`; `trip_idx >= trip_count` → `BOUNDS`; `point_idx >= curve_count` → `BOUNDS`; `kp > kp_max` → `BOUNDS`; curve edit breaking monotonicity → `BOUNDS`. Every documented path covered.
 - **Full-step golden:** a "step response with mid-experiment kp change" sequence. Captures both the gain-change ack event and the resulting PWM response.
-- **Property:** randomly generated *typed* `thermal_command_t` values (any command_id, any payload value) through `apply_command()` — must always return a documented status, never crash, never invoke a callback with malformed state.
+- **Property-command (new):** randomly generated *typed* `thermal_command_t` values (any command_id, any payload value) through `apply_command()` — must always return a documented status, never crash, never invoke a callback with malformed state. Wire-byte fuzzing into the codec is *not* here — that's Stage 10 once `protocol/` exists.
 
-**CI rigor added:** cppcheck.
+**CI rigor added:** cppcheck (extends to `platform/linux/` at Stage 9); `property-command` job extending property testing to the typed command API.
 
 **Exit gate:** unit + replay + property + asan + clang-tidy + cppcheck green.
 
 ---
 
-### Stage 9 — Linux daemon: `bsp_mock_tmpfs` + JSON loader + `json2static.py` + telemetry UDP + probe
+### Stage 9 — Linux daemon: `bsp_mock_tmpfs` + JSON loader + `json2static.py` + telemetry UDP + probe + deterministic clock
 **Deliverable:** `platform/linux/thermalcored.c`, `bsp_mock_tmpfs.c`, `bsp_telemetry_udp.c`, `config_jsmn.c`, **`tools/json2static.py`**. The daemon boots from a JSON file, polls a tmpfs hwmon mock, runs `thermal_core_step()` every 100 ms, emits telemetry UDP frames. `tools/thermalcore-probe` (Python) reads UDP and writes CSV. `json2static.py` lands here (not at ESP32 bring-up) so the loader-to-C-struct mapping is round-trip tested at the same stage it's written.
 
+**Deterministic mode (required deliverable, per §1 principle 8):**
+- `thermalcored --clock=wall` (default) uses real time.
+- `thermalcored --clock=scenario --scenario-clock-uri=<uri>` reads ticks from a **dedicated scenario clock channel** — a Unix-domain socket or pipe owned by the scenario runner, not the UDP command listener. Default URI: `unix:/tmp/thermalcored-clock.sock`. The runner sends `TICK now_ms` messages; the daemon advances internal time only on receipt. No wall-clock sleeps. Keeping this channel separate from the Stage 10 UDP control plane means runtime commands and scenario ticks can never be confused at the transport layer.
+- The control loop has a fixed order per tick: (1) drain queued commands and apply them with the tick's `now_ms`; (2) build the input snapshot from current mock-tmpfs state; (3) call `thermal_core_step()`; (4) emit telemetry frames; (5) write actuator outputs to the mock.
+- `TEVENT_COMMAND_APPLIED` events emitted during step (1) use that tick's `now_ms`.
+- Stage 9 lands deterministic mode even if Stage 12 is what depends on it — pulling this work into Stage 9 catches scheduler-related determinism bugs early instead of mid-scenario-test debugging.
+
+**Canonical config hashing (per PRD §7.6, decision 7):**
+- The hash function is a **field-by-field canonical encoder** in `tools/config_hash.py` (Python) and a matching C function in `support/thermal_config_hash.c`. **It lives in `support/`, not `core/`,** because SHA-256 + canonical encoding is a reproducibility concern, not control-loop policy — embedded targets that don't care about hashing don't link it. (Per PRD §10 layout: `support/` is portable C99 with no platform/heap deps, depends only on `core/` types.)
+- Encoding rules: little-endian fixed-width integers for every numeric field; unused trailing array slots zero-filled to the compile-time maximum; strings null-terminated and padded to `THERMAL_NAME_MAX` with zeros. Result hashed with SHA-256. Never a `memcpy(&cfg, sizeof cfg)` over raw struct bytes.
+- A deliberate **padding-poison test** in Stage 9 fills `thermal_config_t` struct padding with `0xAA` between two otherwise-identical configs, hashes both, and asserts equality. Catches any future regression that introduces a `memcpy`-based hash.
+
 **Tests added:**
-- **Smoke (new test type):** daemon starts with `configs/minimal-1zone-1fan.json`, runs for 2 seconds, exits cleanly on SIGTERM, produced at least one telemetry frame on UDP.
+- **Smoke (new test type):** daemon starts with `configs/minimal-1zone-1fan.json` in `--clock=scenario` mode, runs 100 ticks driven by the scenario channel, exits cleanly on SIGTERM, produced at least one telemetry frame on UDP per tick.
 - **JSON loader unit tests:** valid configs accepted; each documented invalid case rejected with the right status code and a clear error message.
 - **Platform-only vs core config separation:** the JSON loader splits fields into `thermal_config_t` (deterministic policy) and `thermalcored_runtime_cfg_t` (platform-only — `source`, `pwm_freq_hz`, `tach_pulses_per_rev`, `telemetry.transport`, `telemetry.signals`, `control.listen`). A unit test loads the reference config and asserts each field landed on the right side of that line.
 - **`json2static.py` round-trip:** parse `configs/minimal-1zone-1fan.json` → emit static `const thermal_config_t` C file → compile it into a tiny test binary → call `thermal_core_validate_config()` on the static config → assert `THERMAL_OK` and that the canonical config hash matches the hash computed by the JSON loader. Proves the two config paths reach the same in-memory representation.
+- **Padding-poison test:** as described above.
 - **Fuzz (new test type):** libFuzzer over the JSON loader, seed corpus = `configs/*.json`. 60 s/PR.
-- **Daemon-level full-step replay:** write a known sequence of temp values to the tmpfs mock, capture the telemetry UDP stream, diff against golden.
+- **Daemon-level full-step replay:** in `--clock=scenario` mode, write a known sequence of temp values to the tmpfs mock at scripted tick boundaries, capture the telemetry UDP stream, diff against golden. Boundary cases include commands arriving exactly on a tick edge.
 - **Probe parity:** the same UDP stream replayed through `thermalcore-probe --log` produces the same CSV every time.
 
-**CI rigor added:** smoke-linux, coverage (visibility only, no gate), fuzz-json.
+**CI rigor added:** smoke-linux, coverage (visibility only, no gate), fuzz-json. `clang-tidy` and `cppcheck` extend their scope to `platform/linux/` starting this stage.
 
 **Exit gate:** unit + replay + property + asan + clang-tidy + cppcheck + smoke + fuzz-json green.
 
 ---
 
-### Stage 10 — Control plane: command listener + `thermalcore-tune` + wire codec
-**Deliverable:** UDP command listener on the daemon (`127.0.0.1:9002`), the wire encode/decode helpers in `core/thermal_commands.c` (CRC-16/CCITT-FALSE, packed encoding per PRD §7.2), `tools/thermalcore-tune` CLI.
+### Stage 10 — Control plane: command listener + `thermalcore-tune` + `protocol/` wire codec
+**Deliverable:** UDP command listener on the daemon (`127.0.0.1:9002`), the wire encode/decode helpers in `protocol/thermal_wire.c` (CRC-16/CCITT-FALSE, packed encoding per PRD §7.2 — **lives in `protocol/`, not `core/`,** per PRD decision 34), `tools/thermalcore-tune` CLI.
+
+The `protocol/` module is portable C99 with no heap and no platform deps. It links to `core/` types but `core/` does not depend on `protocol/`. The daemon, ESP32 firmware, and tools all link `core/` + `protocol/`. A hypothetical embedder that uses `core/` via direct C calls does not need to link `protocol/`.
+
+**Single source of truth for command IDs.** `thermal_command_id_t` in `core/thermal_commands.h` is the only place that defines numeric command IDs. `protocol/thermal_wire_opcodes.h` covers frame opcodes (`TELEM_SAMPLE`, `TELEM_EVENT`, `CMD_REQUEST`, `CMD_ACK`, `CMD_NACK`), transport status codes (above 0x8000), and per-platform receive caps — **not** command IDs. The header includes `core/thermal_commands.h` and adds `_Static_assert` checks (e.g., `_Static_assert(THERMAL_CMD_SET_PID == 0x0001, "wire encoder expects SET_PID = 0x0001")`) so wire encoders that hardcoded a number would fail the build.
 
 **Tests added:**
-- **Unit:** wire encoder/decoder round-trip for every opcode + command_id; CRC validation; sequence-number tracking; payload-cap rejection.
+- **Unit:** wire encoder/decoder round-trip for every opcode + command_id; CRC validation; sequence-number tracking; payload-cap rejection. All in `test/unit/protocol/`, exercising `protocol/` alone.
+- **Sequence-number wraparound:** generate 65 537 commands so `seq` wraps modulo 65536; verify outstanding-window matching still correctly pairs `CMD_ACK` to the right `CMD_REQUEST` and that expired outstanding entries are evicted by timeout rather than wraparound. PRD §7.2 defines ACK matching by `(transport, seq)` — wraparound regression would be silent without this test.
 - **Daemon-level:** `thermalcore-tune set-pid soc 5000 400 0` produces a `CMD_ACK` with the request seq, and the next telemetry frames carrying `TSIG_PID_*` reflect the new gains. (v1 has no `CMD_GET_STATE` wire command — verification flows through the ACK + the existing telemetry stream, not a synchronous state pull.)
 - **Timestamp propagation:** `thermalcore-tune set-setpoint soc 75000` at host wall time `t` produces a `TEVENT_COMMAND_APPLIED` whose `ts_ms` equals the `now_ms` the daemon passed to `thermal_core_apply_command()`. Catches regressions where command-apply events accidentally carry a stale or zero timestamp.
-- **Fuzz:** libFuzzer over the wire decoder, seed corpus = recorded valid frames.
+- **Fuzz:** libFuzzer over the `protocol/` wire decoder, seed corpus = recorded valid frames.
 
-**CI rigor added:** fuzz-wire.
+**CI rigor added:** fuzz-wire (against `protocol/`, not `core/`).
 
 **Exit gate:** all previous + fuzz-wire green.
 
@@ -320,7 +363,7 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 
 **Setup details to pin in this stage:**
 - `.gitmodules` pins `tools/car-can-emulator` to a specific commit SHA on the `v2-improvements` branch (per PRD decision 3). Submodule update is a deliberate PR, not a floating dependency.
-- CI provisions `vcan0`: a setup step runs `sudo modprobe vcan` and `sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0` on the GitHub Actions Linux runner. The standard `ubuntu-latest` image grants this; if a future runner image lacks `CAP_NET_ADMIN` the integration job degrades to a skip with a clear log, while unit tests continue to gate.
+- CI provisions `vcan0`: a setup step runs `sudo modprobe vcan` and `sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0` on the GitHub Actions Linux runner. The standard `ubuntu-latest` image grants this. On forks or local CI without `CAP_NET_ADMIN` the integration job degrades to a clearly-logged skip; **the canonical repository CI used to complete Stage 11 must run the integration test on a capable runner** — a skip on the canonical repo blocks the Stage 11 exit gate.
 - The emulator's TCP control port is used *only* by scenario and integration tooling (`tools/thermalcore-scenario`, this stage's integration test). The core and the daemon never open the TCP port — they consume CAN frames only, per PRD §6.4.
 
 **Tests added:**
@@ -339,6 +382,14 @@ This is the standard convention, pinned in PRD §4.5 + decision 32. Stage 3 just
 
 There is **no duplicate Python plant model**. If the Python orchestrator ever needs a plant value, it calls into the C library. This guarantees that scenario runs and unit/replay tests share bit-for-bit-identical plant arithmetic.
 
+**Scenario-to-daemon I/O paths (pinned):** scenarios run `thermalcored --clock=scenario` (delivered in Stage 9). The orchestrator drives the daemon through:
+
+- **Tick clock channel:** the orchestrator sends `TICK now_ms` messages on a local socket; the daemon advances `now_ms` only on receipt. No wall-clock sleeps inside the daemon during scenarios.
+- **Sensor inputs:** the plant simulator advances temperature evolution in C; the orchestrator writes simulated values into the `bsp_mock_tmpfs` tree at each tick before the `TICK` advance.
+- **Actuator outputs:** the daemon writes PWM commands to the same tmpfs tree; the orchestrator reads them after each tick and feeds them back into the plant as the cooling input for the next step.
+- **Commands:** sent over the existing UDP control channel (`127.0.0.1:9002`), drained at the start of the next tick by the deterministic loop order in Stage 9.
+- **Telemetry:** captured from the existing UDP telemetry channel (`127.0.0.1:9001`) by `thermalcore-probe --log`; the SHA-256 over the resulting CSV is the determinism gate.
+
 All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PRD §7.6.
 
 **Tests added:**
@@ -356,6 +407,11 @@ All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PR
 **Deliverable:** `platform/esp32_idf/main/*` with thin BSP wrappers around LEDC, PCNT, 1-Wire, I2C, TWAI. `app_main()` ≤ 100 lines. The static `thermal_config_t` is generated by `tools/json2static.py` (which landed in Stage 9 and was round-trip tested there) from the same JSON the Linux daemon uses. ESP32 standalone build runs the full thermal-core in a FreeRTOS task.
 
 **Target detail:** the reference target is **ESP32-C6**, which is **RISC-V** (not Xtensa). The build matrix targets `esp32c6` only in v1; ESP32-S3 / ESP32-WROOM (Xtensa) are not v1 targets.
+
+**Build modes:** the firmware supports three build-time modes selected by `-DTHERMALCORE_MODE=…`:
+- `STANDALONE` — full thermal-core running on the bench with real sensors/tach/CAN. Used for white-paper portability demonstrations.
+- `HIL_PERIPHERAL` — peripheral concentrator (introduced fully in Stage 14).
+- `REPLAY_STANDALONE` — **new in Stage 13.** Real sensors and CAN are stubbed out; the firmware reads a synthetic `thermal_input_snapshot_t` stream from a fixture (flashed into a `.rodata` section, or fed over USB-CDC by the host harness) and emits canonical telemetry over USB-CDC. This is the mode Stage 15 runs to compare host-vs-target byte-for-byte. Keeps deterministic replay parity orthogonal to the physical sensor path.
 
 **Tests added:**
 - **Build (required, PR-gating):** `idf.py -DIDF_TARGET=esp32c6 build` succeeds in CI under the ESP-IDF docker image. Size-budget assertions: `.text <= 64 KB`, `.bss <= 16 KB` (per PRD §9.2).
@@ -382,7 +438,34 @@ All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PR
 ### Stage 15 — Cross-platform parity + benchmarks
 **Two flavors of parity, deliberately separated:**
 
-1. **Deterministic replay parity (PR-gating).** Host build and ESP32-C6 standalone build are fed *identical synthetic input streams* (no real sensors, no real CAN — just `thermal_input_snapshot_t` arrays played from a fixture file). Both rigs are deterministic; the SHA-256 of the resulting telemetry CSV must be byte-equal. This is the "works on Linux, breaks on MCU" canary, achievable because both rigs share the same `core/` source and Q16.16 math. Runs on every PR via the `replay-parity` CI job. When QEMU isn't available, the ESP32 side runs on a self-hosted runner nightly and gates the merge queue rather than the per-PR CI.
+1. **Deterministic replay parity — conditional PR gate.** Host build and ESP32-C6 standalone build are fed *identical synthetic input streams* (no real sensors, no real CAN — just `thermal_input_snapshot_t` arrays played from a fixture file). Both rigs are deterministic; the SHA-256 of the resulting telemetry CSV must be byte-equal.
+
+**Infrastructure precondition (be explicit about what we're promising):**
+- If a stable ESP32-C6 RISC-V QEMU path exists in ESP-IDF *or* a reliable self-hosted ESP32-C6 runner is connected to the repo, `replay-parity` is a per-PR / merge-queue gate.
+- If neither exists, Stage 15 cannot claim PR-gated replay parity. The gate becomes a **release-tag gate** (must pass before a `v*` tag is cut) and a nightly job; PR merges are not blocked by it. The plan does not promise an always-on PR gate before the runner strategy is real.
+- The repo `README.md` records which mode is currently active.
+
+**Telemetry SHA composition (pinned).** The SHA-256 covers a fixed canonical projection of the telemetry stream — narrow enough to be deterministic, wide enough that real behavior changes show up. One row per callback, columns:
+
+```
+ts_ms, row_type, id, value, flags_or_status, a1, a2, a3, a4
+```
+
+- `row_type` ∈ {`S` for sample, `E` for event} — included so sample and event rows are never collapsed.
+- For `S` rows: `id` = `signal_id`, `value` from `telemetry_emit()`, `flags_or_status` = `flags`, `a1..a4` = 0.
+- For `E` rows: `id` = `event_code`, `value` = 0, `flags_or_status` = 0, `a1..a4` from `log_event()`. Catches event-arg changes (detail codes, target IDs) that earlier drafts of this contract would have hashed past silently.
+- Wall-clock-derived columns (host receive-time, queue depth) and non-deterministic diagnostics (uptime, free heap) are excluded.
+
+**Intra-tick emission order (also pinned).** The core emits all callbacks for one tick in a deterministic order, so two rigs that compute the same values produce them in the same row order:
+
+1. Zone state, by zone slot (0..N-1).
+2. Actuator state, by actuator slot.
+3. Context state, by context slot.
+4. Modifier outputs, by modifier slot.
+5. Fault detector telemetry, by detector slot.
+6. Events generated this tick, in core's deterministic generation order (fault enter/leave before command-applied before shutdown-request).
+
+The canonical column projection and the row-ordering contract live in `tools/thermalcore-probe/canonical.py` and a matching C-side serializer; both Stage 12 (host determinism) and Stage 15 (host-vs-target parity) hash from the same projection.
 
 2. **Physical HIL tolerance (nightly / on-demand, never PR-gating).** All ten canonical scenarios on real hardware (ESP32 standalone OR Linux + ESP32-HIL). Telemetry is compared against the host-simulator reference using **behavioral tolerance bands**, not SHA equality:
    - settling time within ±10% of reference
@@ -400,9 +483,9 @@ All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PR
 - Bench-rig benchmark table from PRD §9.2 captured (step time, memory, settling, overshoot, PWM-seconds, fault latency).
 - Memory-footprint check: ESP32 binary size tracked over time as a CI artifact; trend visible in PR comments.
 
-**CI rigor added:** `replay-parity` (PR-gating); `hil-tolerance` (nightly or `[hil]`-labeled, not PR-gating).
+**CI rigor added:** `replay-parity` (**conditional gate** — PR/merge-queue when ESP32-C6 QEMU or a self-hosted runner exists; release/nightly otherwise); `hil-tolerance` (nightly or `[hil]`-labeled, never PR-gating).
 
-**Exit gate:** all previous + `replay-parity` green. `hil-tolerance` is informational on PRs, blocking only on release tags.
+**Exit gate:** all previous green, plus `replay-parity` green **on the gating tier the repo is currently in**. If `ci/runner-strategy.md` records "QEMU available" or "self-hosted ESP32-C6 connected," `replay-parity` is a PR gate. Otherwise the Stage 15 exit gate is "release-tag run of `replay-parity` green" — i.e., before any `v*` tag is cut, the parity job must have passed on a recent nightly. `hil-tolerance` is informational on PRs, blocking only on release tags.
 
 ---
 
@@ -489,22 +572,22 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 
 | Stage | Deliverable | New CI layer | Exit gate |
 |---|---|---|---|
-| 0 | Scaffolding | unit, build-linux | dummy test passes |
+| 0 | Scaffolding + tool pins + no-heap guard | unit, build-linux, no-heap-no-syscall | dummy test + static denylist + core-only runtime guard all green |
 | 1 | Core types declared | size-budget test | headers compile |
 | 2 | Curve interpolation | replay | curve module golden + integer reference green |
-| 3 | IIR + sensor pipeline | — | filter module golden + integer reference green |
-| 4 | Zone agg + step-wise governor | property | zone module golden green |
+| 3 | IIR + sensor pipeline + validity lifecycle | — | filter module golden + integer reference green |
+| 4 | Zone agg + step-wise governor | property-config | zone module golden + config property green |
 | 5 | PID (Q16.16) | — | PID module golden + integer reference green |
 | 6 | Fault detectors | asan-ubsan | per-detector module golden green |
-| 7 | Modifier + arbitration + slew + full loop | clang-tidy | full-step golden stable |
-| 8 | apply_command + get_state (typed API) | cppcheck | command tests green |
-| 9 | Linux daemon + JSON + json2static + telemetry UDP | smoke, coverage, fuzz-json | daemon smoke + json round-trip green |
-| 10 | Control plane + tune CLI + wire codec | fuzz-wire | wire round-trip + ack + timestamp green |
-| 11 | SocketCAN + OBD-II + emulator | — | vcan0 integration green |
-| 12 | Scenario runner + C plant simulator + 10 scenarios | scenario, determinism | all canonical scenarios green |
-| 13 | ESP32-C6 STANDALONE build | build-esp32 | C6 RISC-V build + size budgets green |
+| 7 | Modifier + arbitration + slew + full loop | clang-tidy | full-step golden + safety-override tests green |
+| 8 | apply_command + get_state (typed API) | cppcheck, property-command | typed command tests + property green |
+| 9 | Linux daemon + JSON + json2static + telemetry UDP + deterministic clock | smoke, coverage, fuzz-json | daemon smoke + json round-trip + padding-poison hash green |
+| 10 | Control plane + tune CLI + **`protocol/` wire codec** | fuzz-wire | wire round-trip + ack + timestamp + seq-wrap green |
+| 11 | SocketCAN + OBD-II + emulator | — | vcan0 integration green on canonical CI |
+| 12 | Scenario runner + C plant simulator + 10 scenarios | scenario, determinism | all canonical scenarios + determinism green |
+| 13 | ESP32-C6 STANDALONE + REPLAY_STANDALONE builds | build-esp32 | C6 RISC-V build + REPLAY_STANDALONE build + size budgets green |
 | 14 | ESP32 HIL_PERIPHERAL build | — | HIL build green; bench run on demand |
-| 15 | Deterministic replay parity + benchmarks | replay-parity (PR), hil-tolerance (nightly) | host vs ESP32 standalone byte-equal replay green |
+| 15 | Deterministic replay parity + benchmarks | replay-parity (conditional), hil-tolerance (nightly) | host vs ESP32 standalone byte-equal replay green when infra exists; otherwise release-gate |
 | 16 | White paper figures + benchmark manifest | (release workflow) | PDF builds + manifest consistent |
 
 ---
@@ -514,10 +597,10 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 Items deliberately deferred from this plan; resolve when the relevant stage starts:
 
 - **Coverage gate threshold.** Stage 9 introduces lcov as visibility only. A future decision: should coverage become a gate (e.g., new code must keep total coverage ≥ 80%)? Defer until coverage baseline is established.
-- **ESP32 emulator in CI.** Stage 13 cross-compiles for ESP32 but doesn't run the binary. Once `qemu-xtensa` or the ESP-IDF QEMU image is stable enough, the cross-platform unit replay can move to a real instruction-accurate run in CI. Defer until needed.
+- **ESP32-C6 emulator in CI.** Stage 13 cross-compiles for ESP32-C6 (RISC-V) but doesn't run the binary in CI by default. Once `qemu-system-riscv32` with ESP32-C6 emulation, ESP-IDF's C6 QEMU image, or a stable self-hosted ESP32-C6 runner becomes available, the cross-platform unit replay can move to a real instruction-accurate run in CI. Until then, target-instruction replay stays nightly or hardware-driven. Defer until infrastructure exists.
 - **Self-hosted runner for HW-in-CI.** v1 keeps bench scenarios manual. If bench failures start landing in `main` repeatedly, promote the bench Pi 4 to a self-hosted runner gated on a `[hil]` PR label.
 - **Property test budget.** Stage 4 introduces property testing with a 100-case budget per PR. If shrinkage costs become noticeable, drop to 20 cases per PR + 1000 cases nightly.
 
 ---
 
-*End of implementation plan v0.3*
+*End of implementation plan v0.5*

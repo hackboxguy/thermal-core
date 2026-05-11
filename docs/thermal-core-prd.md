@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.11
+**Document status:** Draft v0.13
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -23,7 +23,7 @@ The core innovation is not the control algorithm itself — PID and step-wise go
 
 This is supported by a snapshot-driven core API, small platform callback surface, static memory allocation, fixed-point math, and numeric event logging — discipline imposed up front so the Linux experience does not produce code that fails to port.
 
-The deliverable is **both** a working open-source codebase and a **LaTeX-typeset white paper** that documents the architecture, the acoustic-thermal tradeoff, and the bench validation. The white paper is grounded in working code: every figure regenerates from raw bench data, every benchmark cites a specific git SHA, and every claim is reproducible from the repository.
+The deliverable is **both** a working open-source codebase and a **LaTeX-typeset white paper** that documents the architecture, the acoustic-thermal tradeoff, and the bench validation. The white paper is grounded in working code: every figure regenerates from raw bench data, every benchmark cites a manifest entry holding data SHA, canonical config hash, source git SHA, and tool versions, and every claim is reproducible from the repository.
 
 ## 2. Motivation
 
@@ -564,6 +564,16 @@ Convention:
 
 The multiplication is computed in 64-bit intermediate (`int64_t`) and shifted back to Q16.16. Overflow is saturated and emits an overflow event in release builds, fails the test in debug builds, matching the saturating-helper rule for governor math in §4.8. The same formula is used for context signals, so context-filter step responses are identical to sensor-filter step responses for the same `alpha_q16`.
 
+**Filter validity lifecycle:**
+
+- Each filter has its own `valid` flag tracked separately from the numeric `filtered_value`.
+- Before the first valid sample, `valid = 0`; the numeric value is undefined and must not be read.
+- On the first valid sample, the filter initializes `filtered_value` directly to the sample (no IIR step from zero) and sets `valid = 1`.
+- On subsequent valid samples, the IIR equation above advances `filtered_value`.
+- On an invalid sample (`sample.valid = 0` or staleness exceeded), the filter does not update arithmetic. `filtered_value` holds its last numeric value; `valid` is set to `0`.
+- Aggregation skips sensors whose filter `valid = 0`. The held numeric value is not policy-active.
+- For context signals, the `fail_safe = hold_last` mode keeps the held filtered value policy-active even with `valid = 0`; other fail-safe modes substitute the configured value. The held filter state and the policy-active flag are distinct.
+
 ### 4.6 Control loop
 
 ```
@@ -924,9 +934,11 @@ Required opcodes:
 
 Opcode values `0x00`, `0x03..0x0F`, and `0x13..0x7F` are reserved for future core transports; `0x80..0xFF` are reserved for platform/private experiments and must not appear in portable tests.
 
-Every command receives an ACK or NACK. Invalid opcode, invalid payload length, out-of-bounds value, unavailable target, and rejected safety transition are distinct status codes. The ACK/NACK `status` field uses the pinned numeric values of `thermal_status_t` for core statuses, with transport-specific statuses allocated above `0x8000`. `detail_code` is a 32-bit command/result detail namespace defined in `core/thermal_commands.h` and is separate from the 16-bit actuator `reason` namespace used in `thermal_output_frame_t`. `seq` is monotonically incremented by the sender and wraps modulo 65536. ACK matching is against the outstanding `(transport, seq)` pair; host tools keep a small outstanding window and expire old requests by timeout so wraparound is unambiguous in normal use. Wire `seq` is transport state and is not part of `thermal_command_t`.
+Every command receives an ACK or NACK. Invalid opcode, invalid payload length, out-of-bounds value, unavailable target, and rejected safety transition are distinct status codes. The ACK/NACK `status` field uses the pinned numeric values of `thermal_status_t` for core statuses, with transport-specific statuses allocated above `0x8000`. `detail_code` is a 32-bit command/result detail namespace defined in `core/thermal_commands.h` (typed semantics, no wire concerns) and is separate from the 16-bit actuator `reason` namespace used in `thermal_output_frame_t`. `seq` is monotonically incremented by the sender and wraps modulo 65536. ACK matching is against the outstanding `(transport, seq)` pair; host tools keep a small outstanding window and expire old requests by timeout so wraparound is unambiguous in normal use. Wire `seq` is transport state and is not part of `thermal_command_t`.
 
-Portable command wire encode/decode helpers live in `core/thermal_commands.h` / `core/thermal_commands.c` so UDP, USB-CDC, replay tests, and future transports share one decoder. Transport-level failures such as bad CRC, invalid frame length, or unknown frame opcode are rejected by the platform before the core is called. Semantic failures such as unknown `command_id`, malformed command payload for a known command, out-of-bounds values, or unknown target IDs are reported through `thermal_core_apply_command()` and encoded as `CMD_NACK`.
+**Wire codec lives outside `core/`.** Portable binary frame encode/decode (TC magic, version, opcode, seq, length, payload, CRC) lives in `protocol/thermal_wire.h` and `protocol/thermal_wire.c`. The `protocol/` module is portable C99 with no heap and no platform deps — but it is *not* part of the thermal policy core. UDP daemons, USB-CDC firmware, replay tests, and tools all link `core/` + `protocol/` together. `core/` has no dependency on `protocol/` in either direction; a hypothetical embedder that uses the thermal policy library via direct C calls (e.g., a ctypes binding) does not need to link `protocol/` at all. Transport-level failures (bad CRC, invalid frame length, unknown frame opcode) are rejected inside `protocol/` before the typed `thermal_command_t` reaches `thermal_core_apply_command()`. Semantic failures (unknown `command_id`, malformed command payload for a known command, out-of-bounds values, unknown target IDs) are reported through `thermal_core_apply_command()` and encoded by the caller as `CMD_NACK` via the `protocol/` helpers.
+
+**Single source of truth for command IDs.** `thermal_command_id_t` in `core/thermal_commands.h` is the authoritative enum for command-ID numeric values. `protocol/thermal_wire_opcodes.h` defines only frame opcodes, transport status codes (above 0x8000), and per-platform receive caps — it must include `core/thermal_commands.h` and may add `_Static_assert` checks that wire encoders use the same numeric values, but it does not redeclare those constants.
 
 ### 7.3 Per-platform transport
 
@@ -1051,7 +1063,7 @@ The same firmware supports two modes selectable at build time (`-DTHERMALCORE_MO
 
 ## 9. Test Scenarios and Benchmarks
 
-All scenarios are scripted (`scenarios/*.scn`), produce deterministic outputs, and are run on three rigs: pure unit-test sim, Linux-with-mock-tmpfs, and Linux-with-ESP32-HIL plus the standalone ESP32 build for cross-validation.
+All scenarios are scripted (`scenarios/*.scn`) and run on three rigs: pure unit-test sim, Linux-with-mock-tmpfs, and Linux-with-ESP32-HIL plus the standalone ESP32 build for cross-validation. The simulator and mock-tmpfs rigs produce deterministic, bit-for-bit reproducible outputs; physical rigs (Linux+ESP32-HIL, ESP32 standalone on real hardware) run the same scripts but are evaluated against behavioral tolerance bands rather than byte-equal SHA, because real tach jitter, USB-CDC latency, and CAN frame timing vary tick-to-tick.
 
 ### 9.1 Canonical scenarios
 
@@ -1079,7 +1091,7 @@ All scenarios are scripted (`scenarios/*.scn`), produce deterministic outputs, a
 | Fan PWM-seconds integral (acoustic proxy) | Reported with vs without `acoustic_mask`; quantifies acoustic benefit |
 | Fault detection latency | `fan_stall_recovery`: stall raised within ≤ 3 s |
 
-All benchmark figures are regenerated from scenario CSV logs by `make -C docs/paper figures`. Each figure caption in the white paper cites the scenario name and the git SHA used.
+All benchmark figures are regenerated from scenario CSV logs by `make -C docs/paper figures`. Each figure caption cites the scenario name and the data SHA recorded in `docs/paper/figures/manifest.yaml`. The manifest entry holds the telemetry-CSV SHA-256, the canonical config hash, the source git SHA used to generate the data, and tool versions. Captions point at the manifest data SHA rather than the current commit SHA, so text-only paper edits do not mark every figure stale.
 
 ### 9.3 Deterministic thermal-plant simulator
 
@@ -1110,7 +1122,7 @@ The simulator must be bit-for-bit deterministic for a given config, scenario, an
 thermal-core/
 ├── README.md
 ├── LICENSE                              MIT
-├── core/                                 Pure C99, no platform deps
+├── core/                                 Pure C99, no platform deps, no protocol deps
 │   ├── thermal_core.c
 │   ├── thermal_core.h
 │   ├── thermal_zone.c
@@ -1119,10 +1131,21 @@ thermal-core/
 │   ├── thermal_governor.c
 │   ├── thermal_fault.c
 │   ├── thermal_modifier.c               Acoustic-mask and future modifiers
+│   ├── thermal_commands.c               Typed command application, detail-code enum
+│   ├── thermal_commands.h
 │   ├── thermal_types.h
 │   ├── thermal_platform.h               snapshot/callback interface
 │   ├── thermal_signals.h                Telemetry signal IDs
+│   ├── thermal_events.h                 Event codes
 │   └── thermal_config.h                 Compile-time limits
+├── protocol/                             Portable C99 binary wire codec; depends on core types only
+│   ├── thermal_wire.c                   TC frame encode/decode, CRC-16/CCITT-FALSE
+│   ├── thermal_wire.h
+│   ├── thermal_wire_opcodes.h           Frame opcode values, transport status codes, receive caps (NO command IDs — those live in core/thermal_commands.h)
+│   └── thermal_wire_crc.c               CRC implementation
+├── support/                              Portable C99 reproducibility helpers; depend on core types only, not linked into the minimal control library
+│   ├── thermal_config_hash.c            Field-by-field canonical encoder + SHA-256 for thermal_config_t
+│   └── thermal_config_hash.h
 ├── platform/
 │   ├── linux/
 │   │   ├── thermalcored.c               Main daemon
@@ -1213,7 +1236,7 @@ Temporary migration inputs such as `docs/tmp-latex-artifacts-template/` and the 
 - **OBD-II emulator**: `cmake -H tools/car-can-emulator -B build/car-can-emulator && cmake --build build/car-can-emulator` after submodules are initialized.
 - **Unit tests**: `cmake -B build && cmake --build build && ctest --test-dir build` from `test/`. Uses host gcc + a deterministic platform stub.
 - **CI**: GitHub Actions workflow runs unit tests, builds Linux daemon, builds ESP32 firmware. Bench-rig scenario runs are manual (require hardware).
-- **Reproducibility**: each benchmark log filename embeds the git SHA; figures regenerated by `make -C docs/paper figures`. The white paper build (`make -C docs/paper`) regenerates all plots from logs in `docs/paper/figures/plots/data/`.
+- **Reproducibility**: benchmark logs and figures are tracked in `docs/paper/figures/manifest.yaml` by data SHA-256; benchmark log filenames may embed the source git SHA as a convenience, but freshness is verified against the manifest entry. Figures regenerated by `make -C docs/paper figures`. The white paper build (`make -C docs/paper`) regenerates all plots from logs in `docs/paper/figures/plots/data/`.
 
 ## 12. White Paper Plan
 
@@ -1354,7 +1377,7 @@ The white paper contains a dedicated section on limitations, written explicitly 
 - **OBD-II as speed source is unrealistic for production IVI.** Real head units receive speed via OEM-specific CAN messages on a private bus, not OBD-II. OBD-II is used here because it is universally available for a reproducible reference simulator.
 - **Single speed signal, no other vehicle context.** Ignition state, drive mode, ambient temperature, HVAC state would all matter in a production policy; v1 demonstrates the modifier mechanism with one input.
 - **No closed-loop acoustic measurement.** PWM-seconds is used as an acoustic proxy. Real SPL measurement with a calibrated microphone is future work.
-- **Fixed-point PID may not match a floating-point reference exactly.** Verified against scipy-based reference in unit tests, but production deployments should re-validate gains.
+- **Fixed-point PID may not match a floating-point reference exactly.** Verified against a pure-integer Q16.16 reference in unit tests; an optional scipy/float comparison runs nightly or as a design sanity check. Production deployments should re-validate gains.
 - **Single control thread.** Cooperative model. A long sensor read could disturb timing. Watchdog patterns are in scope, full preemptive multi-threading is not.
 
 ## 16. Future Work
@@ -1402,11 +1425,13 @@ The white paper contains a dedicated section on limitations, written explicitly 
 25. **Runtime trip tuning:** v1 runtime trip commands may change threshold and hysteresis only; severity and cooling-state remain config-time safety semantics.
 26. **Enum namespaces:** all loader-facing `uint8_t` config fields have pinned enum values for JSON parsing and static config generation.
 27. **Command timestamps:** `thermal_core_apply_command()` takes `now_ms` explicitly so command events have deterministic timestamps without relying on the previous control tick.
-28. **Command decoding boundary:** portable command payload encode/decode lives in core helper code; transports handle frame integrity, while the core handles semantic command validation.
+28. **Command decoding boundary:** portable binary frame encode/decode lives in `protocol/thermal_wire.{c,h}`, outside `core/`. Transports use the `protocol/` helpers; semantic command validation stays in `thermal_core_apply_command()`. `core/` has no protocol dependency.
 29. **Runaway math:** v1 runaway detection compares temperature rise across the persistence window while commanded PWM remains above the configured cooling threshold.
 30. **Aggregation degradation:** zone aggregation uses valid samples only; all-invalid zones fall back or enter degraded behavior.
 31. **Curve edit safety:** runtime curve edits are rejected if they break strict x-axis monotonicity.
 32. **IIR filter convention:** single-pole Q16.16 low-pass with `filtered_next = filtered_prev + alpha_q16 * (sample - filtered_prev)`; `alpha_q16 = 0` holds the previous value, `alpha_q16 = Q16_ONE` passes the sample through. Applies identically to sensor and context-signal filters.
+33. **Filter validity lifecycle:** first valid sample initializes `filtered_value` directly to the sample; invalid samples never advance filter arithmetic and clear the filter's `valid` flag while preserving the last numeric value; aggregation skips invalid sensors; context fail-safes decide whether held values stay policy-active.
+34. **Wire codec location:** binary frame codec (TC framing, CRC, opcode dispatch) lives in `protocol/`, not `core/`. `core/` is protocol-agnostic by construction; transports link `core/` plus `protocol/`. Reverses an earlier draft assumption that put the codec in core helper code.
 
 ### 17.2 Remaining Questions
 
@@ -1447,4 +1472,4 @@ The white paper contains a dedicated section on limitations, written explicitly 
 
 ---
 
-*End of PRD v0.11*
+*End of PRD v0.13*
