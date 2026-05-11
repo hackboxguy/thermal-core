@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.10
+**Document status:** Draft v0.11
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -550,6 +550,19 @@ Borrowed in spirit from the Linux kernel thermal framework:
 - **Policy modifier**: a configured rule that can transform either pre-governor effective targets/trips or post-governor actuator requests based on context. v1 allows exactly one modifier, `acoustic_mask`, with a pre-governor trip/setpoint offset and a post-governor PWM cap as functions of vehicle speed. The config field is an array only for forward compatibility; future multiple modifiers apply in configured order, which then becomes part of the deterministic contract.
 - **Arbitrator**: when multiple zones target the same actuator, the arbitrator decides the final command. v1 = max-wins (highest demanded PWM). If one zone lists multiple actuators, the zone produces one demand that is broadcast to each listed actuator before per-actuator arbitration, clamps, and slew limits are applied.
 - **Fault detector**: stall, sensor-stuck, runaway, stale context. Per detector, configurable thresholds, severity, latching/recovery behavior, and action.
+
+**IIR filter math (used by sensor `iir_alpha_q16` and context-signal `iir_alpha_q16`):** a single-pole low-pass with Q16.16 coefficient `alpha`:
+
+```
+filtered_next = filtered_prev + alpha_q16 * (sample - filtered_prev)
+```
+
+Convention:
+- `alpha_q16 = 0` holds the previous value (no update on new sample).
+- `alpha_q16 = Q16_ONE` (0x00010000) passes the new sample through unchanged.
+- Intermediate values produce a first-order low-pass; smaller `alpha_q16` is heavier filtering.
+
+The multiplication is computed in 64-bit intermediate (`int64_t`) and shifted back to Q16.16. Overflow is saturated and emits an overflow event in release builds, fails the test in debug builds, matching the saturating-helper rule for governor math in §4.8. The same formula is used for context signals, so context-filter step responses are identical to sensor-filter step responses for the same `alpha_q16`.
 
 ### 4.6 Control loop
 
@@ -1393,6 +1406,7 @@ The white paper contains a dedicated section on limitations, written explicitly 
 29. **Runaway math:** v1 runaway detection compares temperature rise across the persistence window while commanded PWM remains above the configured cooling threshold.
 30. **Aggregation degradation:** zone aggregation uses valid samples only; all-invalid zones fall back or enter degraded behavior.
 31. **Curve edit safety:** runtime curve edits are rejected if they break strict x-axis monotonicity.
+32. **IIR filter convention:** single-pole Q16.16 low-pass with `filtered_next = filtered_prev + alpha_q16 * (sample - filtered_prev)`; `alpha_q16 = 0` holds the previous value, `alpha_q16 = Q16_ONE` passes the sample through. Applies identically to sensor and context-signal filters.
 
 ### 17.2 Remaining Questions
 
@@ -1433,4 +1447,4 @@ The white paper contains a dedicated section on limitations, written explicitly 
 
 ---
 
-*End of PRD v0.10*
+*End of PRD v0.11*
