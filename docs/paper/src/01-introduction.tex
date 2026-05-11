@@ -1,33 +1,44 @@
-\section{Introduction}
+\section{Introduction and Motivation}
 
-\subsection{Problem Statement}
+\subsection{The IVI Thermal Landscape}
 
-Automotive IVI systems increasingly combine high-performance SoCs, amplifiers, tuners, displays, and peripheral controllers inside compact spaces with limited passive airflow. Active cooling is often necessary, but fan noise that disappears at highway speed can become objectionable when the vehicle is stopped in a quiet cabin.
+Modern automotive in-vehicle infotainment (IVI) head units increasingly host high-thermal-design-power SoCs --- Qualcomm SA8255P, SA8295P, and SA8775P; Samsung Exynos Auto V920; and emerging RISC-V automotive parts --- alongside class-D amplifiers, terrestrial and satellite tuners, and the head unit's own board-temperature sensors. These designs operate across automotive ambient ranges that span roughly $-40$ to $+85\,^\circ\mathrm{C}$, often inside enclosures with limited passive airflow and minimal natural convection when the vehicle is stationary. Fan-based active cooling, once a desktop concern, has become a near-default response to the resulting thermal envelope.
 
-\texttt{thermal-core} explores a small, portable thermal-control core that treats cooling and acoustic comfort as coupled requirements. The first reference application is IVI fan control, but the core itself remains protocol-agnostic: it consumes typed temperature, actuator, and context signals rather than parsing Linux sysfs paths, CAN frames, OBD-II messages, or JSON directly.
+But cooling solved by airflow is not free. Inside a quiet cabin, a fan that disappears acoustically at 80\,km/h of road and tire noise is conspicuously loud at a red light. This perceptual asymmetry is one of the most consistent customer-perceived quality issues in modern IVI: drivers report fan noise as if it were sudden and intrusive, even when the same fan ran continuously throughout the journey. Reactive thermal control that treats cooling as a one-dimensional silicon-temperature problem and ignores cabin context produces exactly this outcome.
 
-\subsection{Concept Summary}
+\subsection{The Acoustic-Thermal Tradeoff}
 
-The project separates the problem into three layers:
+The core observation behind this work is that two ostensibly orthogonal goals --- maintaining silicon below its thermal envelope and keeping the cabin acoustically pleasant --- are in fact tightly coupled through a single decision variable: fan duty cycle. Higher duty increases convective cooling and audible noise simultaneously. The right operating point is not a fixed compromise but a context-dependent function: the same silicon temperature should produce a different fan response at standstill than at highway speed, because the ambient noise floor that masks fan output differs by tens of decibels between those conditions.
 
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Core:} deterministic C99 logic for zones, trips, governors, policy modifiers, arbitration, fault detection, and numeric telemetry.
-    \item \textbf{Platform layer:} Linux, ESP-IDF, and future RH850 bindings for sensors, fans, timing, logging, telemetry, and configuration loading.
-    \item \textbf{Scenario and bench tooling:} host-side tools, scripted tests, OBD-II speed emulation, data capture, and plot generation.
-\end{itemize}
+Existing open-source thermal daemons --- \texttt{thermald}, \texttt{fancontrol}, \texttt{fan2go}, \texttt{nbfc-linux} --- target desktops and laptops. None integrates vehicle-context signals such as road speed, ignition state, or drive mode. The Linux kernel thermal framework provides clean abstractions for zones, governors, and cooling devices, but is by design a Linux-only consumer. AUTOSAR thermal monitoring exists but is closed, vendor-specific, and not amenable to reproducible experimentation. Qualcomm ships an Android-side daemon called \texttt{thermal-engine} in many automotive trees; it is the reason this project deliberately uses the name \texttt{thermal-core} rather than the original working name. The gap addressed here is a portable, context-aware thermal-control core that runs unmodified across a development Linux daemon, an ESP-IDF / FreeRTOS firmware on an MCU, and a future automotive target such as Renesas RH850-F1KM, with vehicle-speed-aware acoustic policy as its first proof point.
 
-\subsection{Expected Contributions}
+\subsection{Project Boundary}
 
-This paper will eventually document a reusable thermal-control architecture, a vehicle-speed-aware acoustic policy, a reproducible bench/HIL workflow, and measured behavior from scripted scenarios.
-
-\subsection{To Fill In Later}
+\texttt{thermal-core} is deliberately a small library, not a monolithic daemon. The core owns:
 
 \begin{itemize}[leftmargin=*]
-    \item final implementation SHA and release tag;
-    \item tested host and embedded target versions;
-    \item reference bench photograph;
-    \item headline benchmark table;
-    \item one-paragraph summary of the most important result.
+    \item zone state, sensor aggregation, trip evaluation, governors (step-wise and PID), policy modifiers, arbitration across zones, fault detection, and numeric telemetry;
+    \item deterministic stepping over typed input snapshots and output actuator frames, with no syscalls, no heap allocation after init, and Q16.16 fixed-point arithmetic that is identical bit-for-bit across all supported targets;
+    \item fixed-size configuration structures populated from JSON on Linux or from generated static-const C on an MCU.
 \end{itemize}
+
+The platform layer outside the core owns blocking I/O, configuration loading, transport framing, and target-specific peripheral drivers. The reference Linux daemon binds \texttt{thermal-core} to \texttt{hwmon}, SocketCAN, and UDP telemetry; the reference ESP-IDF firmware binds it to LEDC pulse-width modulation, PCNT tachometer input, TWAI controller-area-network, and 1-Wire temperature probes. Wire framing for telemetry and runtime tuning lives in a separate \texttt{protocol/} module so the policy library can be embedded by callers that have no use for the binary frame format.
+
+Domain-specific context --- vehicle speed sourced from OBD-II via CAN, in the reference design --- enters the core only as a typed numeric signal in the input snapshot. The core never parses CAN frames, knows OBD-II request identifiers, opens sysfs files, allocates JSON objects, blocks on hardware, or depends on any vehicle-specific protocol. This is what ``protocol-agnostic'' means here: not that the project lacks a wire format, but that the thermal-control library at the centre of the project does not contain one.
+
+\subsection{Contributions}
+
+This paper documents four contributions, demonstrated by a reproducible reference implementation:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{An architectural separation} between deterministic thermal policy and platform I/O that lets one body of C99 logic run unmodified on a Linux development host, on an ESP32-C6 MCU under FreeRTOS, and (by structural readiness) on Renesas RH850-F1KM. The discipline that enables portability --- static allocation, fixed-point math, numeric event logging, snapshot-driven inputs --- is imposed up front rather than retrofitted.
+    \item \textbf{A vehicle-context-aware acoustic policy}, with explicit math for trip-point offset and post-governor PWM cap as functions of vehicle speed. The policy is a configured \emph{modifier} layered on top of any governor, so the same mechanism extends to additional context inputs (ignition, ambient, drive mode, HVAC state) in future work.
+    \item \textbf{A reproducible bench rig and scenario harness.} Every benchmark in this paper is regenerable from raw bench data via a single \texttt{make} target. Every benchmark plot cites a manifest entry containing the telemetry SHA-256, canonical configuration hash, source git SHA, and tool versions used to produce it, so reviewers can trace any number on any plot back to the exact input that produced it.
+    \item \textbf{An honest assessment} of what the architecture does not solve --- ISO 26262 readiness, AUTOSAR integration, calibrated sound-pressure-level measurement, multi-fan acoustic cancellation --- so that practitioners can pick up the parts that apply to their context without inheriting overclaims.
+\end{enumerate}
+
+\subsection{Outline of This Paper}
+
+Part~I (\emph{Fundamentals of Acoustic-Aware Thermal Control}) introduces the operating environments the system must tolerate, the acoustic-perceptual basis for context-aware cooling, the data model of zones and sensors, and the curve and response-time abstractions on which the policy is built. Part~II (\emph{thermal-core Implementation}) covers the three-layer architecture, the components that fill each layer, the governor and modifier subsystems, the configuration schema, the control and telemetry interfaces, deployment notes for Linux and ESP32, and a results summary. Appendices catalogue the full reference configuration, the OBD-II frame reference used for vehicle-speed sourcing, the bill of materials for the reproducible bench rig, and the build-command reference.
 
 \endinput
