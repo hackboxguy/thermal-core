@@ -32,3 +32,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Build Linux platform stub
         run: make build CC=${{ matrix.cc }}
+
+  no-heap-no-syscall:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        if: matrix.cc == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Verify portability guard
+        run: make verify-portability CC=${{ matrix.cc }}

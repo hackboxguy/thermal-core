@@ -1,0 +1,59 @@
+# Forbidden symbols in core/libthermal_core.a (PRD §4.2 portability discipline).
+#
+# Patterns are extended regex (grep -E), one per line, matched against
+# `nm -u --format=just-symbols` output. Anchored matches (^name$) preferred.
+# The Makefile strips comment and blank lines before invoking grep -E -f.
+#
+# Adding a symbol is fine. Removing one requires a concrete reason
+# (e.g., platform-callback model was extended to allow it).
+
+# Heap allocation
+^malloc$
+^calloc$
+^realloc$
+^free$
+^aligned_alloc$
+^posix_memalign$
+^strdup$
+^strndup$
+^getline$
+^getdelim$
+^asprintf$
+
+# File-descriptor / I/O syscalls
+^open$
+^openat$
+^read$
+^write$
+^close$
+^lseek$
+
+# Memory mapping
+^mmap$
+^munmap$
+^mprotect$
+
+# Blocking sleep
+^sleep$
+^usleep$
+^nanosleep$
+^clock_nanosleep$
+
+# Stdio
+^printf$
+^fprintf$
+^vfprintf$
+^puts$
+^fopen$
+^fclose$
+^fread$
+^fwrite$
+^perror$
+
+# Pthread (whole family)
+^pthread_
+
+# Wall-clock reads — core gets now_ms from the input snapshot, not from libc
+^time$
+^gettimeofday$
+^clock_gettime$
