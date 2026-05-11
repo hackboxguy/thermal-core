@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.5
+**Document status:** Draft v0.6
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.13)
 
@@ -20,6 +20,7 @@ The guiding bet is simple: **every feature lands in the same PR as the automated
 6. **No third-party C unit-test framework.** The C harness lives in `test/unit/harness.h` as ~50 lines of C99 macros. Same harness compiles for ESP32 unit tests later. No Unity, no CMock, no Greatest. This principle constrains the C test runner only — Python-side reference math (numpy, scipy), static analyzers (clang-tidy, cppcheck), coverage tools (lcov), and fuzzers (libFuzzer) are explicitly in scope and pinned in a dev-tools requirements file.
 7. **Hardware-in-the-loop is manual.** Bench-rig scenarios run on demand or in a nightly workflow; they don't gate PRs. The simulator (§4.3) is the release-gate plant.
 8. **Daemons run deterministically under test.** Anything that gates on byte-equal telemetry (scenario tests, determinism job, replay parity) requires the daemon to use an *injectable* clock and a fixed loop order — drain commands for tick N, build snapshot N, step core, publish telemetry/output N — rather than wall-clock + UDP-arrival-order. The deterministic mode is itself a deliverable, landing no later than Stage 9 (`thermalcored --clock=scenario` or equivalent) so the Stage 12 determinism gate has something deterministic to gate on.
+9. **Paper work interleaves with code.** Conceptual paper sections that don't depend on results (motivation, background, architecture prose, acoustic-thermal math, bench rig BOM) are drafted in parallel with Stage 0–7, not deferred to the end. Results-bearing sections (evaluation tables, scenario plots, honest-limitations content) are written only after the relevant code lands and benchmarks have been captured. The abstract and conclusions are written last, when the paper actually knows what it's saying. §6 (Paper update cadence) maps stages to paper sections explicitly.
 
 ---
 
@@ -377,7 +378,7 @@ The `protocol/` module is portable C99 with no heap and no platform deps. It lin
 
 ### Stage 12 — Scenario runner + thermal-plant simulator + canonical scenarios
 **Deliverable:** Two artifacts with a clean split:
-- **Plant math (C)**: `tools/thermalcore-scenario/plant.c` + `plant.h`, pure Q16.16, no Python. Linked into the scenario runner CLI, `test/replay/`, and `test/unit/` (per §7.5). Single source of truth for the simulator.
+- **Plant math (C)**: `tools/thermalcore-scenario/plant.c` + `plant.h`, pure Q16.16, no Python. Linked into the scenario runner CLI, `test/replay/`, and `test/unit/` (per §8.5). Single source of truth for the simulator.
 - **Scenario runner (Python)**: `tools/thermalcore-scenario/run.py`, orchestrates `.scn` file parsing, drives the C plant through a small CFFI/ctypes binding, talks to `thermalcored` over UDP, evaluates assertions, writes telemetry CSVs.
 
 There is **no duplicate Python plant model**. If the Python orchestrator ever needs a plant value, it calls into the C library. This guarantees that scenario runs and unit/replay tests share bit-for-bit-identical plant arithmetic.
@@ -506,59 +507,87 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 ---
 
-## 6. Regression-finding workflow
+## 6. Paper update cadence
+
+The white paper is not a Stage-16-only deliverable. Conceptual sections draft in parallel with code; results-bearing sections fill in as benchmarks land. This table maps stages to paper sections that can credibly advance once that stage lands.
+
+The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 maps those numbers to the `01-…`–`13-…` source files under `docs/paper/src/`.
+
+| Stage that lands | Paper sections that can advance | Trigger / outcome used |
+|---|---|---|
+| Pre-Stage 0, in parallel with 0–7 | §2 Introduction and motivation, §3 Background and related work, §4 Architecture (prose around block diagrams), §5 Acoustic-thermal tradeoff math, §7 Implementation notes, §8 Bench rig (BOM + wiring + photo when ready) | Conceptual content sourced from PRD; no code outcome required |
+| Stage 2 | §5 Curves — interpolation figure and formula commentary | Curve module golden + integer-reference cross-check |
+| Stage 3 | §5 Curves — filter-response figure for sensor IIR | Filter module golden |
+| Stage 5 | §6 Response time — PID step-response prose, shape only (no quantitative settling-time numbers yet) | PID module golden |
+| Stage 7 | §9 Zone controller — full-loop block diagram, governor/modifier/arbitration prose | First full-step golden |
+| Stage 9 | §10 JSON config — schema examples locked from the actual loader; appendix's reference config | JSON loader + json2static round-trip green |
+| Stage 11 | §12 Deployment — CAN/OBD-II integration narrative | `car-can-emulator` integration green on `vcan0` |
+| Stage 12 | §10 Evaluation — first batch of scenario plots (heat soak, step load, fan stall, acoustic mask on/off) regenerated from real telemetry CSVs | All canonical scenarios green + determinism stable |
+| Stage 13 | §6 Portability strategy — measured ESP32-C6 `.text`/`.bss` numbers in the budget table | ESP32-C6 build green + size budgets |
+| Stage 15 | §10 Evaluation — cross-platform parity tables, full benchmark table, per-platform comparison | Replay parity green; HIL tolerance bands characterized |
+| Stage 16 | §1 Abstract, §11 Honest limitations, §13 Conclusions, §12 Future work; tighten + final prose pass | Everything else; written when the paper knows what it's saying |
+
+**Rules of thumb:**
+
+- A paper PR that touches only conceptual prose is a docs-only PR (runs the lightweight `docs-lint` job, not the heavy matrix).
+- A paper PR that touches a results table or scenario plot must also update `docs/paper/figures/manifest.yaml`; CI's figure-freshness check (Stage 16 deliverable) blocks merge if the manifest entry doesn't match.
+- An "Honest limitations" sentence that didn't survive contact with implementation gets rewritten in Stage 16, not patched late. Better to delete an overclaim than to apologize for it.
+
+---
+
+## 7. Regression-finding workflow
 
 The plan is built so that when something breaks, finding it is mechanical:
 
-### 6.1 A unit test failed
+### 7.1 A unit test failed
 The test names the module. The PR's diff names the change. Use `git bisect` only if a long-dormant test fails after many merges — usually a single PR is the culprit.
 
-### 6.2 A golden replay diff is non-empty
+### 7.2 A golden replay diff is non-empty
 Open `test/replay/golden/<name>.csv.diff` (CI uploads the diff as a job artifact). The diff is a precise behavioral delta. Two outcomes:
 - **Unintended:** find the bug, fix it, golden stays unchanged.
 - **Intended:** run `make regen-replay-goldens`, review the new goldens (they're committed in the same PR), reviewer explicitly approves the behavior change.
 
 This is the principal regression-detection lever — the moment a math change has any unintended ripple, the diff makes it visible in the PR.
 
-### 6.3 A scenario assertion failed
+### 7.3 A scenario assertion failed
 The assertion text says what was expected. The scenario's telemetry CSV is in CI artifacts; open it in `thermalcore-probe --plot` to see the trajectory. Most scenario failures are simulator-plant interaction bugs that unit tests can't catch.
 
-### 6.4 A determinism test failed
+### 7.4 A determinism test failed
 The two telemetry CSVs have different SHA-256. Diff them with `csvdiff`. The first row where they diverge is the tick where nondeterminism crept in. Common causes: uninitialized memory (caught by ASan in a later CI job), accidental float math, hash-table iteration order.
 
-### 6.5 Fuzz crashed
+### 7.5 Fuzz crashed
 The fuzzer dumps a reproducer to `crash-<hex>.bin`. Reproduce locally with `./fuzz_json crash-<hex>.bin`. Add the reproducer to the seed corpus as a regression sentinel — even after the fix, future PRs run it.
 
-### 6.6 Sanitizer caught something
+### 7.6 Sanitizer caught something
 Stack trace in the CI log. Fix and add a focused unit test that exercises the path the sanitizer flagged.
 
-### 6.7 Cross-platform parity failed
+### 7.7 Cross-platform parity failed
 The Linux telemetry SHA and the ESP32 telemetry SHA differ. Run both rigs side-by-side, diff the CSVs at the first divergence. This is the test that catches "works on Linux, breaks on MCU" subtly.
 
 ---
 
-## 7. Conventions
+## 8. Conventions
 
-### 7.1 PR hygiene
+### 8.1 PR hygiene
 - One logical change per PR. A feature + its tests + its golden updates is one PR.
 - Goldens change explicitly: a PR that updates `test/replay/golden/*.csv` without a stated reason in the PR description should be questioned in review.
 - New error codes / new event codes / new signal IDs added to `core/thermal_*.h` are mentioned in the PR description so the wire-protocol surface is reviewable.
 
-### 7.2 Commit hygiene
+### 8.2 Commit hygiene
 - Subject line: `<area>: <short summary>` (e.g., `pid: clamp integral on saturation`).
 - Body explains the why; the diff explains the what.
 - Tests live in the same commit as the code they exercise.
 
-### 7.3 Branching
+### 8.3 Branching
 - `main` is always green. CI gates block direct pushes to `main`; merges happen via PR only.
 - Feature branches off `main`. Rebase, don't merge, before opening a PR.
 
-### 7.4 Naming
+### 8.4 Naming
 - C functions: `thermal_<module>_<verb>` — `thermal_pid_step`, `thermal_zone_aggregate`.
 - Test names: `TEST_CASE(<module>_<scenario>)` — `TEST_CASE(pid_anti_windup_under_saturation)`.
 - Goldens: `test/replay/golden/<module>_<scenario>.csv` — `pid_step_load.csv`.
 
-### 7.5 Where the simulator lives
+### 8.5 Where the simulator lives
 The deterministic thermal-plant simulator (PRD §9.3) is implemented once in `tools/thermalcore-scenario/plant.c` and `plant.h`, then linked into three places:
 - `test/replay/` for replay tests (deterministic seed, scripted load/ambient).
 - `test/unit/` for unit-level simulator tests.
@@ -568,7 +597,7 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 
 ---
 
-## 8. Stages summary
+## 9. Stages summary
 
 | Stage | Deliverable | New CI layer | Exit gate |
 |---|---|---|---|
@@ -592,7 +621,7 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 
 ---
 
-## 9. Open decisions for later
+## 10. Open decisions for later
 
 Items deliberately deferred from this plan; resolve when the relevant stage starts:
 
@@ -603,4 +632,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.5*
+*End of implementation plan v0.6*
