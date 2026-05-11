@@ -1,0 +1,32 @@
+\section{Summary, Limitations, and Future Work}
+
+\subsection{Expected Summary}
+
+This document will show whether a small protocol-agnostic core can support acoustic-aware IVI fan control while remaining portable across Linux and MCU targets. The expected result is not a production safety component, but a reproducible reference design and paper-ready evidence trail.
+
+\subsection{Known Limitations}
+
+\begin{itemize}[leftmargin=*]
+    \item not ASIL-rated;
+    \item no AUTOSAR integration in v1;
+    \item OBD-II speed is a reproducible test source, not a production IVI integration strategy;
+    \item PWM-seconds is only an acoustic proxy;
+    \item RH850 is structurally planned but not hardware-validated in v1.
+\end{itemize}
+
+\subsection{Future Work}
+
+\begin{itemize}[leftmargin=*]
+    \item calibrated SPL measurement;
+    \item multi-input policy modifiers;
+    \item OEM CAN DBC integration outside the core;
+    \item PID autotune;
+    \item full RH850 validation;
+    \item static-analysis and MISRA-oriented hardening.
+\end{itemize}
+
+\subsection{To Fill In Later}
+
+After benchmark capture, replace this section with final claims, measured results, and practical recommendations.
+
+\endinput

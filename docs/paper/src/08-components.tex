@@ -1,0 +1,30 @@
+\section{Component Design}
+
+\subsection{Sensors}
+
+Sensors provide temperature samples in millidegrees Celsius. Platform backends may read Linux \texttt{hwmon}, files, serial HIL input, 1-Wire probes, I2C sensors, or future automotive sensor paths. The core receives only numeric sensor IDs and typed values.
+
+\subsection{Actuators}
+
+The v1 actuator model is a PWM fan with optional tach feedback. The actuator definition includes minimum PWM, maximum PWM, slew limit, and stall threshold.
+
+\subsection{Context Inputs}
+
+Vehicle speed is the first context input. It is deliberately not special in the core: future context inputs such as ignition state, ambient temperature, HVAC state, and drive mode should use the same mechanism.
+
+\subsection{Fault Detectors}
+
+Initial fault detectors:
+
+\begin{itemize}[leftmargin=*]
+    \item fan stall while PWM is above a configured threshold;
+    \item stuck sensor over a configured observation window;
+    \item thermal runaway when temperature rises despite requested cooling;
+    \item speed-source timeout for acoustic-mask fail-safe behavior.
+\end{itemize}
+
+\subsection{To Fill In Later}
+
+Add exact structs, enums, signal IDs, and fault codes once the headers stabilize.
+
+\endinput

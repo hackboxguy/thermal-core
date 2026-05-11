@@ -1,0 +1,64 @@
+\section{Appendix A: Units and Numeric Conventions}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Quantity} & \textbf{Unit} & \textbf{Representation} \\
+\midrule
+Temperature & millidegrees Celsius & \texttt{int32\_t} \\
+PWM duty & 0--255 & \texttt{uint8\_t} \\
+Fan speed & RPM & \texttt{uint16\_t} \\
+Vehicle speed & km/h & \texttt{uint16\_t} \\
+Time & milliseconds & \texttt{uint32\_t}, rollover-aware \\
+PID gains & Q16.16 & \texttt{int32\_t} \\
+\bottomrule
+\end{tabular}
+\caption{Numeric conventions to keep consistent across code and paper.}
+\end{table}
+
+\section{Appendix B: OBD-II Speed Reference}
+
+The reference speed source is OBD-II Service 01 PID \texttt{0x0D}. \texttt{thermal-core} does not parse this inside the core; Linux and ESP32 platform code decode the CAN response and expose typed speed to the core.
+
+\begin{itemize}[leftmargin=*]
+    \item Request IDs: \texttt{0x7DF} and \texttt{0x7E0}
+    \item Response ID: \texttt{0x7E8}
+    \item Response mode: \texttt{0x41}
+    \item PID: \texttt{0x0D}
+    \item Value: one byte, direct km/h
+\end{itemize}
+
+\section{Appendix C: Benchmark Matrix}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.28\textwidth}p{0.52\textwidth}}
+\toprule
+\textbf{Scenario} & \textbf{What to report} \\
+\midrule
+\texttt{idle\_steady\_state} & false faults, fan off behavior \\
+\texttt{heat\_soak\_ramp} & PWM response, maximum temperature \\
+\texttt{step\_load} & settling time, overshoot \\
+\texttt{fan\_stall\_recovery} & stall detection and recovery latency \\
+\texttt{acoustic\_mask\_high\_speed} & cap release and trip offset behavior \\
+\texttt{can\_bus\_loss} & timeout and fail-safe behavior \\
+\bottomrule
+\end{tabular}
+\caption{Initial benchmark matrix. Add CSV filenames and git SHA values later.}
+\end{table}
+
+\section{Appendix D: Fill-In Checklist}
+
+\begin{itemize}[leftmargin=*]
+    \item final BOM and wiring diagram;
+    \item complete JSON configuration;
+    \item generated static MCU configuration;
+    \item telemetry signal table;
+    \item numeric event code table;
+    \item exact build and flash commands;
+    \item benchmark raw-data paths;
+    \item figure regeneration commands.
+\end{itemize}
+
+\endinput

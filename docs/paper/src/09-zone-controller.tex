@@ -1,0 +1,80 @@
+\section{Governors and Control Loop}
+
+\subsection{Loop Overview}
+
+The control loop is single-threaded from the core perspective. The platform calls one step function at a fixed period.
+
+\begin{lstlisting}[language=C,caption={Conceptual control-loop order}]
+thermal_core_step(ctx):
+    read sensors through platform snapshot
+    update filters and zone temperatures
+    evaluate trips
+    run each zone governor
+    arbitrate shared actuators
+    apply policy modifiers
+    apply slew limits
+    emit telemetry and fault events
+\end{lstlisting}
+
+Figure~\ref{fig:closed-loop-control} shows the same flow as a closed-loop control system. The protocol-agnostic core owns the middle of the loop: filtering, zone state, trip evaluation, governor output, arbitration, policy modifiers, slew limits, faults, and telemetry. Platform-specific code only supplies snapshots and applies actuator requests.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    node distance=0.72cm,
+    block/.style={draw, rounded corners=2pt, align=center, minimum height=0.85cm, minimum width=2.35cm, fill=blue!6},
+    coreblock/.style={block, fill=orange!10},
+    ioblock/.style={block, fill=gray!12},
+    plantblock/.style={block, fill=green!10, minimum width=2.8cm},
+    contextblock/.style={block, fill=purple!8, minimum width=2.6cm},
+    sum/.style={circle, draw, align=center, inner sep=1pt, minimum size=0.6cm, fill=white},
+    arrow/.style={->, thick}
+]
+    \node[coreblock] (target) {Targets\\trips, setpoints};
+    \node[sum, right=0.65cm of target] (compare) {$\Sigma$};
+    \node[coreblock, right=0.65cm of compare] (governor) {Governor\\step-wise or PID};
+    \node[coreblock, right=0.65cm of governor] (policy) {Arbitration + policy\\caps, offsets, slew};
+    \node[ioblock, right=0.65cm of policy] (actuator) {Actuator adapter\\PWM / fan request};
+    \node[plantblock, right=0.65cm of actuator] (plant) {Thermal plant\\device + cooling};
+
+    \node[contextblock, above=0.75cm of policy] (context) {Context snapshot\\vehicle speed, mode};
+    \node[contextblock, above=0.75cm of plant] (disturbance) {Disturbances\\ambient, workload};
+    \node[ioblock, below=1.0cm of plant] (sensors) {Sensor snapshot\\temperature, tach};
+    \node[coreblock, below=1.0cm of governor] (filters) {Filters + zone state\\temperature, faults};
+
+    \draw[arrow] (target) -- (compare);
+    \draw[arrow] (compare) -- (governor);
+    \draw[arrow] (governor) -- (policy);
+    \draw[arrow] (policy) -- (actuator);
+    \draw[arrow] (actuator) -- (plant);
+    \draw[arrow] (disturbance) -- (plant);
+    \draw[arrow] (context) -- (policy);
+    \draw[arrow] (plant) -- (sensors);
+    \draw[arrow] (sensors.west) -- (filters.east);
+    \draw[arrow] (filters.west) -| (compare.south);
+\end{tikzpicture}%
+}
+\caption{Protocol-agnostic closed-loop thermal-control model}
+\label{fig:closed-loop-control}
+\end{figure}
+
+\subsection{Governors}
+
+The step-wise governor maps trip state to discrete cooling states. The PID governor targets a setpoint using Q16.16 fixed-point math by default. Anti-windup behavior and output clamping must be specified before final release.
+
+\subsection{Arbitration}
+
+When multiple zones request the same actuator, v1 uses max-wins arbitration. This is conservative and easy to reason about for a single shared fan.
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item final pseudocode matching implementation order;
+    \item fixed-point PID equations;
+    \item anti-windup rule;
+    \item unit-test references for step-wise and PID behavior.
+\end{itemize}
+
+\endinput

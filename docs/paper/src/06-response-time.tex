@@ -1,0 +1,43 @@
+%------------------------
+% Section 6: Response Time and Transition Control
+%------------------------
+\section{Control Response and Timing}
+
+\subsection{Control Period}
+
+The default control period is 100 ms. Thermal time constants are usually much slower than this, but a short control period simplifies telemetry, tach observation, and fault detection while still fitting MCU budgets.
+
+\subsection{Response Metrics}
+
+The evaluation section should report:
+
+\begin{itemize}[leftmargin=*]
+    \item step-response settling time;
+    \item overshoot above setpoint;
+    \item fan PWM-seconds and/or RPM-seconds;
+    \item fault detection latency;
+    \item per-tick execution time on each target.
+\end{itemize}
+
+\subsection{Timing Budget}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Target} & \textbf{Control-period goal} & \textbf{Step-time budget} \\
+\midrule
+Linux host & 100 ms & $<$100 us \\
+ESP32-C6 & 100 ms & $<$1 ms \\
+RH850-F1KM budget & 100 ms & $<$500 us \\
+\bottomrule
+\end{tabular}
+\caption{Initial timing targets. Replace with measured values before release.}
+\label{tab:timing-budget}
+\end{table}
+
+\subsection{To Fill In Later}
+
+Add oscilloscope, telemetry, or benchmark evidence for final timing claims.
+
+\endinput

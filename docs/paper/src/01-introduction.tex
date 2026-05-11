@@ -1,0 +1,33 @@
+\section{Introduction}
+
+\subsection{Problem Statement}
+
+Automotive IVI systems increasingly combine high-performance SoCs, amplifiers, tuners, displays, and peripheral controllers inside compact spaces with limited passive airflow. Active cooling is often necessary, but fan noise that disappears at highway speed can become objectionable when the vehicle is stopped in a quiet cabin.
+
+\texttt{thermal-core} explores a small, portable thermal-control core that treats cooling and acoustic comfort as coupled requirements. The first reference application is IVI fan control, but the core itself remains protocol-agnostic: it consumes typed temperature, actuator, and context signals rather than parsing Linux sysfs paths, CAN frames, OBD-II messages, or JSON directly.
+
+\subsection{Concept Summary}
+
+The project separates the problem into three layers:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Core:} deterministic C99 logic for zones, trips, governors, policy modifiers, arbitration, fault detection, and numeric telemetry.
+    \item \textbf{Platform layer:} Linux, ESP-IDF, and future RH850 bindings for sensors, fans, timing, logging, telemetry, and configuration loading.
+    \item \textbf{Scenario and bench tooling:} host-side tools, scripted tests, OBD-II speed emulation, data capture, and plot generation.
+\end{itemize}
+
+\subsection{Expected Contributions}
+
+This paper will eventually document a reusable thermal-control architecture, a vehicle-speed-aware acoustic policy, a reproducible bench/HIL workflow, and measured behavior from scripted scenarios.
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item final implementation SHA and release tag;
+    \item tested host and embedded target versions;
+    \item reference bench photograph;
+    \item headline benchmark table;
+    \item one-paragraph summary of the most important result.
+\end{itemize}
+
+\endinput

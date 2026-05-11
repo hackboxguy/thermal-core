@@ -1,0 +1,4 @@
+[submodule "tools/car-can-emulator"]
+	path = tools/car-can-emulator
+	url = https://github.com/hackboxguy/car-can-emulator.git
+	branch = v2-improvements

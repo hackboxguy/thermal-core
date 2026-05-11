@@ -1,0 +1,38 @@
+%------------------------
+% Section 4: Zone-Based Mapping
+%------------------------
+\section{Thermal Zone Mapping}
+
+\subsection{Zone Model}
+
+A zone is a logical thermal region such as \texttt{soc}, \texttt{amp}, \texttt{tuner}, or \texttt{board}. A zone may have one or more sensors, a temperature aggregation policy, trip points, a governor, and one or more actuators it can request.
+
+\subsection{Reference Zones}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.18\textwidth}p{0.26\textwidth}p{0.38\textwidth}}
+\toprule
+\textbf{Zone} & \textbf{Likely sensor} & \textbf{Purpose} \\
+\midrule
+\texttt{soc} & SoC case, board proxy, or simulated sensor & primary high-power compute source \\
+\texttt{amp} & amplifier heatsink or board proxy & secondary thermal load, may share fan \\
+\texttt{tuner} & board sensor near RF section & low-power but thermally constrained region \\
+\texttt{board} & general PCB temperature & ambient board context and sanity check \\
+\texttt{ambient} & free-air probe & feed-forward context and logging \\
+\bottomrule
+\end{tabular}
+\caption{Reference zone vocabulary for the first paper draft.}
+\label{tab:reference-zones}
+\end{table}
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item exact v1 zone names and IDs;
+    \item sensor-to-zone mapping from \texttt{reference-bench.json};
+    \item trip thresholds used in all benchmark scenarios;
+    \item hysteresis values and rationale.
+\end{itemize}
+
+\endinput

@@ -1,0 +1,31 @@
+\section{Configuration Format}
+
+\subsection{Linux JSON}
+
+Linux loads JSON at startup and converts it into the same static configuration shape used by MCU targets. JSON is a platform convenience, not a core dependency.
+
+\begin{lstlisting}[caption={Top-level configuration sketch}]
+{
+  "control_period_ms": 100,
+  "sensors": [],
+  "actuators": [],
+  "zones": [],
+  "policy_modifiers": [],
+  "fault_detection": {},
+  "telemetry": {}
+}
+\end{lstlisting}
+
+\subsection{MCU Static Configuration}
+
+Embedded builds use a generated or hand-written \texttt{static const thermal\_config\_t}. The JSON parser is not linked into MCU firmware.
+
+\subsection{Validation}
+
+Configuration validation should reject duplicate IDs, references to missing sensors or actuators, zones without sensors, out-of-bounds curve points, invalid PWM limits, and unsupported governor or policy names.
+
+\subsection{To Fill In Later}
+
+Add the final JSON Schema path, a complete bench config, and a generated static C example.
+
+\endinput

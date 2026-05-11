@@ -1,0 +1,39 @@
+%------------------------
+% Section 5: Brightness Curves
+%------------------------
+\section{Curves and Policy Functions}
+
+\subsection{Curve Types}
+
+\texttt{thermal-core} uses curves for fan command shaping, trip or setpoint offsets, and context policy modifiers. Curves should be represented as fixed-size point tables with deterministic interpolation so the same configuration can be used on Linux and MCU targets.
+
+\subsection{Acoustic Mask Curve}
+
+The first policy curve maps vehicle speed to a PWM cap and optional trip offset:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccc}
+\toprule
+\textbf{Speed (km/h)} & \textbf{PWM cap} & \textbf{Trip offset (m$^\circ$C)} \\
+\midrule
+0 & 120 & 0 \\
+30 & 180 & 0 \\
+80 & 255 & -5000 \\
+130 & 255 & -8000 \\
+\bottomrule
+\end{tabular}
+\caption{Initial acoustic-mask curve from the PRD. Values are placeholders until tuned.}
+\label{tab:acoustic-mask-curve}
+\end{table}
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item exact interpolation method;
+    \item fixed-point representation;
+    \item before/after plots showing the acoustic-mask effect;
+    \item rationale for each speed breakpoint.
+\end{itemize}
+
+\endinput

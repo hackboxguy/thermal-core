@@ -1,0 +1,158 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{tabularx}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc}
+
+% Page layout settings
+\geometry{left=1in,right=1in,bottom=1in,top=1.02in,headheight=46pt,headsep=0.45cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+% Graphics path setting
+\graphicspath{{../images/}}
+
+% Listings settings for code blocks
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10},
+    xleftmargin=0.5cm,
+    xrightmargin=0.5cm,
+    aboveskip=1em,
+    belowskip=1em,
+    columns=flexible,
+    keepspaces=true,
+    showstringspaces=false
+}
+
+% Header and footer setup
+\pagestyle{fancy}
+\fancyhead{}
+\fancyfoot{}
+
+% Define header content
+\fancyhead[L]{thermal-core: Protocol-Agnostic Thermal Control}
+\fancyhead[R]{\raisebox{0.05cm}{\includegraphics[width=1.35cm]{logo.png}}}
+
+% Define footer content
+\fancyfoot[C]{\thepage}
+\fancyfoot[L]{Draft 0.1 -- May 2026}
+\fancyfoot[R]{}
+
+% Header/footer lines
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Hyperref settings
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    pdftitle={thermal-core: Protocol-Agnostic Thermal Control Design \& Implementation},
+    pdfauthor={Albert David}
+}
+
+% Custom colors for zones and elements
+\definecolor{nightzone}{RGB}{100,150,255}
+\definecolor{indoorzone}{RGB}{100,200,100}
+\definecolor{outdoorzone}{RGB}{255,180,50}
+\definecolor{codeblock}{RGB}{240,240,240}
+
+%------------------------
+% Document starts here
+%------------------------
+\begin{document}
+\thispagestyle{fancy}
+
+\vspace*{3cm}
+
+\begin{center}
+    {\huge\bfseries thermal-core}\\[1ex]
+    {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
+    {\Large Design \& Implementation}\\[2ex]
+    {\large Author: Albert David}\\[2ex]
+    {\large Draft 0.1}\\[1ex]
+    May 2026\\[2ex]
+    {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
+\end{center}
+\vspace{2em}
+
+\section*{Document Revision History}
+\begin{longtable}{|p{0.12\textwidth}|p{0.18\textwidth}|p{0.15\textwidth}|p{0.45\textwidth}|}
+    \hline
+    \textbf{Version} & \textbf{Date} & \textbf{Author} & \textbf{Description} \\
+    \hline
+    0.1 & May 2026 & Albert David & Initial thermal-core migration from the ALS-Dimmer technical-document template \\
+    \hline
+\end{longtable}
+
+\section*{Abstract}
+
+\texttt{thermal-core} is a protocol-agnostic thermal-control core with an automotive IVI reference application. It separates deterministic control policy from platform I/O so the same zone, governor, fault, and policy logic can run on Linux, ESP-IDF, and future MCU targets. The first reference policy demonstrates acoustic-aware fan control using vehicle speed as a reproducible context signal.
+
+This draft is intentionally a scaffold. It captures the paper structure, terminology, and fill-in points before the implementation and benchmark data are complete.
+
+\section*{Draft Status}
+
+\begin{itemize}[leftmargin=*]
+    \item Replace scaffold text with implementation details as modules land.
+    \item Add plots generated from scenario CSV files.
+    \item Add commit SHAs to every benchmark table and figure caption.
+    \item Keep protocol-specific details in platform/tooling sections, not in the core architecture.
+\end{itemize}
+
+\clearpage
+
+\tableofcontents
+
+\clearpage
+
+%------------------------
+% Part I: Fundamentals
+%------------------------
+\part{Fundamentals of Acoustic-Aware Thermal Control}
+
+\input{01-introduction}
+\input{02-environments}
+\input{03-human-vision}
+\input{04-zone-mapping}
+\input{05-curves}
+\input{06-response-time}
+
+\clearpage
+
+%------------------------
+% Part II: Implementation
+%------------------------
+\part{thermal-core Implementation}
+
+\input{07-architecture}
+\input{08-components}
+\input{09-zone-controller}
+\input{10-json-config}
+\input{11-control-interface}
+\input{12-deployment}
+\input{13-summary}
+
+\clearpage
+
+%------------------------
+% Appendices
+%------------------------
+\input{appendices}
+
+\end{document}

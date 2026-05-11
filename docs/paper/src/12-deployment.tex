@@ -1,0 +1,30 @@
+\section{Build, Deployment, and HIL Setup}
+
+\subsection{Linux Daemon}
+
+The Linux reference binary is \texttt{thermalcored}. It is responsible for loading JSON, binding platform backends, starting telemetry transports, and calling the core step function at the configured period.
+
+\subsection{ESP32 Reference Firmware}
+
+The ESP32 reference firmware has two planned modes:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Standalone:} ESP32 runs the full thermal-core loop.
+    \item \textbf{HIL peripheral:} ESP32 exposes sensors, PWM, tach, and CAN to the Linux daemon.
+\end{itemize}
+
+\subsection{OBD-II Emulator}
+
+\texttt{car-can-emulator} is included as a submodule under \texttt{tools/car-can-emulator/} and tracks the upstream \texttt{v2-improvements} branch. It is a test dependency, not a runtime dependency of the thermal core.
+
+\begin{lstlisting}[caption={Emulator build sketch}]
+git submodule update --init --recursive
+cmake -H tools/car-can-emulator -B build/car-can-emulator
+cmake --build build/car-can-emulator
+\end{lstlisting}
+
+\subsection{To Fill In Later}
+
+Add exact Linux, ESP-IDF, SocketCAN, \texttt{vcan0}, systemd, and bench wiring commands after implementation starts.
+
+\endinput

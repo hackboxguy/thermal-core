@@ -1,0 +1,28 @@
+\section{Cabin Acoustics and Perceived Fan Noise}
+
+\subsection{Why Acoustic Context Matters}
+
+Thermal controllers often optimize only temperature margin. In a vehicle cabin, the user-visible quality problem is more nuanced: the same fan command can feel silent while driving and distracting while stationary. \texttt{thermal-core} models this through a policy modifier rather than embedding cabin assumptions into the governor itself.
+
+\subsection{Vehicle Speed as a First Context Signal}
+
+Vehicle speed is used as the first acoustic-context proxy because it is easy to reproduce on a bench and broadly correlated with road and wind noise. The v1 reference implementation uses OBD-II PID \texttt{0x0D} only as a reproducible test source; production systems would normally use an OEM-private CAN signal or another vehicle-state service.
+
+\subsection{Acoustic Proxy}
+
+Until calibrated sound-pressure measurements are available, the paper uses fan PWM-seconds and fan RPM-seconds as acoustic proxies:
+
+\begin{equation}
+    A_{pwm} = \sum_{k=0}^{N-1} PWM_k \Delta t
+\end{equation}
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item measured or estimated cabin-noise values for idle, urban, and highway regimes;
+    \item justification for selected speed breakpoints;
+    \item comparison of PWM-seconds with and without acoustic masking;
+    \item future calibrated SPL measurement plan.
+\end{itemize}
+
+\endinput

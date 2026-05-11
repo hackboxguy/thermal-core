@@ -1,0 +1,18 @@
+output/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# Legacy ALS-Dimmer template leftovers retained locally only.
+src/als-dimmer-spec.tex
+src/space6-als-dimmer-spec.tex
+images/control-loop-response.jpg
+images/fpga-interface-setup.png

@@ -1,0 +1,31 @@
+\section{Telemetry, Runtime Tuning, and Scenarios}
+
+\subsection{Telemetry}
+
+The core emits numeric telemetry tuples through the platform vtable. Platforms decide whether those tuples are sent over UDP, USB-CDC, UART, CAN, or written as CSV.
+
+\begin{lstlisting}[caption={Telemetry frame sketch}]
+u32 timestamp_ms
+u16 signal_id
+u16 reserved
+i32 value
+\end{lstlisting}
+
+\subsection{Runtime Tuning}
+
+Runtime tuning is a bench and development feature. Commands may adjust PID gains, setpoints, trip points, curve points, and fault injection state, but all values remain bounded by compile-time or configuration limits.
+
+\subsection{Scenario Runner}
+
+Scenario files should make benchmark runs reproducible. For speed-aware scenarios, the runner may command \texttt{car-can-emulator} over TCP while \texttt{thermal-core} observes only CAN traffic.
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item final command frame format;
+    \item \texttt{thermalcore-probe} CLI examples;
+    \item \texttt{thermalcore-tune} CLI examples;
+    \item first three canonical scenario files.
+\end{itemize}
+
+\endinput

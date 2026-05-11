@@ -1,0 +1,36 @@
+\section{Thermal Operating Environments}
+
+\subsection{Automotive IVI Thermal Context}
+
+The reference system is an IVI head unit operating across cabin temperature, solar loading, enclosure heat soak, and vehicle-speed regimes. The thermal controller must handle both slow heat accumulation and abrupt workload changes while avoiding unnecessary fan noise in quiet conditions.
+
+\subsection{Operating Regimes}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.22\textwidth}p{0.22\textwidth}p{0.42\textwidth}}
+\toprule
+\textbf{Regime} & \textbf{Example} & \textbf{Control implication} \\
+\midrule
+Parked heat soak & hot cabin, no road noise & prioritize acoustic cap until thermal margin is consumed \\
+Idle / stop light & vehicle speed near zero & avoid sudden fan ramps; use conservative PWM cap \\
+Urban driving & 10--50 km/h & moderate acoustic masking; allow gradual cooling response \\
+Highway driving & 80+ km/h & road noise masks fan; permit higher PWM and lower trip offsets \\
+Fault / degraded sensor & missing tach, stale sensor, lost CAN & enter explicit fail-safe behavior and log numeric events \\
+\bottomrule
+\end{tabular}
+\caption{Initial operating regimes for the IVI reference application.}
+\label{tab:thermal-operating-regimes}
+\end{table}
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item ambient temperature during each run;
+    \item enclosure or open-bench setup description;
+    \item fan model and supply voltage;
+    \item sensor placement and thermal contact method;
+    \item speed profile used by \texttt{car-can-emulator}.
+\end{itemize}
+
+\endinput

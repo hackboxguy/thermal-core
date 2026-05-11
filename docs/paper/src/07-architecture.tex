@@ -1,0 +1,34 @@
+\section{System Architecture}
+
+\subsection{Three-Layer Split}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    block/.style={rectangle, draw, rounded corners, minimum width=10cm, minimum height=1.1cm, align=center},
+    arrow/.style={->, thick}
+]
+    \node[block, fill=blue!10] (platform) {Platform shim\\Linux daemon, ESP-IDF app, future RH850 task};
+    \node[block, fill=green!10, below=0.5cm of platform] (bsp) {BSP backends\\sensors, actuators, time, telemetry, context inputs};
+    \node[block, fill=orange!10, below=0.5cm of bsp] (core) {Protocol-agnostic core\\zones, governors, curves, faults, arbitration};
+    \draw[arrow] (platform) -- (bsp);
+    \draw[arrow] (bsp) -- (core);
+\end{tikzpicture}
+\caption{High-level architecture. The core does not parse platform protocols.}
+\label{fig:thermal-core-architecture}
+\end{figure}
+
+\subsection{Core Boundary}
+
+The core may depend on fixed-size configuration structures, numeric IDs, deterministic integer math, and a platform vtable. It must not depend on JSON, SocketCAN, sysfs, pthreads, ESP-IDF APIs, OBD-II encoders, or file descriptors.
+
+\subsection{To Fill In Later}
+
+\begin{itemize}[leftmargin=*]
+    \item final public headers;
+    \item memory ownership rules;
+    \item exact initialization sequence;
+    \item platform-specific diagrams for Linux and ESP32.
+\end{itemize}
+
+\endinput
