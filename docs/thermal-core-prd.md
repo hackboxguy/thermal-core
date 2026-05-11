@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.9
+**Document status:** Draft v0.10
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -135,7 +135,7 @@ Reference v1 compile-time maxima in `core/thermal_config.h`:
 | `THERMAL_MAX_ACTUATORS_PER_ZONE` | 2 |
 | `THERMAL_MAX_COOLING_STATES` | 5 |
 | `THERMAL_MAX_CURVE_POINTS` | 8 |
-| `THERMAL_MAX_TELEMETRY_SIGNALS` | 64 |
+| `THERMAL_MAX_TELEMETRY_SIGNALS` | 128 |
 | `THERMAL_NAME_MAX` | 24 |
 
 ### 4.3 Public core API and snapshot model
@@ -226,7 +226,7 @@ typedef struct {
 } thermal_input_snapshot_t;
 
 typedef struct {
-    uint8_t actuator_id;
+    uint16_t actuator_id;
     uint8_t duty_0_255;
     uint16_t reason;      /* thermal_actuator_reason_t */
 } thermal_actuator_cmd_t;
@@ -243,10 +243,9 @@ typedef enum {
     THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP = 0x0201,
     THERMAL_ACT_REASON_FAULT_STALL           = 0x0301,
     THERMAL_ACT_REASON_FAULT_RUNAWAY         = 0x0302,
-    THERMAL_ACT_REASON_FAULT_STUCK_SENSOR    = 0x0303,
-    THERMAL_ACT_REASON_FAULT_STALE_CONTEXT   = 0x0304,
     THERMAL_ACT_REASON_SAFETY_SHUTDOWN       = 0x0401,
-    THERMAL_ACT_REASON_MANUAL_CMD            = 0x0501
+    THERMAL_ACT_REASON_MANUAL_CMD            = 0x0501,
+    THERMAL_ACT_REASON_SPINUP                = 0x0601
 } thermal_actuator_reason_t;
 
 typedef enum {
@@ -292,10 +291,11 @@ typedef struct {
     int32_t temp_mc;
     uint32_t active_trip_mask;
     uint8_t cooling_state;       /* step-wise state, or PID safety-floor state */
-    int32_t effective_setpoint_mc;
+    int32_t effective_setpoint_mc; /* 0 for step-wise zones in v1 */
 } thermal_zone_state_t;
 
 typedef struct {
+    uint8_t requested_duty_0_255;
     uint8_t duty_0_255;
     uint16_t rpm;
     uint8_t tach_valid;
@@ -307,7 +307,7 @@ typedef struct {
     uint8_t fault_type;
     uint16_t target_id;
     uint8_t state;              /* thermal_fault_state_t */
-    uint32_t entered_ts_ms;
+    uint32_t entered_ts_ms;      /* timestamp when current state was entered */
 } thermal_fault_state_snapshot_t;
 
 /* target_id namespace: STALL=actuator, STUCK_SENSOR=sensor,
@@ -376,7 +376,6 @@ typedef struct {
     uint8_t pwm_min;
     uint8_t pwm_max;
     uint8_t slew_per_tick;
-    uint16_t stall_rpm;
     uint8_t spinup_pwm;
     uint32_t spinup_ms;
     uint8_t state_pwm[THERMAL_MAX_COOLING_STATES];
@@ -492,13 +491,15 @@ Allocation and lifetime contract:
 - If `thermal_core_init()` returns non-OK, the context must be treated as uninitialized and no other API may be called on it until init succeeds. `thermal_core_validate_config()` should be called first so init failures are limited to invalid args or storage misuse. Re-initializing the same storage is allowed only after a previous successful context is no longer being stepped; no separate `deinit` is required in v1.
 - The callback struct is copied by value during init. The function pointers it contains must remain callable while the context is active.
 - `thermal_input_snapshot_t` and its `samples` array are borrowed only for the duration of `thermal_core_step()`. The core may copy sample values into internal state, but it must not retain pointers to caller-owned snapshot memory. `samples == NULL` with `sample_count == 0` is valid and means all configured inputs are absent for that tick.
-- The platform supplies at most one sample per `(kind, id)` per tick and `sample_count <= THERMAL_MAX_SAMPLES_PER_SNAPSHOT`. Unknown IDs, impossible kind/ID combinations, duplicates, or oversized snapshots are platform bugs; the core returns `THERMAL_ERR_INVALID_ARG` or `THERMAL_ERR_NO_SPACE` and does not update state for that step.
+- The platform supplies samples in any order, indexed by `(kind, id)`. It supplies at most one sample per `(kind, id)` per tick and `sample_count <= THERMAL_MAX_SAMPLES_PER_SNAPSHOT`. Unknown IDs, impossible kind/ID combinations, duplicates, or oversized snapshots are platform bugs; the core returns `THERMAL_ERR_INVALID_ARG` or `THERMAL_ERR_NO_SPACE` and does not update state for that step.
 - On success, `thermal_core_step()` writes a full actuator output frame every tick: one command for each configured actuator, even when the duty cycle has not changed. `actuator_cmd_count` equals the configured actuator count in v1 and is retained as a consistency/forward-compat field.
 - `thermal_output_frame_t` does not carry its own timestamp. The platform treats the frame as corresponding to the input snapshot's `now_ms` and may stamp hardware writes or logs with that value.
 - A single `thermal_core_t` is not reentrant. In v1, all core API calls happen from the control thread/task. The Linux daemon drains and applies queued UDP commands between `thermal_core_step()` calls; platforms that choose a different threading model must serialize every core API call with a mutex.
 - `thermal_core_apply_command()` uses its `now_ms` parameter for any command-applied/rejected events it emits. Transport frame `seq` is not part of the core API and remains owned by the UDP/serial/CAN framing layer.
 
 `thermal_core_step()` must not call sensor, CAN, file, serial, or actuator drivers. It performs bounded work over the provided snapshot. Missing or stale samples are represented explicitly with `valid = 0` and are handled by configured fail-safe behavior.
+
+`thermal_core_step()` return contract: `THERMAL_OK` means the snapshot was consumed, internal state updated, the output frame populated, and callbacks invoked best-effort. `THERMAL_ERR_INVALID_ARG` and `THERMAL_ERR_NO_SPACE` mean the snapshot was malformed or oversized; internal state and the output frame are left untouched. `THERMAL_ERR_STATE` means the context was not successfully initialized.
 
 `THERMAL_ERR_NO_SPACE` is used when validated configuration or decoded command/state data exceeds compile-time maxima or caller-provided transport buffers. A successfully initialized core with a validated config must not return `THERMAL_ERR_NO_SPACE` merely because it has more actuators than fit in `thermal_output_frame_t`; that would be a validation bug.
 
@@ -508,7 +509,11 @@ Actuator output duty is clamped to configured limits after arbitration, policy m
 
 `thermal_actuator_state_t.tach_valid` is a boolean: `0` when no current valid tach reading exists, either because no tach source is configured or because the latest tach sample is stale/invalid; otherwise `1`.
 
+`thermal_actuator_state_t.requested_duty_0_255` captures the raw post-governor, post-arbitration request before final clamp, fault override, and slew effects. `duty_0_255` is the final command sent to the platform.
+
 State snapshots are intended for status views, assertions, and replay diffs, not mandatory per-tick polling. At v1 defaults the structure is small enough for on-demand CLI/status use, but telemetry remains the normal high-rate observation path.
+
+Before the first successful step, state inspection reports actuator `reason = THERMAL_ACT_REASON_NONE`, fault `state = THERMAL_FAULT_NORMAL`, and `flags = 0`. Reserved `thermal_state_flags_t` bits must be masked off by v1 implementations and ignored by readers.
 
 `thermal_modifier_state_t.active` is `1` when the modifier changed an effective setpoint/trip or actuator request during the current step. A stale context with an applied fail-safe value still counts as active if the resulting modifier output affects control.
 
@@ -542,7 +547,7 @@ Borrowed in spirit from the Linux kernel thermal framework:
 - **Actuator**: a cooling device. v1 = PWM fan with optional tach feedback. Has min/max PWM, slew-rate limit, stall detector.
 - **Governor**: a control algorithm. v1 = `step_wise` (Linux-thermal style discrete states) and `pid` (continuous PID with anti-windup).
 - **Context signal**: a typed non-temperature input, such as vehicle speed, ignition state, drive mode, HVAC state, or ambient-noise proxy. v1 uses vehicle speed only. Context IDs are configured; the core never knows where the value came from.
-- **Policy modifier**: a configured rule that can transform either pre-governor effective targets/trips or post-governor actuator requests based on context. v1 allows exactly one modifier, `acoustic_mask`, with a pre-governor trip/setpoint offset and a post-governor PWM cap as functions of vehicle speed. The config field is an array only for forward compatibility.
+- **Policy modifier**: a configured rule that can transform either pre-governor effective targets/trips or post-governor actuator requests based on context. v1 allows exactly one modifier, `acoustic_mask`, with a pre-governor trip/setpoint offset and a post-governor PWM cap as functions of vehicle speed. The config field is an array only for forward compatibility; future multiple modifiers apply in configured order, which then becomes part of the deterministic contract.
 - **Arbitrator**: when multiple zones target the same actuator, the arbitrator decides the final command. v1 = max-wins (highest demanded PWM). If one zone lists multiple actuators, the zone produces one demand that is broadcast to each listed actuator before per-actuator arbitration, clamps, and slew limits are applied.
 - **Fault detector**: stall, sensor-stuck, runaway, stale context. Per detector, configurable thresholds, severity, latching/recovery behavior, and action.
 
@@ -581,12 +586,14 @@ Detector configuration is specified as global defaults per detector type, while 
 
 | Detector | `threshold0` | `threshold1` | Notes |
 |---|---|---|---|
-| `stall` | `stall_rpm` | `stall_pwm_threshold` | `stall_rpm` may default from actuator config; detector threshold wins when present. |
+| `stall` | `stall_rpm` | `stall_pwm_threshold` | Detector defaults are the single source for both thresholds in v1. |
 | `stuck_sensor` | `delta_mc` | `window_ticks` | `window_ticks` is stored as `int32_t` for the generic field and validated non-negative. |
 | `runaway` | `rise_mc_threshold` | `cooling_pwm_threshold` | Defaults chosen so runaway means rising temperature while cooling is high or increasing. |
 | `stale_context` | unused | unused | Timeout comes from the context signal config. |
 
-`correlated_context_id` is used only by stuck-sensor detection. For stall, runaway, and stale-context defaults it is ignored and set to `0xFFFF` by convention. Tach-less actuators do not instantiate an active stall detector unless explicitly forced by a test scenario; otherwise missing tach would create false stall events.
+`enabled = 0` on a detector-type default means no instances of that detector type are created. `correlated_context_id` is used only by stuck-sensor detection. For stall, runaway, and stale-context defaults it is ignored and set to `0xFFFF` by convention. Tach-less actuators do not instantiate an active stall detector unless explicitly forced by a test scenario; otherwise missing tach would create false stall events.
+
+`thermal_fault_detection_cfg_t` names the four v1 detector types directly. Adding new detector types in v2 may require extending this struct; that is accepted as a v1 source-compatibility tradeoff.
 
 | State | Meaning | Typical action |
 |---|---|---|
@@ -628,6 +635,8 @@ Trip severity and fault state are separate vocabularies. Trip severity describes
 
 `TEVENT_COMMAND_APPLIED` and `TEVENT_COMMAND_REJECTED` are emitted by `thermal_core_apply_command()` itself, not by individual platform daemons, so command-event behavior is identical across Linux, ESP32, and replay tests.
 
+Runaway v1 math: for each zone, let `N` be the current tick and `M = N - persist_ticks`. The detector enters active state when `zone_temp_mc[N] - zone_temp_mc[M] >= rise_mc_threshold` and the minimum commanded PWM for the affected actuator set across ticks `M..N` is at least `cooling_pwm_threshold`. This makes runaway mean "temperature is still rising materially even while cooling has been high for the whole persistence window."
+
 ### 4.8 Governor semantics
 
 The implementation must make governor math reproducible across targets:
@@ -637,6 +646,7 @@ The implementation must make governor math reproducible across targets:
 - **Trips with PID:** PID remains the normal continuous controller. Trips on PID zones provide telemetry and safety floors: `warn` is informational, `critical` floors output via `state_pwm[cooling_state]`, and `shutdown` requests maximum configured cooling plus shutdown event.
 - **PID state snapshot:** `thermal_zone_state_t.cooling_state` is `0` for PID zones while no safety trip floor is active; it becomes the highest active safety trip's `cooling_state` while a `critical` or `shutdown` floor is affecting output.
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A missing or extremely late tick emits telemetry and uses the clamped value.
+- **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
 - **Derivative:** derivative is computed on measured temperature by default, with optional first-order filtering to avoid tach/sensor noise coupling.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
@@ -667,7 +677,7 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
   ],
   "actuators": [
     {"id": 0, "name": "main_fan", "pwm": "hwmon:chip=nct6775:input=pwm1", "tach": "hwmon:chip=nct6775:input=fan1_input",
-     "pwm_min": 80, "pwm_max": 255, "slew_per_tick": 8, "stall_rpm": 200,
+     "pwm_min": 80, "pwm_max": 255, "slew_per_tick": 8,
      "pwm_freq_hz": 25000, "tach_pulses_per_rev": 2, "spinup_pwm": 180, "spinup_ms": 500,
      "state_pwm": [0, 100, 160, 220, 255]}
   ],
@@ -702,7 +712,7 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
      "fail_safe": "assume_stationary"}
   ],
   "fault_detection": {
-    "stall": {"persist_ticks": 30, "recovery_ticks": 10, "stall_pwm_threshold": 80, "severity": "degraded", "action": "force_pwm_max_until_recovered"},
+    "stall": {"persist_ticks": 30, "recovery_ticks": 10, "stall_rpm": 200, "stall_pwm_threshold": 80, "severity": "degraded", "action": "force_pwm_max_until_recovered"},
     "stuck_sensor": {"window_ticks": 600, "delta_mc": 100, "correlated_context": null, "severity": "degraded", "action": "use_zone_fallback"},
     "runaway": {"persist_ticks": 50, "recovery_ticks": 20, "rise_mc_threshold": 500, "cooling_pwm_threshold": 200,
                 "severity": "critical", "action": "force_pwm_max_and_latch"}
@@ -726,6 +736,8 @@ Linux `hwmon` sources must be resolved by stable chip name, label, and input nam
 In the example `soc` zone, the PID setpoint drives normal cooling output. The trip points still matter: `critical` acts as a safety floor through `state_pwm[cooling_state]`, and `shutdown` requests maximum cooling plus a shutdown-request event.
 
 PID gain and setpoint bounds are per-zone config fields. Runtime tuning commands may change the live gains/setpoint only within these bounds; safety-related trip `severity` and `cooling_state` remain config-time only in v1.
+
+Aggregation uses valid samples only. For `max`, `avg`, and `weighted`, invalid samples are skipped; if all zone sensors are invalid, the zone uses the configured fallback path or enters the relevant degraded/fault behavior. `sensor_weights_q16` is consulted only when `aggregation == THERMAL_AGG_WEIGHTED`; for `max` and `avg`, the field is ignored.
 
 Sensor `max_staleness_ms` is enforced by the platform when building `thermal_input_snapshot_t`: if `(uint32_t)(now_ms - sample_ts_ms)` exceeds the configured age, the platform reports the sample with `valid = 0`. This lets slow sources such as DS18B20 probes reuse cached samples between conversions without confusing the core about freshness.
 
@@ -756,6 +768,7 @@ A small Python tool `tools/json2static.py` converts a JSON config into a `static
 - Sensor `max_staleness_ms` is non-zero and at least as large as the expected conversion/poll interval for that source.
 - Units are explicit in field names or schema metadata; core units are millidegrees C, 0-255 PWM duty, RPM, milliseconds, and Q16.16 coefficients.
 - Curves are strictly increasing in their x-axis and have at least two points; interpolation uses the deterministic formula in §4.8.
+- Runtime curve edits must preserve the same strictly increasing x-axis invariant. `CMD_SET_CURVE_POINT` rejects edits that would make `x[point_idx - 1] < x[point_idx] < x[point_idx + 1]` false, returning `THERMAL_ERR_BOUNDS`.
 - PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, and each entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. Spin-up PWM satisfies `pwm_min <= spinup_pwm <= pwm_max`.
 - PID runtime bounds are present for every PID zone and satisfy `min <= current <= max` for gains and setpoints.
 - PID `dt_min_ms` and `dt_max_ms` are present for every PID zone and satisfy `0 < dt_min_ms <= control_period_ms <= dt_max_ms`.
@@ -831,6 +844,8 @@ TSIG_FAULT_STALL_COUNT      0x0600
 ```
 
 Signals are opt-in via config — small MCUs can drop high-rate signals if needed.
+
+`THERMAL_MAX_TELEMETRY_SIGNALS = 128` is sized so wildcard expansion can enable every v1 default signal range at once with headroom. If a future config exceeds it, validation fails clearly and the user narrows the selector set or raises the compile-time maximum.
 
 Signal IDs are fixed by type range plus configured slot, not by debug-name hash. This lets `thermalcore-probe` decode a raw stream with only the config's slot order:
 
@@ -939,6 +954,8 @@ Commands respect compile-time bounds — `kp` cannot be set outside the per-zone
 
 Unknown `command_id` values return `THERMAL_ERR_INVALID_ARG`. `CMD_CLEAR_FAULT` for a `(fault_type, target_id)` pair that does not correspond to a configured detector instance also returns `THERMAL_ERR_INVALID_ARG`; if the detector exists but is not clearable yet, it returns `THERMAL_ERR_REJECTED_SAFETY`.
 
+Status-code split for commands: `THERMAL_ERR_INVALID_ARG` means malformed command, unknown command ID, unknown target ID, or missing required field. `THERMAL_ERR_BOUNDS` means the command and target are valid but the requested value is outside configured bounds, including gain/setpoint limits, invalid `trip_idx`/`point_idx`, or a curve edit that would break monotonicity.
+
 Platform/test commands are separate from core commands:
 
 | Value | Command | Payload |
@@ -976,6 +993,8 @@ assert no_faults except stall
 ```
 
 The scenario runner stores the command log, telemetry CSV, assertion result, git SHA, config hash, platform target, and tool versions beside each benchmark artifact. `config_hash` is SHA-256 over a canonical post-validation config representation, not raw JSON bytes, so equivalent key ordering and whitespace produce the same benchmark identity.
+
+The canonical config representation packs all `thermal_config_t` fields in declaration order, with strings null-terminated and unused tail bytes zeroed before hashing. Platform-only runtime fields are excluded unless they affect deterministic control behavior.
 
 ## 8. Reference Bench Rig (pinned)
 
@@ -1371,6 +1390,9 @@ The white paper contains a dedicated section on limitations, written explicitly 
 26. **Enum namespaces:** all loader-facing `uint8_t` config fields have pinned enum values for JSON parsing and static config generation.
 27. **Command timestamps:** `thermal_core_apply_command()` takes `now_ms` explicitly so command events have deterministic timestamps without relying on the previous control tick.
 28. **Command decoding boundary:** portable command payload encode/decode lives in core helper code; transports handle frame integrity, while the core handles semantic command validation.
+29. **Runaway math:** v1 runaway detection compares temperature rise across the persistence window while commanded PWM remains above the configured cooling threshold.
+30. **Aggregation degradation:** zone aggregation uses valid samples only; all-invalid zones fall back or enter degraded behavior.
+31. **Curve edit safety:** runtime curve edits are rejected if they break strict x-axis monotonicity.
 
 ### 17.2 Remaining Questions
 
@@ -1411,4 +1433,4 @@ The white paper contains a dedicated section on limitations, written explicitly 
 
 ---
 
-*End of PRD v0.9*
+*End of PRD v0.10*
