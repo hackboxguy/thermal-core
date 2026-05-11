@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.4
+**Document status:** Draft v0.5
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -172,6 +172,16 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
                                         thermal_state_snapshot_t *state);
 ```
 
+Allocation and lifetime contract:
+
+- `thermal_core_t` is a caller-owned, fixed-size public struct declared in `core/thermal_types.h`. Callers may allocate it statically, globally, or on the stack; the core does not allocate it internally.
+- `sizeof(thermal_core_t)` depends on compile-time maxima such as `THERMAL_MAX_ZONES` and `THERMAL_MAX_ACTUATORS`. v1 promises a stable source API, not a stable binary ABI across builds with different maxima.
+- `thermal_core_init()` fully initializes caller-provided storage; callers do not need to pre-zero the context. The `thermal_config_t` passed to init must remain alive and immutable for the lifetime of the context. Runtime commands update the core's runtime shadow state, not the const config.
+- The callback struct is copied by value during init. The function pointers it contains must remain callable while the context is active.
+- `thermal_input_snapshot_t` and its `samples` array are borrowed only for the duration of `thermal_core_step()`. The core may copy sample values into internal state, but it must not retain pointers to caller-owned snapshot memory.
+- On success, `thermal_core_step()` writes a full actuator output frame every tick: one command for each configured actuator, even when the duty cycle has not changed. Changed-only frames are not part of the v1 contract.
+- A single `thermal_core_t` is not reentrant. Platforms use one control thread/task per context; independent contexts may run independently if the platform owns synchronization around shared I/O.
+
 `thermal_core_step()` must not call sensor, CAN, file, serial, or actuator drivers. It performs bounded work over the provided snapshot. Missing or stale samples are represented explicitly with `valid = 0` and are handled by configured fail-safe behavior.
 
 ### 4.4 Platform callback surface
@@ -196,7 +206,7 @@ Borrowed in spirit from the Linux kernel thermal framework:
 
 - **Sensor**: a source of temperature samples in millidegrees C. Has an ID, a name (debug only), an IIR filter coefficient, and a stuck-sensor detector.
 - **Zone**: a logical thermal region (e.g., "soc", "amp", "tuner"). Has 1+ sensors (aggregated max/avg/weighted), 1+ trip points, an active governor, and a current state.
-- **Trip point**: a temperature threshold with a hysteresis band and an action (target cooling state).
+- **Trip point**: a temperature threshold with a hysteresis band, a severity, and a target cooling state.
 - **Actuator**: a cooling device. v1 = PWM fan with optional tach feedback. Has min/max PWM, slew-rate limit, stall detector.
 - **Governor**: a control algorithm. v1 = `step_wise` (Linux-thermal style discrete states) and `pid` (continuous PID with anti-windup).
 - **Context signal**: a typed non-temperature input, such as vehicle speed, ignition state, drive mode, HVAC state, or ambient-noise proxy. v1 uses vehicle speed only. Context IDs are configured; the core never knows where the value came from.
@@ -225,7 +235,7 @@ tick (every CONTROL_PERIOD_MS, default 100ms):
      12. write actuator commands and persist/forward telemetry as needed
 ```
 
-Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps.
+Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps. Because post-governor policy caps run before fault actions, a fault action such as `force_pwm_max` is allowed to overwrite an already-capped PWM request.
 
 Determinism: the loop is monotonic; `now_ms()` rollover (32-bit ms = ~49 days) is handled with `(uint32_t)(a - b)` subtraction throughout. All loop work is bounded by compile-time maxima.
 
@@ -244,22 +254,34 @@ Faults are explicit state machines, not one-shot booleans. Each detector emits a
 Required v1 detector behavior:
 
 - **Fan stall:** active when requested PWM is above `stall_pwm_threshold` and tach stays below `stall_rpm` for `persist_ticks`, excluding configured spin-up grace. Recovery requires tach above threshold for `recovery_ticks`.
-- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while at least one correlated signal or scenario injection indicates changing thermal load. If no correlated signal is configured, the detector is advisory only.
+- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while at least one correlated signal or scenario injection indicates changing thermal load. If no correlated signal is configured, the detector is advisory only: it emits telemetry/events but does not move the detector out of `NORMAL`.
 - **Thermal runaway:** active when temperature rises for `persist_ticks` while requested cooling is high or increasing. This fault is `CRITICAL` by default and overrides acoustic caps.
 - **Stale context:** active when a context sample is invalid longer than its timeout. The configured context fail-safe value is applied and the policy emits telemetry so tests can prove the fallback occurred.
 
 Fault actions must be idempotent and bounded. A fault action may force an actuator command higher than the governor requested, but v1 must not silently command a lower cooling level during `CRITICAL` or `LATCHED` thermal faults.
 
+Trip severity and fault state are separate vocabularies. Trip severity describes thermal policy for a zone; fault state describes detector confidence and recovery. v1 maps trip severities as follows:
+
+| Trip severity | Core behavior |
+|---|---|
+| `warn` | Emit telemetry/event and request the configured cooling state. Acoustic caps may still apply. |
+| `critical` | Request the configured cooling state, bypass acoustic caps for affected actuators, and emit a safety-override event. |
+| `shutdown` | Request maximum configured cooling for affected actuators, latch a shutdown-request condition, and emit `TEVENT_SHUTDOWN_REQUEST`. The core never halts the OS, powers off hardware, or enters an OEM limp-home mode; the platform decides what to do with the request. |
+
+`CMD_CLEAR_FAULT` is the explicit reset path for `LATCHED` v1 faults. It succeeds only when the underlying detector condition is no longer present and the configured recovery criteria are satisfied; otherwise it returns `CMD_NACK` with `rejected_safety_transition`. Production builds may compile out remote `CMD_CLEAR_FAULT`; in that case the reset path is reboot or a platform-local maintenance action.
+
 ### 4.8 Governor semantics
 
 The implementation must make governor math reproducible across targets:
 
-- **Step-wise governor:** trip points are evaluated with hysteresis. Each active trip contributes a `cooling_state`; the zone request is the highest active state. The state maps to PWM through a configured table or actuator-local state curve.
+- **Step-wise governor:** trip points are evaluated with hysteresis. Each active trip contributes a `cooling_state`; the zone request is the highest active state.
 - **PID governor:** error is `zone_temp_mc - effective_setpoint_mc`; positive error increases cooling demand. Output units are PWM duty `0..255` before arbitration and policy modifiers.
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A missing or extremely late tick emits telemetry and uses the clamped value.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
 - **Derivative:** derivative is computed on measured temperature by default, with optional first-order filtering to avoid tach/sensor noise coupling.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
+- **Step-state mapping:** v1 maps `cooling_state` to PWM through the per-actuator `state_pwm` table in actuator config. There is no zone-local cooling-state curve in v1.
+- **Curve interpolation:** all policy and governor curves use deterministic integer linear interpolation between adjacent points, with endpoint clamping outside the configured x-axis range. The formula is `y = y0 + ((int64_t)(x - x0) * (y1 - y0)) / (x1 - x0)`, using C99 signed-division truncation toward zero. Duplicate or descending x-axis points are rejected at config validation. No floating point is used for curve evaluation.
 
 ## 5. Configuration
 
@@ -272,10 +294,10 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
   "config_version": 1,
   "control_period_ms": 100,
   "sensors": [
-    {"id": 0, "name": "soc",     "source": "hwmon:coretemp/temp1_input", "iir_alpha_q16": 16384},
+    {"id": 0, "name": "soc",     "source": "hwmon:chip=coretemp:input=temp1_input", "iir_alpha_q16": 16384},
     {"id": 1, "name": "amp",     "source": "ds18b20:28-0000abc"},
     {"id": 2, "name": "tuner",   "source": "i2c:1:0x18:mcp9808"},
-    {"id": 3, "name": "board",   "source": "hwmon:nct6775/temp2_input"},
+    {"id": 3, "name": "board",   "source": "hwmon:chip=nct6775:input=temp2_input"},
     {"id": 4, "name": "ambient", "source": "ds18b20:28-0000xyz"}
   ],
   "context_signals": [
@@ -284,9 +306,10 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
      "timeout_ms": 3000, "fail_safe": "assume_stationary"}
   ],
   "actuators": [
-    {"id": 0, "name": "main_fan", "pwm": "hwmon:nct6775/pwm1", "tach": "hwmon:nct6775/fan1_input",
+    {"id": 0, "name": "main_fan", "pwm": "hwmon:chip=nct6775:input=pwm1", "tach": "hwmon:chip=nct6775:input=fan1_input",
      "pwm_min": 80, "pwm_max": 255, "slew_per_tick": 8, "stall_rpm": 200,
-     "tach_pulses_per_rev": 2, "spinup_pwm": 180, "spinup_ms": 500}
+     "tach_pulses_per_rev": 2, "spinup_pwm": 180, "spinup_ms": 500,
+     "state_pwm": [0, 100, 160, 220, 255]}
   ],
   "zones": [
     {"name": "soc", "sensors": ["soc"], "aggregation": "max",
@@ -320,9 +343,16 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
     "enable": true,
     "transport": "udp:127.0.0.1:9001",
     "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*", "pid_terms_*", "speed_kmh"]
+  },
+  "control": {
+    "enable": true,
+    "listen": "udp:127.0.0.1:9002",
+    "scope": "dev_bench_only"
   }
 }
 ```
+
+Linux `hwmon` sources must be resolved by stable chip name, label, and input name where possible. The platform must not require fixed `/sys/class/hwmon/hwmonN` numbering, because `hwmon0`, `hwmon1`, and friends are not stable across boots.
 
 ### 5.2 ESP32 and RH850: static `const` struct
 
@@ -335,21 +365,23 @@ A small Python tool `tools/json2static.py` converts a JSON config into a `static
 `thermal_core_validate_config()` and the Linux JSON loader must reject invalid configuration before the control loop starts. Required v1 checks:
 
 - `config_version` is present and supported.
+- The Linux loader treats `jsmn` as a tokenizer only; validation is a hand-written, schema-aware walk that enumerates every allowed key for each object type.
 - IDs and debug names are unique within their namespaces.
 - All references resolve: zones to sensors, zones to actuators, policies to context signals, telemetry selectors to known signal IDs.
 - All arrays fit compile-time maxima.
 - Units are explicit in field names or schema metadata; core units are millidegrees C, 0-255 PWM duty, RPM, milliseconds, and Q16.16 coefficients.
-- Curves are monotonic in their x-axis and have at least two points.
-- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; spin-up PWM, slew limits, and stall thresholds are actuator-specific.
+- Curves are strictly increasing in their x-axis and have at least two points; interpolation uses the deterministic formula in §4.8.
+- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, and each entry is within bounds; spin-up PWM, slew limits, and stall thresholds are actuator-specific.
 - Trip points are ordered by temperature and hysteresis does not overlap neighboring trips unless explicitly allowed.
 - Runtime tuning bounds are configured for every tunable value; commands outside those bounds return an error and leave state unchanged.
 - Unknown fields are rejected in strict mode. Development tools may offer a non-strict warning mode, but release configs use strict validation.
+- Future `config_version` migrations must be explicit. v1 tools may reject newer versions with a clear error instead of attempting best-effort parsing.
 
 ## 6. Vehicle Speed Integration (OBD-II via CAN)
 
 ### 6.1 Source
 
-Speed is queried via OBD-II Service 01, PID `0x0D` (vehicle speed, single byte, km/h, range 0–255). The reference test source is **`car-can-emulator`**, included as a git submodule at `tools/car-can-emulator/` and tracking the upstream `v2-improvements` branch.
+Speed is queried via OBD-II Service 01, PID `0x0D` (vehicle speed, single byte, km/h, range 0–255). The generic context signal storage may support a wider configured range for non-OBD speed sources, but the OBD-II source itself is capped at 255 km/h. The reference test source is **`car-can-emulator`**, included as a git submodule at `tools/car-can-emulator/` and tracking the upstream `v2-improvements` branch.
 
 The emulator behavior relevant to `thermal-core`:
 
@@ -371,7 +403,7 @@ Repository decision: keep `car-can-emulator` as a separate upstream repo and add
 ### 6.3 Filtering and fail-safe
 
 - Raw speed is filtered by the platform or by the configured context filter with a slow IIR (time constant ~5 s by default). Thermal time constants are tens of seconds; aggressive filtering avoids fan jitter from brake taps.
-- If no valid response is received for `speed_timeout_ms` (default 3000 ms), the `acoustic_mask` modifier applies the `fail_safe` mode. Default: `assume_stationary` (most acoustically conservative).
+- If no valid response is received for the context signal's configured `timeout_ms` (default 3000 ms), the `acoustic_mask` modifier applies the `fail_safe` mode. Default: `assume_stationary` (most acoustically conservative).
 - `fail_safe` is explicit in config; it is **not** silently inferred.
 
 ### 6.4 Emulator integration contract
@@ -408,7 +440,7 @@ Signals are opt-in via config — small MCUs can drop high-rate signals if neede
 
 ### 7.2 Binary transport framing
 
-All binary telemetry and command transports use the same little-endian frame header. CSV remains available for simple host logs, but all machine-to-machine transports use this framing.
+All binary telemetry and command transports use the same little-endian frame header. CSV remains available for simple host logs, but all machine-to-machine transports use this framing. The wire format is packed by definition and is encoded/decoded field-by-field; implementations must not cast raw byte buffers to C structs because padding and alignment are compiler-dependent.
 
 ```
 u8  magic[2]      /* "TC" */
@@ -421,6 +453,18 @@ u8  payload[payload_len]
 u16 crc16         /* set to 0 when disabled; required on serial/CAN */
 ```
 
+CRC contract:
+
+- Variant: CRC-16/CCITT-FALSE.
+- Polynomial: `0x1021`.
+- Initial value: `0xFFFF`.
+- Reflected input/output: false/false.
+- Final XOR: `0x0000`.
+- Coverage: all bytes from `magic[0]` through the final payload byte, excluding the trailing `crc16` field itself.
+- A zero CRC field means "CRC disabled" only on transports that explicitly allow it. Serial and CAN require CRC; loopback UDP may disable it for bench convenience.
+
+`payload_len` is a 16-bit field for protocol headroom, but v1 implementations must enforce a configured receive cap. The default cap is 1024 bytes on Linux and 256 bytes on MCU transports. Frames above the local cap are rejected before payload allocation or command dispatch.
+
 Required opcodes:
 
 | Opcode | Direction | Payload |
@@ -431,11 +475,11 @@ Required opcodes:
 | `CMD_ACK` | device → host | `u16 request_seq, u16 status, u32 reason_code` |
 | `CMD_NACK` | device → host | `u16 request_seq, u16 status, u32 reason_code` |
 
-Every command receives an ACK or NACK. Invalid opcode, invalid payload length, out-of-bounds value, unavailable target, and rejected safety transition are distinct status codes. `seq` is monotonically incremented by the sender and wraps naturally.
+Every command receives an ACK or NACK. Invalid opcode, invalid payload length, out-of-bounds value, unavailable target, and rejected safety transition are distinct status codes. `seq` is monotonically incremented by the sender and wraps modulo 65536. ACK matching is against the outstanding `(transport, seq)` pair; host tools keep a small outstanding window and expire old requests by timeout so wraparound is unambiguous in normal use.
 
 ### 7.3 Per-platform transport
 
-- **Linux**: UDP packets to `127.0.0.1:9001` (configurable) using the `TC` binary frame. CSV to stdout/file is available for simple logs.
+- **Linux**: telemetry UDP packets to `127.0.0.1:9001` (configurable) using the `TC` binary frame. The command listener is separate and disabled unless `control.enable = true`; when enabled for v1 it binds only to loopback, default `127.0.0.1:9002`. CSV to stdout/file is available for simple logs.
 - **ESP32**: USB-CDC binary frame stream by default; optionally UDP-over-WiFi for untethered tests.
 - **RH850 (future)**: UART or CAN with same frame format.
 
@@ -452,7 +496,9 @@ Same tool, same plots, regardless of source. This is the figure-generation backb
 
 ### 7.5 Control plane (runtime tuning)
 
-Bidirectional: telemetry frames go host-ward, command frames go device-ward. Same transport, same framing, distinguished by the opcode field. Core commands:
+Bidirectional: telemetry frames go host-ward, command frames go device-ward. Same framing, distinguished by the opcode field. On Linux v1, command ingress is loopback-only, unauthenticated, and intended for development/bench use. It must not bind to a non-loopback address unless a deliberate unsafe-development flag is set. Production packaging may compile out the command listener entirely.
+
+Core commands:
 
 ```
 CMD_SET_PID         (zone_id, kp_q16, ki_q16, kd_q16)
@@ -464,7 +510,7 @@ CMD_CLEAR_FAULT     (fault_type, target_id)
 
 A companion CLI tool `thermalcore-tune` issues commands. This is what makes the bench rig usable for actual loop tuning: change `kp`, see step response in `--live` plot, change again, in seconds. No rebuild, no reflash.
 
-Commands respect compile-time bounds — `kp` cannot be set outside `[KP_MIN, KP_MAX]` defined in the config. This is intentional; runtime tuning is for the bench, not for the field, and bound-checking is cheap insurance.
+Commands respect compile-time bounds — `kp` cannot be set outside `[KP_MIN, KP_MAX]` defined in the config. This is intentional; runtime tuning is for the bench, not for the field, and bound-checking is cheap insurance. `CMD_CLEAR_FAULT` follows the latching contract in §4.7: it clears a latched fault only after the detector condition has ended and recovery criteria have passed.
 
 Platform/test commands are separate from core commands:
 
@@ -559,7 +605,7 @@ All scenarios are scripted (`scenarios/*.scn`), produce deterministic outputs, a
 | `acoustic_mask_high_speed` | Vehicle speed sweep 0 → 130 km/h; verify cap releases, trip offset applied. |
 | `multi_zone_coupling` | Amp and tuner zones heat simultaneously, shared fan; verify max-wins arbitration. |
 | `runaway` | PWM forced to 0 (actuator failure), temperature rising; verify runaway fault. |
-| `can_bus_loss` | Cut CAN; verify fail-safe to `assume_stationary` after `speed_timeout_ms`. |
+| `can_bus_loss` | Cut CAN; verify fail-safe to `assume_stationary` after the configured context `timeout_ms`. |
 
 ### 9.2 Benchmarks committed to the white paper
 
@@ -576,7 +622,7 @@ All benchmark figures are regenerated from scenario CSV logs by `make figures`. 
 
 ### 9.3 Deterministic thermal-plant simulator
 
-The scenario runner includes a deterministic first-order thermal plant for repeatable controller tests. It is not intended to prove enclosure physics; it provides stable input/output dynamics for governor, policy, fault, and telemetry validation.
+The scenario runner includes a deterministic first-order thermal plant for repeatable controller tests. It is not intended to prove enclosure physics; it provides stable input/output dynamics for governor, policy, fault, and telemetry validation. The simulator lives with `tools/thermalcore-scenario` and is reusable by replay/unit tests so the same plant math drives CLI scenarios, CI assertions, and white-paper figure generation.
 
 For each simulated zone:
 
@@ -595,7 +641,7 @@ Scenario files can configure:
 - sensor noise, dropout, freeze, and stale-sample injection;
 - actuator failure modes such as forced PWM, missing tach, and low tach.
 
-The simulator must be bit-for-bit deterministic for a given config, scenario, and git SHA. Physical heater tests may be added later, but the first implementation should not depend on analog heat injection to validate basic control behavior.
+The simulator must be bit-for-bit deterministic for a given config, scenario, and git SHA. All simulator state and coefficients use integer units or Q16.16 fixed-point math; host floating point, platform math-library behavior, and `-ffast-math` are not part of the v1 simulator contract. Any configured noise source uses a deterministic PRNG with an explicit scenario seed. Physical heater tests may be added later, but the first implementation should not depend on analog heat injection to validate basic control behavior.
 
 ## 10. Repository Layout
 
@@ -647,7 +693,7 @@ thermal-core/
 ├── tools/
 │   ├── thermalcore-probe                Telemetry reader + plotter
 │   ├── thermalcore-tune                 Runtime tuning CLI
-│   ├── thermalcore-scenario             Scenario runner
+│   ├── thermalcore-scenario             Scenario runner + deterministic plant simulator
 │   ├── json2static.py                   JSON → static const C
 │   └── car-can-emulator/                Git submodule, branch v2-improvements
 ├── scenarios/
@@ -875,6 +921,11 @@ The white paper contains a dedicated section on limitations, written explicitly 
 5. **PID numeric default:** Q16.16 fixed-point remains the default; floating-point PID may be an optional build flag.
 6. **Core API shape:** the core consumes input snapshots and returns output frames; platform code owns all blocking I/O.
 7. **v1 plant model:** deterministic first-order simulation plus real fan PWM/tach validation is the v1 release gate. Physical heat injection is optional.
+8. **Core storage contract:** `thermal_core_t` is caller-owned fixed-size storage; snapshots are borrowed only for the duration of `thermal_core_step()`, and output frames are full actuator snapshots every tick.
+9. **Curve math:** v1 curves use integer linear interpolation with endpoint clamping and no floating point.
+10. **Transport contract:** binary telemetry/control frames are little-endian, manually encoded, CRC-16/CCITT-FALSE when CRC is enabled, and receive-buffer capped per platform.
+11. **Linux control ingress:** runtime tuning over UDP is loopback-only, config-gated, and bench/development scoped in v1.
+12. **Latched fault reset:** `CMD_CLEAR_FAULT` is the explicit reset path for latched v1 faults when recovery criteria are already satisfied; production builds may compile out remote clearing.
 
 ### 17.2 Remaining Questions
 
@@ -889,7 +940,7 @@ The white paper contains a dedicated section on limitations, written explicitly 
 | Temperature | `int32_t` | millidegrees C | -40000 to +150000 |
 | PWM duty | `uint8_t` | 0–255 | 0–255 |
 | Fan RPM | `uint16_t` | RPM | 0–65535 |
-| Vehicle speed | `uint16_t` | km/h | 0–500 |
+| Vehicle speed context | `uint16_t` | km/h | 0–500 generic storage; OBD-II PID `0x0D` source is 0–255 |
 | Time | `uint32_t` | milliseconds (monotonic) | rollover handled |
 | PID gains | `int32_t` | Q16.16 fixed-point | implementation defined |
 
@@ -915,4 +966,4 @@ The white paper contains a dedicated section on limitations, written explicitly 
 
 ---
 
-*End of PRD v0.4*
+*End of PRD v0.5*
