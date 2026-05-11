@@ -22,4 +22,13 @@
 #define THERMAL_MAX_TELEMETRY_SIGNALS    128
 #define THERMAL_NAME_MAX                  24
 
+/* Reserved bytes for the public thermal_core_t. The internal struct
+ * (core/thermal_core.c) grows within this budget across Stages 2-7;
+ * raising this is a deliberate PR with rationale. */
+#define THERMAL_CORE_T_RESERVED_BYTES   4096
+
+/* Q16.16 fixed-point unity. Used for IIR filter coefficients, PID
+ * gains, sensor weights, and curve interpolation throughout core/. */
+#define Q16_ONE                  0x00010000
+
 #endif /* THERMAL_CONFIG_H */

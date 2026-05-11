@@ -31,6 +31,18 @@
         }                                                                      \
     } while (0)
 
+#define EXPECT_LE(actual, max)                                                 \
+    do {                                                                       \
+        long long _a = (long long)(actual);                                    \
+        long long _m = (long long)(max);                                       \
+        if (_a > _m) {                                                         \
+            fprintf(stderr,                                                    \
+                    "FAIL %s:%d: EXPECT_LE(%s, %s): got %lld > max %lld\n",    \
+                    __FILE__, __LINE__, #actual, #max, _a, _m);                \
+            exit(1);                                                           \
+        }                                                                      \
+    } while (0)
+
 #define EXPECT_STATUS_OK(actual)                                               \
     do {                                                                       \
         int _s = (int)(actual);                                                \

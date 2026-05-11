@@ -17,11 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "harness.h"
-#include "thermal_config.h"
-
-/* Stage 0 stub exported by core/thermal_core.c. Replaced when Stage 2
- * (curve interpolation) lands the first real core function. */
-extern void thermal_core__stage0_placeholder(void);
+#include "thermal_core.h"
 
 static void abort_forbidden(const char *name) {
     fprintf(stderr,
@@ -39,10 +35,10 @@ long  __wrap_read(int fd, void *b, size_t n)           { (void)fd; (void)b; (voi
 long  __wrap_write(int fd, const void *b, size_t n)    { (void)fd; (void)b; (void)n; abort_forbidden("write");   return -1;   }
 
 TEST_CASE(core_only_no_forbidden_calls) {
-    /* Stage 0 stub does nothing, so this test passes by demonstrating
-     * that the runner builds with --wrap flags, links against the core
-     * archive, and runs without firing any wrapper. Extended as real
-     * core functions land starting in Stage 2. */
-    thermal_core__stage0_placeholder();
-    EXPECT_EQ(THERMAL_MAX_ZONES, 4);
+    /* Stage 1 onward: exercise the real API surface from inside the
+     * portability check. validate_config returns THERMAL_ERR_UNAVAILABLE
+     * until Stage 9 fills in the body. Extended as real core functions
+     * land. */
+    thermal_status_t s = thermal_core_validate_config(NULL);
+    EXPECT_EQ(s, THERMAL_ERR_UNAVAILABLE);
 }
