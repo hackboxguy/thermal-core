@@ -56,6 +56,20 @@ build/test/test_%: test/unit/test_%.c test/unit/harness.h core/thermal_config.h 
 	@mkdir -p build/test
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Special: JSON loader test pulls in platform/linux sources ---
+# Overrides the wildcard rule above for this specific target because
+# it links config_jsmn.c + jsmn.c alongside the test driver.
+build/test/test_config_jsmn: \
+    test/unit/test_config_jsmn.c test/unit/harness.h \
+    platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
+    platform/linux/jsmn.c platform/linux/jsmn.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux \
+	    -o $@ test/unit/test_config_jsmn.c \
+	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
 	@mkdir -p build/core
