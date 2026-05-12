@@ -18,6 +18,7 @@
 #include "thermal_filter.h"
 #include "thermal_zone.h"
 #include "thermal_governor.h"
+#include "thermal_pid.h"
 
 /* === Internal state === */
 
@@ -28,6 +29,9 @@ typedef struct {
     uint8_t  aggregation_valid;  /* 1 if last aggregation had >= 1 valid sensor */
     uint8_t  sensor_slot_count;  /* copy of cfg.zones[i].sensor_count */
     uint8_t  sensor_slots[THERMAL_MAX_SENSORS_PER_ZONE];  /* resolved at init */
+    thermal_pid_state_t pid;     /* PID integrator + derivative history; carried
+                                  * for every zone (Stage 5b). step-wise zones
+                                  * leave it untouched. */
 } zone_runtime_t;
 
 typedef struct {
@@ -289,6 +293,7 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
         for (uint8_t k = zc->sensor_count; k < THERMAL_MAX_SENSORS_PER_ZONE; k++) {
             zr->sensor_slots[k] = 0;
         }
+        thermal_pid_reset(&zr->pid);
     }
 
     /* Pad unused zone slots so state-snapshot reads are well-defined. */
@@ -302,6 +307,7 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
         for (uint8_t k = 0; k < THERMAL_MAX_SENSORS_PER_ZONE; k++) {
             zr->sensor_slots[k] = 0;
         }
+        thermal_pid_reset(&zr->pid);
     }
 
     return THERMAL_OK;
@@ -362,10 +368,37 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             zr->active_trip_mask = gr.active_trip_mask;
             zr->cooling_state    = gr.cooling_state;
         } else {
-            /* PID zone: Stage 5 fills in. For Stage 4 the cooling_state
-             * stays 0 (no critical/shutdown trip-floor logic yet). */
-            zr->active_trip_mask = 0;
-            zr->cooling_state = 0;
+            /* PID zone (Stage 5b). Run PID for the integrator/derivative
+             * history; output PWM is discarded until Stage 7 arbitration
+             * fills the output frame. pwm_min/pwm_max are the conservative
+             * full range; per-actuator clamping happens at arbitration. */
+            thermal_pid_step_result_t pr;
+            thermal_pid_step(&zr->pid,
+                             zc->pid.kp_q16, zc->pid.ki_q16, zc->pid.kd_q16,
+                             zc->pid.setpoint_mc, agg.temp_mc,
+                             in->now_ms,
+                             zc->pid.dt_min_ms, zc->pid.dt_max_ms,
+                             0, 255,
+                             &pr);
+            (void)pr;
+
+            /* active_trip_mask reflects all active trips (WARN + CRITICAL +
+             * SHUTDOWN) for telemetry visibility; cooling_state filters to
+             * critical/shutdown only per PRD §4.8 line 670. */
+            thermal_governor_step_result_t gr;
+            thermal_governor_step_wise(agg.temp_mc, zc->trips, zc->trip_count,
+                                       zr->active_trip_mask, &gr);
+            zr->active_trip_mask = gr.active_trip_mask;
+
+            uint8_t pid_cs = 0;
+            for (uint8_t k = 0; k < zc->trip_count; k++) {
+                if (!(gr.active_trip_mask & ((uint32_t)1u << k))) continue;
+                const thermal_trip_cfg_t *t = &zc->trips[k];
+                if (t->severity != THERMAL_TRIP_CRITICAL &&
+                    t->severity != THERMAL_TRIP_SHUTDOWN) continue;
+                if (t->cooling_state > pid_cs) pid_cs = t->cooling_state;
+            }
+            zr->cooling_state = pid_cs;
         }
     }
 
@@ -406,10 +439,14 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
 
     for (uint8_t i = 0; i < cfg->zone_count; i++) {
         const zone_runtime_t *zr = &core->zones[i];
-        state->zones[i].temp_mc               = zr->temp_mc;
-        state->zones[i].active_trip_mask      = zr->active_trip_mask;
-        state->zones[i].cooling_state         = zr->cooling_state;
-        state->zones[i].effective_setpoint_mc = 0;  /* PID-only, Stage 5 */
+        const thermal_zone_cfg_t *zc = &cfg->zones[i];
+        state->zones[i].temp_mc          = zr->temp_mc;
+        state->zones[i].active_trip_mask = zr->active_trip_mask;
+        state->zones[i].cooling_state    = zr->cooling_state;
+        state->zones[i].effective_setpoint_mc =
+            (zc->governor == THERMAL_GOVERNOR_PID) ? zc->pid.setpoint_mc : 0;
+        /* Stage 7's pre-governor acoustic_mask modifier will eventually
+         * offset this; "effective" == "configured" for now. */
     }
     /* actuators[], contexts[], faults[], modifiers[] stay zero. */
     return THERMAL_OK;

@@ -35,6 +35,52 @@ void  __wrap_free(void *p)                             { (void)p;               
 long  __wrap_read(int fd, void *b, size_t n)           { (void)fd; (void)b; (void)n; abort_forbidden("read");    return -1;   }
 long  __wrap_write(int fd, const void *b, size_t n)    { (void)fd; (void)b; (void)n; abort_forbidden("write");   return -1;   }
 
+static void build_pid_config(thermal_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->config_version = 1;
+    cfg->control_period_ms = 100;
+    cfg->sensor_count = 1;
+    cfg->sensors[0].id = 0;
+    cfg->sensors[0].iir_alpha_q16 = Q16_ONE;
+    cfg->sensors[0].max_staleness_ms = 500;
+    cfg->actuator_count = 1;
+    cfg->actuators[0].id = 0;
+    cfg->actuators[0].pwm_min = 80;
+    cfg->actuators[0].pwm_max = 255;
+    cfg->actuators[0].state_pwm[0] = 0;
+    cfg->actuators[0].state_pwm[1] = 100;
+    cfg->actuators[0].state_pwm[2] = 160;
+    cfg->actuators[0].state_pwm[3] = 220;
+    cfg->actuators[0].state_pwm[4] = 255;
+    cfg->zone_count = 1;
+    cfg->zones[0].sensor_count = 1;
+    cfg->zones[0].sensor_ids[0] = 0;
+    cfg->zones[0].aggregation = THERMAL_AGG_MAX;
+    cfg->zones[0].governor = THERMAL_GOVERNOR_PID;
+    cfg->zones[0].pid.kp_q16 = 4915;
+    cfg->zones[0].pid.ki_q16 = 327;
+    cfg->zones[0].pid.kd_q16 = 0;
+    cfg->zones[0].pid.setpoint_mc = 75000;
+    cfg->zones[0].pid.kp_min_q16 = 0;
+    cfg->zones[0].pid.kp_max_q16 = 327680;
+    cfg->zones[0].pid.ki_min_q16 = 0;
+    cfg->zones[0].pid.ki_max_q16 = 65536;
+    cfg->zones[0].pid.kd_min_q16 = 0;
+    cfg->zones[0].pid.kd_max_q16 = 65536;
+    cfg->zones[0].pid.setpoint_min_mc = 50000;
+    cfg->zones[0].pid.setpoint_max_mc = 95000;
+    cfg->zones[0].pid.dt_min_ms = 50;
+    cfg->zones[0].pid.dt_max_ms = 500;
+    cfg->zones[0].actuator_count = 1;
+    cfg->zones[0].actuator_ids[0] = 0;
+    cfg->zones[0].fallback_temp_mc = 85000;
+    cfg->zones[0].trip_count = 1;
+    cfg->zones[0].trips[0].temp_mc = 90000;
+    cfg->zones[0].trips[0].hyst_mc = 2000;
+    cfg->zones[0].trips[0].severity = THERMAL_TRIP_CRITICAL;
+    cfg->zones[0].trips[0].cooling_state = 3;
+}
+
 static void build_minimal_config(thermal_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->config_version = 1;
@@ -114,5 +160,33 @@ TEST_CASE(core_only_no_forbidden_calls) {
     EXPECT_EQ(thermal_core_get_state(&ctx, &state), THERMAL_OK);
     EXPECT_EQ(state.zones[0].temp_mc, 75000);
     EXPECT_EQ(state.zones[0].cooling_state, 2);
+    EXPECT_EQ(state.zones[0].active_trip_mask, 0x1);
+
+    /* === API surface 3: PID-zone init + step + get_state ===
+     * Verifies the PID dispatch path uses no forbidden libc symbols.
+     * Config has one critical trip at 90000 (rule 31 requires it). */
+    build_pid_config(&cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+    EXPECT_EQ(thermal_core_init(&ctx, &cfg, &cb), THERMAL_OK);
+
+    /* Temp below the critical trip: cooling_state stays 0 for PID zones. */
+    samples[0].value = 80000;
+    samples[0].sample_ts_ms = 0;
+    snap.now_ms = 0;
+    EXPECT_EQ(thermal_core_step(&ctx, &snap, &out), THERMAL_OK);
+    EXPECT_EQ(thermal_core_get_state(&ctx, &state), THERMAL_OK);
+    EXPECT_EQ(state.zones[0].temp_mc, 80000);
+    EXPECT_EQ(state.zones[0].effective_setpoint_mc, 75000);
+    EXPECT_EQ(state.zones[0].cooling_state, 0);
+    EXPECT_EQ(state.zones[0].active_trip_mask, 0);
+
+    /* Temp crosses the critical trip: cooling_state -> trip's cs (3). */
+    samples[0].value = 95000;
+    samples[0].sample_ts_ms = 100;
+    snap.now_ms = 100;
+    EXPECT_EQ(thermal_core_step(&ctx, &snap, &out), THERMAL_OK);
+    EXPECT_EQ(thermal_core_get_state(&ctx, &state), THERMAL_OK);
+    EXPECT_EQ(state.zones[0].temp_mc, 95000);
+    EXPECT_EQ(state.zones[0].cooling_state, 3);
     EXPECT_EQ(state.zones[0].active_trip_mask, 0x1);
 }
