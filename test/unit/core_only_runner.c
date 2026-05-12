@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "harness.h"
 #include "thermal_core.h"
 
@@ -34,11 +35,84 @@ void  __wrap_free(void *p)                             { (void)p;               
 long  __wrap_read(int fd, void *b, size_t n)           { (void)fd; (void)b; (void)n; abort_forbidden("read");    return -1;   }
 long  __wrap_write(int fd, const void *b, size_t n)    { (void)fd; (void)b; (void)n; abort_forbidden("write");   return -1;   }
 
+static void build_minimal_config(thermal_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->config_version = 1;
+    cfg->control_period_ms = 100;
+    cfg->sensor_count = 1;
+    cfg->sensors[0].id = 0;
+    cfg->sensors[0].iir_alpha_q16 = Q16_ONE;
+    cfg->sensors[0].max_staleness_ms = 500;
+    cfg->actuator_count = 1;
+    cfg->actuators[0].id = 0;
+    cfg->actuators[0].pwm_min = 80;
+    cfg->actuators[0].pwm_max = 255;
+    cfg->actuators[0].state_pwm[0] = 0;
+    cfg->actuators[0].state_pwm[1] = 100;
+    cfg->actuators[0].state_pwm[2] = 160;
+    cfg->actuators[0].state_pwm[3] = 220;
+    cfg->actuators[0].state_pwm[4] = 255;
+    cfg->zone_count = 1;
+    cfg->zones[0].sensor_count = 1;
+    cfg->zones[0].sensor_ids[0] = 0;
+    cfg->zones[0].aggregation = THERMAL_AGG_MAX;
+    cfg->zones[0].governor = THERMAL_GOVERNOR_STEP_WISE;
+    cfg->zones[0].actuator_count = 1;
+    cfg->zones[0].actuator_ids[0] = 0;
+    cfg->zones[0].fallback_temp_mc = 85000;
+    cfg->zones[0].trip_count = 1;
+    cfg->zones[0].trips[0].temp_mc = 70000;
+    cfg->zones[0].trips[0].hyst_mc = 2000;
+    cfg->zones[0].trips[0].severity = THERMAL_TRIP_WARN;
+    cfg->zones[0].trips[0].cooling_state = 2;
+}
+
 TEST_CASE(core_only_no_forbidden_calls) {
-    /* Stage 4 commit 3a: validate_config is now a real implementation.
-     * validate_config(NULL) returns INVALID_ARG per rule 1; this also
-     * proves the validator + its static helpers reach no forbidden
-     * libc symbols (the static nm -u check covers the rest). */
-    thermal_status_t s = thermal_core_validate_config(NULL);
-    EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+    /* === API surface 1: validate_config(NULL) -> INVALID_ARG === */
+    EXPECT_EQ(thermal_core_validate_config(NULL), THERMAL_ERR_INVALID_ARG);
+
+    /* === API surface 2: full init + step + get_state path ===
+     * Exercises the wired control loop from inside the wrap'd runner.
+     * Any forbidden libc symbol reachable from this path would either
+     * trip the static nm -u check or the runtime --wrap abort. */
+    thermal_config_t cfg;
+    build_minimal_config(&cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    thermal_core_t ctx;
+    thermal_core_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));   /* both function pointers NULL is OK */
+    EXPECT_EQ(thermal_core_init(&ctx, &cfg, &cb), THERMAL_OK);
+
+    /* Step with a sample below the trip: cooling_state should stay 0. */
+    thermal_sample_t samples[1];
+    samples[0].id = 0;
+    samples[0].kind = THERMAL_SAMPLE_TEMP_MC;
+    samples[0].valid = 1;
+    samples[0].value = 65000;
+    samples[0].sample_ts_ms = 0;
+    samples[0].quality = 0;
+    thermal_input_snapshot_t snap;
+    snap.now_ms = 0;
+    snap.samples = samples;
+    snap.sample_count = 1;
+    thermal_output_frame_t out;
+    memset(&out, 0, sizeof(out));
+    EXPECT_EQ(thermal_core_step(&ctx, &snap, &out), THERMAL_OK);
+
+    thermal_state_snapshot_t state;
+    EXPECT_EQ(thermal_core_get_state(&ctx, &state), THERMAL_OK);
+    EXPECT_EQ(state.zones[0].temp_mc, 65000);
+    EXPECT_EQ(state.zones[0].cooling_state, 0);
+    EXPECT_EQ(state.zones[0].active_trip_mask, 0);
+
+    /* Step with a sample above the trip: cooling_state -> 2. */
+    samples[0].value = 75000;
+    samples[0].sample_ts_ms = 100;
+    snap.now_ms = 100;
+    EXPECT_EQ(thermal_core_step(&ctx, &snap, &out), THERMAL_OK);
+    EXPECT_EQ(thermal_core_get_state(&ctx, &state), THERMAL_OK);
+    EXPECT_EQ(state.zones[0].temp_mc, 75000);
+    EXPECT_EQ(state.zones[0].cooling_state, 2);
+    EXPECT_EQ(state.zones[0].active_trip_mask, 0x1);
 }
