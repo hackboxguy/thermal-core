@@ -68,3 +68,10 @@ jobs:
           python-version: '3.12'
       - name: Run property tests
         run: make property
+
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + run unit tests under ASan/UBSan
+        run: make asan

@@ -3,7 +3,7 @@
 # Stage 0: harness sanity test, core-archive stub, portability guard.
 
 CC ?= gcc
-CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic -I core -I test/unit
+CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic -I core -I test/unit $(CFLAGS_EXTRA)
 
 # --- Unit test discovery (excludes core_only_runner.c — separate target) ---
 TEST_SRCS = $(wildcard test/unit/test_*.c)
@@ -22,16 +22,20 @@ WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc \
 # --- Replay tests ---
 REPLAY_BIN_DIR     = build/replay
 REPLAY_GOLDEN_DIR  = test/replay/golden
-CURVE_REPLAY       = $(REPLAY_BIN_DIR)/curve_replay
-FILTER_REPLAY      = $(REPLAY_BIN_DIR)/filter_replay
-ZONE_REPLAY        = $(REPLAY_BIN_DIR)/zone_replay
-PID_REPLAY         = $(REPLAY_BIN_DIR)/pid_replay
+CURVE_REPLAY            = $(REPLAY_BIN_DIR)/curve_replay
+FILTER_REPLAY           = $(REPLAY_BIN_DIR)/filter_replay
+ZONE_REPLAY             = $(REPLAY_BIN_DIR)/zone_replay
+PID_REPLAY              = $(REPLAY_BIN_DIR)/pid_replay
+STALL_REPLAY            = $(REPLAY_BIN_DIR)/stall_replay
+STUCK_SENSOR_REPLAY     = $(REPLAY_BIN_DIR)/stuck_sensor_replay
+RUNAWAY_REPLAY          = $(REPLAY_BIN_DIR)/runaway_replay
+STALE_CONTEXT_REPLAY    = $(REPLAY_BIN_DIR)/stale_context_replay
 
 # --- Property tests ---
 PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN       = $(PROPERTY_BIN_DIR)/property_config
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property asan clean
 
 all: test build verify-portability replay property
 
@@ -48,7 +52,7 @@ test: $(TEST_BINS)
 
 build/test/test_%: test/unit/test_%.c test/unit/harness.h core/thermal_config.h $(CORE_ARCHIVE)
 	@mkdir -p build/test
-	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
@@ -99,7 +103,28 @@ $(PID_REPLAY): test/replay/pid_replay.c core/thermal_pid.h \
 	@mkdir -p $(REPLAY_BIN_DIR)
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
-replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY)
+$(STALL_REPLAY): test/replay/stall_replay.c core/thermal_fault.h \
+                 $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+$(STUCK_SENSOR_REPLAY): test/replay/stuck_sensor_replay.c core/thermal_fault.h \
+                        $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+$(RUNAWAY_REPLAY): test/replay/runaway_replay.c core/thermal_fault.h \
+                   $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+$(STALE_CONTEXT_REPLAY): test/replay/stale_context_replay.c core/thermal_fault.h \
+                         $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
+        $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) $(STALE_CONTEXT_REPLAY)
 	@echo "--- Replay: curve_sweep (C) ---"
 	@$(CURVE_REPLAY) > $(REPLAY_BIN_DIR)/curve_sweep.csv
 	@diff -u $(REPLAY_GOLDEN_DIR)/curve_sweep.csv \
@@ -148,13 +173,66 @@ replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY)
 	         $(REPLAY_BIN_DIR)/pid_sweep.py.csv \
 	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
 	@echo "PASS: Python ref == C"
+	@echo "--- Replay: stall_sweep (C) ---"
+	@$(STALL_REPLAY) > $(REPLAY_BIN_DIR)/stall_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/stall_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stall_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: stall_sweep (Python reference) ---"
+	@python3 test/reference/stall.py > $(REPLAY_BIN_DIR)/stall_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/stall_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stall_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
+	@echo "--- Replay: stuck_sensor_sweep (C) ---"
+	@$(STUCK_SENSOR_REPLAY) > $(REPLAY_BIN_DIR)/stuck_sensor_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/stuck_sensor_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stuck_sensor_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: stuck_sensor_sweep (Python reference) ---"
+	@python3 test/reference/stuck_sensor.py > $(REPLAY_BIN_DIR)/stuck_sensor_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/stuck_sensor_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stuck_sensor_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
+	@echo "--- Replay: runaway_sweep (C) ---"
+	@$(RUNAWAY_REPLAY) > $(REPLAY_BIN_DIR)/runaway_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/runaway_sweep.csv \
+	         $(REPLAY_BIN_DIR)/runaway_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: runaway_sweep (Python reference) ---"
+	@python3 test/reference/runaway.py > $(REPLAY_BIN_DIR)/runaway_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/runaway_sweep.csv \
+	         $(REPLAY_BIN_DIR)/runaway_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
+	@echo "--- Replay: stale_context_sweep (C) ---"
+	@$(STALE_CONTEXT_REPLAY) > $(REPLAY_BIN_DIR)/stale_context_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/stale_context_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stale_context_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: stale_context_sweep (Python reference) ---"
+	@python3 test/reference/stale_context.py > $(REPLAY_BIN_DIR)/stale_context_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/stale_context_sweep.csv \
+	         $(REPLAY_BIN_DIR)/stale_context_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
 
-regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY)
+regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
+                      $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) $(STALE_CONTEXT_REPLAY)
 	@mkdir -p $(REPLAY_GOLDEN_DIR)
 	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
 	$(FILTER_REPLAY) > $(REPLAY_GOLDEN_DIR)/filter_sweep.csv
 	$(ZONE_REPLAY) > $(REPLAY_GOLDEN_DIR)/zone_sweep.csv
 	$(PID_REPLAY) > $(REPLAY_GOLDEN_DIR)/pid_sweep.csv
+	$(STALL_REPLAY) > $(REPLAY_GOLDEN_DIR)/stall_sweep.csv
+	$(STUCK_SENSOR_REPLAY) > $(REPLAY_GOLDEN_DIR)/stuck_sensor_sweep.csv
+	$(RUNAWAY_REPLAY) > $(REPLAY_GOLDEN_DIR)/runaway_sweep.csv
+	$(STALE_CONTEXT_REPLAY) > $(REPLAY_GOLDEN_DIR)/stale_context_sweep.csv
 	@echo "Regenerated goldens. Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
 
 # --- Property test: validate_config across random configs ---
@@ -165,6 +243,17 @@ $(PROPERTY_BIN): test/property/property_config.c core/thermal_core.h \
 
 property: $(PROPERTY_BIN)
 	@python3 test/property/run_property.py
+
+# --- ASan/UBSan unit-test build ---
+# Sanitizer-clean is a merge gate from Stage 6 onward (plan §3).
+# Skips verify-portability (-Wl,--wrap=malloc conflicts with ASan's
+# malloc interception) and replay/property (unit tests are the primary
+# catch surface for the detector and module math).
+asan:
+	$(MAKE) clean
+	$(MAKE) test \
+	    CFLAGS_EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+	    LDFLAGS_EXTRA="-fsanitize=address,undefined"
 
 # --- Build (delegates to platform/linux) ---
 build:
