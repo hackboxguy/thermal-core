@@ -31,4 +31,10 @@
  * gains, sensor weights, and curve interpolation throughout core/. */
 #define Q16_ONE                  0x00010000
 
+/* Maximum persist_ticks window the runaway fault detector can track.
+ * The detector keeps a per-instance ring buffer of (temp, pwm) sized
+ * to this constant; validate_config rejects runaway.persist_ticks
+ * greater than this value (Stage 6 rule 32). */
+#define THERMAL_FAULT_RUNAWAY_WINDOW_MAX  64
+
 #endif /* THERMAL_CONFIG_H */

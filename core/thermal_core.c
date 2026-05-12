@@ -248,6 +248,13 @@ thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
 
     if (cfg->modifier_count > 1) return THERMAL_ERR_INVALID_CONFIG;
 
+    /* Rule 32: runaway detector persist_ticks must fit the per-instance
+     * ring buffer (Stage 6 commit 6a). */
+    if (cfg->faults.runaway_defaults.enabled &&
+        cfg->faults.runaway_defaults.persist_ticks > THERMAL_FAULT_RUNAWAY_WINDOW_MAX) {
+        return THERMAL_ERR_BOUNDS;
+    }
+
     thermal_status_t s;
     if ((s = validate_sensors(cfg))   != THERMAL_OK) return s;
     if ((s = validate_actuators(cfg)) != THERMAL_OK) return s;

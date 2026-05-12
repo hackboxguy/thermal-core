@@ -328,4 +328,22 @@ TEST_CASE(validate_config) {
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
     #undef MAKE_PID_CONFIG
+
+    /* === Rule 32 (Stage 6): runaway persist_ticks > window max -> BOUNDS === */
+    make_valid_config(&cfg);
+    cfg.faults.runaway_defaults.enabled = 1;
+    cfg.faults.runaway_defaults.persist_ticks = THERMAL_FAULT_RUNAWAY_WINDOW_MAX + 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_BOUNDS);
+
+    /* Within bounds: OK */
+    make_valid_config(&cfg);
+    cfg.faults.runaway_defaults.enabled = 1;
+    cfg.faults.runaway_defaults.persist_ticks = THERMAL_FAULT_RUNAWAY_WINDOW_MAX;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* Disabled detector: persist_ticks above window is ignored. */
+    make_valid_config(&cfg);
+    cfg.faults.runaway_defaults.enabled = 0;
+    cfg.faults.runaway_defaults.persist_ticks = THERMAL_FAULT_RUNAWAY_WINDOW_MAX + 100;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 }
