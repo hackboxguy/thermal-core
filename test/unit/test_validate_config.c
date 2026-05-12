@@ -346,4 +346,72 @@ TEST_CASE(validate_config) {
     cfg.faults.runaway_defaults.enabled = 0;
     cfg.faults.runaway_defaults.persist_ticks = THERMAL_FAULT_RUNAWAY_WINDOW_MAX + 100;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* ====================================================================
+     * Modifier rules (Stage 7 commit 7a, rules 33-35)
+     * ==================================================================== */
+
+    #define MAKE_MODIFIER_CONFIG(c) do {                                       \
+        make_valid_config(&(c));                                               \
+        /* Add a context signal so the modifier's context_id resolves. */      \
+        (c).context_count = 1;                                                 \
+        (c).contexts[0].id = 0;                                                \
+        (c).contexts[0].unit = THERMAL_CONTEXT_UNIT_KMH;                       \
+        (c).contexts[0].iir_alpha_q16 = 2048;                                  \
+        (c).contexts[0].timeout_ms = 3000;                                     \
+        (c).contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_STATIONARY;        \
+        /* One acoustic_mask modifier with the PRD §5.1 curve. */              \
+        (c).modifier_count = 1;                                                \
+        strncpy((c).modifiers[0].name, "acoustic_mask",                        \
+                THERMAL_NAME_MAX - 1);                                         \
+        (c).modifiers[0].context_id = 0;                                       \
+        (c).modifiers[0].stages =                                              \
+            THERMAL_MOD_STAGE_PRE_GOVERNOR_TRIP_OFFSET |                       \
+            THERMAL_MOD_STAGE_POST_GOVERNOR_PWM_CAP;                           \
+        (c).modifiers[0].curve_count = 4;                                      \
+        (c).modifiers[0].curve[0].x = 0;                                       \
+        (c).modifiers[0].curve[0].value0 = 120;                                \
+        (c).modifiers[0].curve[0].value1 = 0;                                  \
+        (c).modifiers[0].curve[1].x = 30;                                      \
+        (c).modifiers[0].curve[1].value0 = 180;                                \
+        (c).modifiers[0].curve[1].value1 = 0;                                  \
+        (c).modifiers[0].curve[2].x = 80;                                      \
+        (c).modifiers[0].curve[2].value0 = 255;                                \
+        (c).modifiers[0].curve[2].value1 = -5000;                              \
+        (c).modifiers[0].curve[3].x = 130;                                     \
+        (c).modifiers[0].curve[3].value0 = 255;                                \
+        (c).modifiers[0].curve[3].value1 = -8000;                              \
+        (c).modifiers[0].fail_safe = THERMAL_FAILSAFE_ASSUME_STATIONARY;       \
+    } while (0)
+
+    /* Positive baseline: valid acoustic_mask modifier returns OK. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* Rule 33: wrong modifier name -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    strncpy(cfg.modifiers[0].name, "acoustic_max", THERMAL_NAME_MAX - 1);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 34: unknown context_id -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].context_id = 99;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 35: curve_count < 2 -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].curve_count = 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 35: x not strictly ascending (x[1] == x[0]) -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].curve[1].x = cfg.modifiers[0].curve[0].x;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 35: descending x -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].curve[2].x = 10;       /* below previous knot (30) */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    #undef MAKE_MODIFIER_CONFIG
 }

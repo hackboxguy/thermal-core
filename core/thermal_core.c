@@ -63,6 +63,13 @@ static int find_actuator_slot(const thermal_config_t *cfg, uint16_t id) {
     return -1;
 }
 
+static int find_context_slot(const thermal_config_t *cfg, uint16_t id) {
+    for (uint8_t i = 0; i < cfg->context_count; i++) {
+        if (cfg->contexts[i].id == id) return (int)i;
+    }
+    return -1;
+}
+
 static int aggregation_known(uint8_t agg) {
     return agg == THERMAL_AGG_MAX
         || agg == THERMAL_AGG_AVG
@@ -111,6 +118,36 @@ static thermal_status_t validate_actuators(const thermal_config_t *cfg) {
     for (uint8_t i = 0; i < cfg->actuator_count; i++) {
         for (uint8_t j = (uint8_t)(i + 1); j < cfg->actuator_count; j++) {
             if (cfg->actuators[i].id == cfg->actuators[j].id) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+        }
+    }
+    return THERMAL_OK;
+}
+
+static thermal_status_t validate_modifiers(const thermal_config_t *cfg) {
+    for (uint8_t i = 0; i < cfg->modifier_count; i++) {
+        const thermal_modifier_cfg_t *m = &cfg->modifiers[i];
+
+        /* Rule 33 (Stage 7 7a, PRD §5.1 line 799):
+         * v1 modifier name must be "acoustic_mask". */
+        if (strncmp(m->name, "acoustic_mask", THERMAL_NAME_MAX) != 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+
+        /* Rule 34 (PRD §5.3 line 788):
+         * context_id resolves to a configured context. */
+        if (find_context_slot(cfg, m->context_id) < 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+
+        /* Rule 35 (PRD §5.3 line 793):
+         * curve has >= 2 points with strictly ascending x. */
+        if (m->curve_count < 2 || m->curve_count > THERMAL_MAX_CURVE_POINTS) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        for (uint8_t k = 1; k < m->curve_count; k++) {
+            if (m->curve[k].x <= m->curve[k - 1].x) {
                 return THERMAL_ERR_INVALID_CONFIG;
             }
         }
@@ -263,6 +300,8 @@ thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
     for (uint8_t i = 0; i < cfg->zone_count; i++) {
         if ((s = validate_zone(cfg, &cfg->zones[i])) != THERMAL_OK) return s;
     }
+
+    if ((s = validate_modifiers(cfg)) != THERMAL_OK) return s;
 
     return THERMAL_OK;
 }
