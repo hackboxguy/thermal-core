@@ -17,7 +17,8 @@
  *   Step 10 thermal_slew_step + final clamp   (Stage 7b)
  *   Step 11 telemetry_emit on cadence (this commit)
  *
- * apply_command still returns THERMAL_ERR_UNAVAILABLE -- Stage 8.
+ * Stage 8 complete; apply_command implemented for the 5 v1 commands
+ * per PRD §7.5. Stage 9 begins next.
  */
 #include <string.h>            /* memset */
 #include "thermal_core.h"
@@ -612,26 +613,83 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
     return THERMAL_OK;
 }
 
+/* Snapshot preflight per PRD §4.3 line 494: reject malformed snapshots
+ * before any state mutation. Detects oversized, NULL+nonzero, unknown
+ * kind, unknown (kind,id) target, and duplicate (kind,id) within the
+ * snapshot. Returns the documented status code; callers must not
+ * mutate state when this fails. */
+static thermal_status_t preflight_snapshot(const thermal_config_t *cfg,
+                                           const thermal_input_snapshot_t *in) {
+    if (in->sample_count > THERMAL_MAX_SAMPLES_PER_SNAPSHOT) {
+        return THERMAL_ERR_NO_SPACE;
+    }
+    if (in->sample_count > 0 && in->samples == NULL) {
+        return THERMAL_ERR_INVALID_ARG;
+    }
+    /* Pack (kind, slot) into uint16 (kind in high 8 bits, slot in low 8;
+     * slot < 256 since v1 maxima never approach that). Detect duplicates
+     * via linear scan against earlier entries -- bounded by
+     * THERMAL_MAX_SAMPLES_PER_SNAPSHOT so it stays O(n^2) of a small n. */
+    uint16_t seen[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
+    uint8_t  seen_count = 0;
+    for (uint8_t s = 0; s < in->sample_count; s++) {
+        const thermal_sample_t *smp = &in->samples[s];
+        int slot;
+        switch (smp->kind) {
+        case THERMAL_SAMPLE_TEMP_MC:
+            slot = find_sensor_slot(cfg, smp->id);
+            break;
+        case THERMAL_SAMPLE_TACH_RPM:
+            slot = find_actuator_slot(cfg, smp->id);
+            break;
+        case THERMAL_SAMPLE_CONTEXT_I32:
+            slot = find_context_slot(cfg, smp->id);
+            break;
+        default:
+            return THERMAL_ERR_INVALID_ARG;
+        }
+        if (slot < 0) return THERMAL_ERR_INVALID_ARG;
+        uint16_t key = (uint16_t)(((uint16_t)smp->kind << 8) | (uint16_t)slot);
+        for (uint8_t k = 0; k < seen_count; k++) {
+            if (seen[k] == key) return THERMAL_ERR_INVALID_ARG;
+        }
+        seen[seen_count++] = key;
+    }
+    return THERMAL_OK;
+}
+
 thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                    const thermal_input_snapshot_t *in,
                                    thermal_output_frame_t *out) {
     if (!ctx || !in || !out) return THERMAL_ERR_INVALID_ARG;
-    if (in->sample_count > THERMAL_MAX_SAMPLES_PER_SNAPSHOT) {
-        return THERMAL_ERR_NO_SPACE;
-    }
-
     thermal_core_internal_t *core = (thermal_core_internal_t *)ctx;
+    if (core->cfg == NULL) return THERMAL_ERR_STATE;
     const thermal_config_t *cfg = core->cfg;
 
-    /* === §4.6 step 3: sensor IIR filters === */
-    for (uint8_t s = 0; s < in->sample_count; s++) {
-        const thermal_sample_t *smp = &in->samples[s];
-        if (smp->kind != THERMAL_SAMPLE_TEMP_MC) continue;
-        int slot = find_sensor_slot(cfg, smp->id);
-        if (slot < 0) continue;
-        thermal_filter_step(&core->filters[slot],
-                            cfg->sensors[slot].iir_alpha_q16,
-                            smp->value, smp->valid);
+    /* === Snapshot preflight (PRD §4.3 line 494): reject malformed
+     * snapshots before mutating any state. */
+    thermal_status_t pf = preflight_snapshot(cfg, in);
+    if (pf != THERMAL_OK) return pf;
+
+    /* === §4.6 step 3: sensor IIR filters.
+     * Walk every CONFIGURED sensor (not just samples) so absent sensors
+     * call thermal_filter_step with sample_valid=0, clearing valid while
+     * preserving filtered_value per PRD §4.5 filter lifecycle. */
+    for (uint8_t s = 0; s < cfg->sensor_count; s++) {
+        int32_t value = 0;
+        uint8_t found_valid = 0;
+        for (uint8_t k = 0; k < in->sample_count; k++) {
+            const thermal_sample_t *smp = &in->samples[k];
+            if (smp->kind == THERMAL_SAMPLE_TEMP_MC &&
+                smp->id == cfg->sensors[s].id) {
+                value = smp->value;
+                found_valid = smp->valid;
+                break;
+            }
+        }
+        thermal_filter_step(&core->filters[s],
+                            cfg->sensors[s].iir_alpha_q16,
+                            value, found_valid);
     }
 
     /* === §4.6 step 4: context filters + staleness === */
@@ -639,6 +697,40 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
 
     /* === §4.6 step 5: pre-governor modifier eval === */
     step5_modifier_eval(core);
+
+    /* === Stuck-sensor pre-pass (moved out of step 9). Runs against the
+     * just-filtered sensor values so USE_ZONE_FALLBACK action can swap
+     * a zone's temperature for fallback_temp_mc BEFORE the governor
+     * sees it (PRD §4.7 use_zone_fallback). Event emission stays here
+     * to keep transitions in deterministic order. */
+    uint8_t zone_force_fallback[THERMAL_MAX_ZONES] = { 0 };
+    if (cfg->faults.stuck_sensor_defaults.enabled) {
+        const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
+        for (uint8_t s = 0; s < cfg->sensor_count; s++) {
+            uint8_t prev = core->stuck_sensor_states[s].state;
+            thermal_fault_stuck_sensor_step(&core->stuck_sensor_states[s], fc,
+                                            core->filters[s].filtered_value,
+                                            core->filters[s].valid, 0,
+                                            in->now_ms);
+            emit_fault_transition(core, THERMAL_FAULT_TYPE_STUCK_SENSOR,
+                                  cfg->sensors[s].id, prev,
+                                  core->stuck_sensor_states[s].state,
+                                  in->now_ms);
+            if (fault_state_active(core->stuck_sensor_states[s].state)
+                && fc->action == THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK) {
+                /* Mark every zone that references this sensor for fallback. */
+                for (uint8_t z = 0; z < cfg->zone_count; z++) {
+                    const thermal_zone_cfg_t *zc = &cfg->zones[z];
+                    for (uint8_t k = 0; k < zc->sensor_count; k++) {
+                        if (zc->sensor_ids[k] == cfg->sensors[s].id) {
+                            zone_force_fallback[z] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* === §4.6 step 6: per-zone aggregate + governor (offset-adjusted trips) === */
     int32_t  filter_values[THERMAL_MAX_SENSORS_PER_ZONE];
@@ -665,8 +757,15 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         thermal_zone_aggregate((thermal_aggregation_t)zc->aggregation,
                                filter_values, filter_valid, weights,
                                zc->sensor_count, zc->fallback_temp_mc, &agg);
-        zr->temp_mc = agg.temp_mc;
-        zr->aggregation_valid = agg.valid;
+        /* USE_ZONE_FALLBACK action: override zone temp with fallback_temp_mc.
+         * PRD §4.7 use_zone_fallback table entry. */
+        if (zone_force_fallback[i]) {
+            zr->temp_mc = zc->fallback_temp_mc;
+            zr->aggregation_valid = 0;
+        } else {
+            zr->temp_mc = agg.temp_mc;
+            zr->aggregation_valid = agg.valid;
+        }
 
         /* Build offset-adjusted trip array if modifier active. Trip
          * temp/hyst come from shadow (CMD_SET_TRIP target); severity
@@ -752,7 +851,13 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             if (zc->governor == THERMAL_GOVERNOR_STEP_WISE) {
                 d = cfg->actuators[a].state_pwm[core->zones[z].cooling_state];
             } else {
-                d = core->zones[z].pwm_this_tick;
+                /* PRD §4.7 trip severity table: PID zones floor PID output
+                 * to state_pwm[critical_floor_cs]. zone_runtime.cooling_state
+                 * was computed in step 6 as max cooling_state over active
+                 * CRITICAL/SHUTDOWN trips (0 if none). */
+                uint8_t pid_d = core->zones[z].pwm_this_tick;
+                uint8_t floor = cfg->actuators[a].state_pwm[core->zones[z].cooling_state];
+                d = (floor > pid_d) ? floor : pid_d;
             }
             demands[count++] = d;
         }
@@ -779,15 +884,41 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         }
     }
 
-    /* === §4.6 step 9: fault detectors + safety_override + actions === */
-    uint8_t safety_override_up[THERMAL_MAX_ACTUATORS] = { 0 };
+    /* === §4.6 step 9: fault detectors + flag derivation.
+     *
+     * Three distinct per-actuator flags replace the conflated "safety
+     * override" of earlier revisions:
+     *   slew_override_up[a]   -- bypass slew upward; set on CRITICAL+
+     *                            severity or any active fault with a
+     *                            force_pwm_max/request_shutdown action
+     *                            affecting this actuator.
+     *   force_pwm_max[a]      -- overwrite arb_pwm to actuator.pwm_max;
+     *                            set on SHUTDOWN severity or any active
+     *                            fault with a force_pwm_max/request_shutdown
+     *                            action. CRITICAL alone does NOT force max
+     *                            (PRD §4.7 trip severity table).
+     *   shutdown_action[a]    -- set when a fault action == REQUEST_SHUTDOWN
+     *                            triggers shutdown for this actuator.
+     *
+     * Cause tracking lets step 10 produce the right reason code. */
+    uint8_t slew_override_up[THERMAL_MAX_ACTUATORS] = { 0 };
+    uint8_t force_pwm_max[THERMAL_MAX_ACTUATORS]    = { 0 };
+    uint8_t shutdown_action[THERMAL_MAX_ACTUATORS]  = { 0 };
+    uint8_t cause_stall[THERMAL_MAX_ACTUATORS]      = { 0 };
+    uint8_t cause_runaway[THERMAL_MAX_ACTUATORS]    = { 0 };
+
+    /* Severity-derived flags. */
     for (uint8_t a = 0; a < cfg->actuator_count; a++) {
-        safety_override_up[a] =
-            (actuator_max_zone_sev[a] >= THERMAL_TRIP_CRITICAL) ? 1 : 0;
+        if (actuator_max_zone_sev[a] >= THERMAL_TRIP_CRITICAL) {
+            slew_override_up[a] = 1;
+        }
+        if (actuator_max_zone_sev[a] >= THERMAL_TRIP_SHUTDOWN) {
+            force_pwm_max[a] = 1;
+        }
     }
 
     /* Stall (per actuator). Tach is not plumbed in v1 -> tach_valid=0 means
-     * the detector never fires in normal operation. */
+     * the detector never fires in normal operation. Commit B plumbs tach. */
     if (cfg->faults.stall_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stall_defaults;
         for (uint8_t a = 0; a < cfg->actuator_count; a++) {
@@ -804,31 +935,29 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             emit_fault_transition(core, THERMAL_FAULT_TYPE_STALL,
                                   cfg->actuators[a].id, prev,
                                   core->stall_states[a].state, in->now_ms);
-            if (fault_state_active(core->stall_states[a].state)
-                && action_forces_pwm_max(fc->action)) {
-                safety_override_up[a] = 1;
+            if (fault_state_active(core->stall_states[a].state)) {
+                if (action_forces_pwm_max(fc->action)) {
+                    slew_override_up[a] = 1;
+                    force_pwm_max[a] = 1;
+                    cause_stall[a] = 1;
+                } else if (fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN) {
+                    slew_override_up[a] = 1;
+                    force_pwm_max[a] = 1;
+                    shutdown_action[a] = 1;
+                    /* Rising edge of detector entering non-NORMAL state. */
+                    if (prev == THERMAL_FAULT_NORMAL && core->cb.log_event) {
+                        core->cb.log_event(in->now_ms, TEVENT_SHUTDOWN_REQUEST,
+                                           (uint32_t)cfg->actuators[a].id,
+                                           (uint32_t)THERMAL_FAULT_TYPE_STALL,
+                                           0u, 0u);
+                    }
+                }
             }
         }
     }
 
-    /* Stuck sensor (per sensor). No correlated load tracking in v1. */
-    if (cfg->faults.stuck_sensor_defaults.enabled) {
-        const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
-        for (uint8_t s = 0; s < cfg->sensor_count; s++) {
-            uint8_t prev = core->stuck_sensor_states[s].state;
-            thermal_fault_stuck_sensor_step(&core->stuck_sensor_states[s], fc,
-                                            core->filters[s].filtered_value,
-                                            core->filters[s].valid, 0,
-                                            in->now_ms);
-            emit_fault_transition(core, THERMAL_FAULT_TYPE_STUCK_SENSOR,
-                                  cfg->sensors[s].id, prev,
-                                  core->stuck_sensor_states[s].state,
-                                  in->now_ms);
-        }
-    }
-
     /* Runaway (per zone). commanded_pwm is the max arb across this zone's
-     * actuators (most aggressive cooling). */
+     * actuators. */
     if (cfg->faults.runaway_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.runaway_defaults;
         for (uint8_t z = 0; z < cfg->zone_count; z++) {
@@ -844,18 +973,37 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             emit_fault_transition(core, THERMAL_FAULT_TYPE_RUNAWAY,
                                   z, prev, core->runaway_states[z].state,
                                   in->now_ms);
-            if (fault_state_active(core->runaway_states[z].state)
-                && action_forces_pwm_max(fc->action)) {
-                for (uint8_t k = 0; k < cfg->zones[z].actuator_count; k++) {
-                    int slot = find_actuator_slot(cfg,
-                                                  cfg->zones[z].actuator_ids[k]);
-                    if (slot >= 0) safety_override_up[slot] = 1;
+            if (fault_state_active(core->runaway_states[z].state)) {
+                int forces_max = action_forces_pwm_max(fc->action);
+                int requests_sd = (fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN);
+                if (forces_max || requests_sd) {
+                    for (uint8_t k = 0; k < cfg->zones[z].actuator_count; k++) {
+                        int slot = find_actuator_slot(cfg,
+                            cfg->zones[z].actuator_ids[k]);
+                        if (slot < 0) continue;
+                        slew_override_up[slot] = 1;
+                        force_pwm_max[slot] = 1;
+                        if (forces_max) {
+                            cause_runaway[slot] = 1;
+                        } else {
+                            shutdown_action[slot] = 1;
+                        }
+                    }
+                    /* Rising edge: emit shutdown event once per detector. */
+                    if (requests_sd && prev == THERMAL_FAULT_NORMAL
+                        && core->cb.log_event) {
+                        core->cb.log_event(in->now_ms, TEVENT_SHUTDOWN_REQUEST,
+                                           (uint32_t)z,
+                                           (uint32_t)THERMAL_FAULT_TYPE_RUNAWAY,
+                                           0u, 0u);
+                    }
                 }
             }
         }
     }
 
-    /* Stale context (per context). */
+    /* Stale context (per context). Detector emits events; doesn't drive
+     * actuator overrides directly in v1. */
     if (cfg->faults.stale_context_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stale_context_defaults;
         for (uint8_t c = 0; c < cfg->context_count; c++) {
@@ -887,15 +1035,20 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         core->prev_zone_max_severity[z] = curr_sev;
     }
 
-    /* Apply force-pwm-max and emit safety_override events on rising edge. */
+    /* Apply force_pwm_max and emit safety-override events on rising edge.
+     * CRITICAL trips alone trigger slew_override_up but NOT force_pwm_max
+     * (PRD §4.7 -- critical trips request state_pwm[cooling_state], not
+     * pwm_max). force_pwm_max is set only by SHUTDOWN severity or fault
+     * actions. */
     for (uint8_t a = 0; a < cfg->actuator_count; a++) {
-        if (safety_override_up[a]) {
+        if (force_pwm_max[a]) {
             arb_pwm[a] = cfg->actuators[a].pwm_max;
-            if (!core->actuator_prev_safety_override[a] && core->cb.log_event) {
-                core->cb.log_event(in->now_ms, TEVENT_SAFETY_OVERRIDE,
-                                   (uint32_t)cfg->actuators[a].id,
-                                   (uint32_t)actuator_max_zone_sev[a], 0u, 0u);
-            }
+        }
+        if (slew_override_up[a] && !core->actuator_prev_safety_override[a]
+            && core->cb.log_event) {
+            core->cb.log_event(in->now_ms, TEVENT_SAFETY_OVERRIDE,
+                               (uint32_t)cfg->actuators[a].id,
+                               (uint32_t)actuator_max_zone_sev[a], 0u, 0u);
         }
     }
 
@@ -908,7 +1061,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         thermal_slew_step(core->actuator_prev_duty[a],
                           arb_pwm[a],
                           ac->slew_per_tick,
-                          safety_override_up[a],
+                          slew_override_up[a],
                           &sr);
 
         /* Final clamp per PRD §4.3 line 506: 0 is the special off
@@ -925,8 +1078,11 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         }
         if (final_pwm > ac->pwm_max) final_pwm = ac->pwm_max;
 
-        /* Reason precedence (highest wins): safety-shutdown > fault force >
-         * modifier acoustic cap > governor (pid|step). */
+        /* Reason precedence (highest wins): shutdown > fault force-max
+         * (stall/runaway) > modifier acoustic cap > governor (pid|step).
+         * CRITICAL trip alone produces a GOVERNOR_* reason -- the cap
+         * skip + slew bypass are observable via TEVENT_SAFETY_OVERRIDE,
+         * not the reason code. */
         uint16_t reason = THERMAL_ACT_REASON_NONE;
         if (final_pwm > 0) {
             int has_pid_zone = 0;
@@ -946,10 +1102,18 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                 reason = THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP;
             }
         }
-        if (safety_override_up[a]) {
-            reason = (actuator_max_zone_sev[a] >= THERMAL_TRIP_SHUTDOWN)
-                ? THERMAL_ACT_REASON_SAFETY_SHUTDOWN
-                : THERMAL_ACT_REASON_FAULT_RUNAWAY;
+        /* Fault force-max overrides governor/modifier reason. */
+        if (cause_stall[a]) {
+            reason = THERMAL_ACT_REASON_FAULT_STALL;
+        }
+        if (cause_runaway[a]) {
+            reason = THERMAL_ACT_REASON_FAULT_RUNAWAY;
+        }
+        /* Shutdown overrides everything: SHUTDOWN trip severity OR a
+         * request_shutdown fault action. */
+        if (actuator_max_zone_sev[a] >= THERMAL_TRIP_SHUTDOWN
+            || shutdown_action[a]) {
+            reason = THERMAL_ACT_REASON_SAFETY_SHUTDOWN;
         }
 
         out->actuator_cmds[a].actuator_id = ac->id;
@@ -959,7 +1123,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         core->actuator_prev_duty[a]            = final_pwm;
         core->actuator_prev_slew_limited[a]    = sr.slew_limited;
         core->actuator_prev_reason[a]          = reason;
-        core->actuator_prev_safety_override[a] = safety_override_up[a];
+        core->actuator_prev_safety_override[a] = slew_override_up[a];
     }
 
     /* === §4.6 step 11: telemetry emission on cadence === */
@@ -987,6 +1151,7 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
                                             thermal_command_result_t *result) {
     if (!ctx || !cmd || !result) return THERMAL_ERR_INVALID_ARG;
     thermal_core_internal_t *core = (thermal_core_internal_t *)ctx;
+    if (core->cfg == NULL) return THERMAL_ERR_STATE;
     const thermal_config_t *cfg = core->cfg;
 
     thermal_status_t status;
@@ -1204,6 +1369,7 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
                                         thermal_state_snapshot_t *state) {
     if (!ctx || !state) return THERMAL_ERR_INVALID_ARG;
     const thermal_core_internal_t *core = (const thermal_core_internal_t *)ctx;
+    if (core->cfg == NULL) return THERMAL_ERR_STATE;
     const thermal_config_t *cfg = core->cfg;
 
     memset(state, 0, sizeof(*state));
