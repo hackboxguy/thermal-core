@@ -1,21 +1,27 @@
 # thermal-core — platform/linux/Makefile
-# Builds the thermalcored daemon (Stage 9 9c).
+# Builds the thermalcored daemon.
 
 CC ?= gcc
 CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic \
-              -I ../../core -I . $(CFLAGS_EXTRA)
+              -I ../../core -I ../../protocol -I . $(CFLAGS_EXTRA)
 
 BUILD_DIR  = ../../build/platform-linux
 CORE_ARCH  = ../../build/core/libthermal_core.a
 
-# Order matters only for readability; the linker sorts it out.
-SRCS = thermalcored.c \
-       bsp_mock_tmpfs.c \
-       config_jsmn.c \
-       jsmn.c \
-       telem_wire.c
-OBJS = $(SRCS:%.c=$(BUILD_DIR)/%.o)
+# Local platform sources.  thermal_wire.c lives in ../../protocol/
+# and is compiled by an explicit rule below.
+LOCAL_SRCS = thermalcored.c \
+             bsp_mock_tmpfs.c \
+             config_jsmn.c \
+             jsmn.c
+LOCAL_OBJS = $(LOCAL_SRCS:%.c=$(BUILD_DIR)/%.o)
 
+# Canonical wire codec (Stage 10 10a).  Compiled into the daemon
+# directly rather than via a separate archive -- avoids
+# cross-makefile coupling and keeps the build dependency simple.
+PROTOCOL_OBJ = $(BUILD_DIR)/thermal_wire.o
+
+OBJS   = $(LOCAL_OBJS) $(PROTOCOL_OBJ)
 DAEMON = $(BUILD_DIR)/thermalcored
 
 .PHONY: all clean
@@ -29,6 +35,12 @@ $(DAEMON): $(OBJS) $(CORE_ARCH)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS_BASE) -c -o $@ $<
+
+$(BUILD_DIR)/thermal_wire.o: ../../protocol/thermal_wire.c \
+                              ../../protocol/thermal_wire.h \
+                              ../../protocol/thermal_wire_opcodes.h
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS_BASE) -c -o $@ ../../protocol/thermal_wire.c
 
 # The core archive is built by the top-level Makefile.  If a stale
 # `make build` is invoked before `make all`, this rule explains

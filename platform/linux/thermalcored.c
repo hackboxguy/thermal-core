@@ -6,7 +6,7 @@
  *   - JSON loader (9a)           → thermal_config_t + thermalcored_runtime_cfg_t
  *   - bsp_mock_tmpfs (9b)        → file-based sensor reads + actuator writes
  *   - core (Stages 2-7)          → thermal_core_step()
- *   - telem_wire (this commit)   → little-endian UDP frame encoder
+ *   - protocol/thermal_wire (10a)→ canonical TC binary frame codec
  *
  * Loop order per tick (impl-plan §5 Stage 9):
  *   1. drain queued commands       (no-op until Stage 10)
@@ -46,10 +46,12 @@
 #include "thermal_core.h"
 #include "thermal_types.h"
 #include "thermal_config.h"
+#include "thermal_commands.h"
 #include "config_jsmn.h"
 #include "runtime_cfg.h"
 #include "bsp_mock_tmpfs.h"
-#include "telem_wire.h"
+#include "thermal_wire.h"
+#include "thermal_wire_opcodes.h"
 
 /* =============================================================== */
 /* File-scope statics                                               */
@@ -63,7 +65,14 @@
 static volatile sig_atomic_t g_running       = 1;
 static int                   g_log_stderr    = 0;
 static int                   g_telemetry_fd  = -1;
+static int                   g_control_fd    = -1;
+static uint16_t              g_out_seq       = 0;   /* wraps mod 65536 */
 static char                  g_scenario_path[THERMAL_PATH_MAX] = {0};
+
+/* CRC on UDP loopback is on by default per PRD §7.2 line 921 (the
+ * codec is exercised end-to-end and any single-bit corruption is
+ * still caught even on a "trusted" transport). */
+#define DAEMON_CRC_ENABLED  1
 
 /* =============================================================== */
 /* Signal handling                                                  */
@@ -167,6 +176,138 @@ static int open_telemetry_socket(const char *transport_uri)
 }
 
 /* =============================================================== */
+/* Control listener (UDP, loopback-only per PRD §7.5 line 962)      */
+/* =============================================================== */
+
+/* Open the UDP control listener.  URI must be of the form
+ * "udp:127.0.0.1:<port>" — any non-loopback host is rejected
+ * (PRD §7.5 line 962: "must not bind to a non-loopback address
+ * unless a deliberate unsafe-development flag is set").
+ *
+ * Returns the socket fd on success, or -1 if disabled / invalid.
+ * Invalid is non-fatal so the daemon still runs telemetry-only. */
+static int open_control_socket(const char *uri)
+{
+    if (!uri || uri[0] == '\0') {
+        return -1;  /* listener intentionally disabled */
+    }
+    char host[64], port[16];
+    if (parse_udp_uri(uri, host, sizeof(host), port, sizeof(port)) != 0) {
+        fprintf(stderr,
+                "thermalcored: invalid control listen URI '%s'\n", uri);
+        return -1;
+    }
+    if (strcmp(host, "127.0.0.1") != 0) {
+        fprintf(stderr,
+                "thermalcored: control.listen must be loopback (host=127.0.0.1); got '%s'\n",
+                host);
+        return -1;
+    }
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        fprintf(stderr,
+                "thermalcored: control socket failed: %s\n", strerror(errno));
+        return -1;
+    }
+    int one = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  /* 127.0.0.1 */
+    long port_n = strtol(port, NULL, 10);
+    if (port_n <= 0 || port_n > 65535) {
+        fprintf(stderr, "thermalcored: bad control port '%s'\n", port);
+        close(fd);
+        return -1;
+    }
+    addr.sin_port = htons((uint16_t)port_n);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        fprintf(stderr,
+                "thermalcored: control bind('%s:%ld') failed: %s\n",
+                host, port_n, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    fprintf(stderr,
+            "thermalcored: control listener on udp:%s:%ld\n", host, port_n);
+    return fd;
+}
+
+/* Encode + sendto an ACK (status==OK) or NACK (status!=OK).
+ * `dest`/`dest_len` come from the recvfrom that delivered the
+ * matching CMD_REQUEST. */
+static void send_acknack(thermal_wire_opcode_t opcode,
+                         const struct sockaddr_in *dest, socklen_t dest_len,
+                         uint16_t request_seq, uint32_t now_ms,
+                         uint16_t status, uint32_t detail_code)
+{
+    uint8_t buf[THERMAL_WIRE_HEADER_LEN + 32];
+    int n = (opcode == THERMAL_WIRE_OP_CMD_ACK)
+        ? thermal_wire_encode_cmd_ack (buf, sizeof(buf), g_out_seq++,
+                                        now_ms, request_seq,
+                                        status, detail_code,
+                                        DAEMON_CRC_ENABLED)
+        : thermal_wire_encode_cmd_nack(buf, sizeof(buf), g_out_seq++,
+                                        now_ms, request_seq,
+                                        status, detail_code,
+                                        DAEMON_CRC_ENABLED);
+    if (n <= 0 || g_control_fd < 0) return;
+    (void)sendto(g_control_fd, buf, (size_t)n, MSG_DONTWAIT,
+                 (const struct sockaddr *)dest, dest_len);
+}
+
+/* Drain pending CMD_REQUEST frames; apply each to the core and
+ * send an ACK or NACK back to the sender.  Called as Step 1 of
+ * every tick (PRD §5 Stage 9 control-loop order). */
+static void drain_commands(thermal_core_t *core, uint32_t now_ms)
+{
+    if (g_control_fd < 0) return;
+    uint8_t buf[THERMAL_WIRE_MAX_LINUX + THERMAL_WIRE_HEADER_LEN + 16];
+    for (;;) {
+        struct sockaddr_in sender;
+        socklen_t          slen = sizeof(sender);
+        ssize_t n = recvfrom(g_control_fd, buf, sizeof(buf), MSG_DONTWAIT,
+                             (struct sockaddr *)&sender, &slen);
+        if (n <= 0) break;  /* EAGAIN / EWOULDBLOCK */
+
+        thermal_wire_frame_t fr;
+        int dec = thermal_wire_decode_frame(buf, (size_t)n,
+                                            THERMAL_WIRE_MAX_LINUX,
+                                            DAEMON_CRC_ENABLED, &fr);
+        if (dec != THERMAL_WIRE_OK ||
+            fr.opcode != THERMAL_WIRE_OP_CMD_REQUEST) {
+            /* Transport-level reject: silently drop. */
+            continue;
+        }
+        thermal_command_t cmd;
+        if (thermal_wire_decode_cmd_request(&fr, &cmd) != THERMAL_WIRE_OK) {
+            send_acknack(THERMAL_WIRE_OP_CMD_NACK, &sender, slen,
+                         fr.seq, now_ms,
+                         (uint16_t)THERMAL_ERR_INVALID_ARG, 0);
+            continue;
+        }
+        thermal_command_result_t result;
+        memset(&result, 0, sizeof(result));
+        thermal_status_t s = thermal_core_apply_command(core, now_ms,
+                                                        &cmd, &result);
+        if (s == THERMAL_OK && result.status == THERMAL_OK) {
+            send_acknack(THERMAL_WIRE_OP_CMD_ACK, &sender, slen,
+                         fr.seq, now_ms, 0, result.detail_code);
+        } else {
+            uint16_t st = (s != THERMAL_OK) ? (uint16_t)s
+                                            : (uint16_t)result.status;
+            send_acknack(THERMAL_WIRE_OP_CMD_NACK, &sender, slen,
+                         fr.seq, now_ms, st, result.detail_code);
+        }
+    }
+}
+
+/* =============================================================== */
 /* Core callbacks                                                    */
 /* =============================================================== */
 
@@ -174,9 +315,14 @@ static void telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
                               int32_t value)
 {
     if (g_telemetry_fd < 0) return;
-    uint8_t buf[TELEM_WIRE_SAMPLE_LEN];
-    telem_wire_pack_sample(buf, ts_ms, signal_id, value);
-    (void)send(g_telemetry_fd, buf, sizeof(buf), MSG_DONTWAIT);
+    uint8_t buf[THERMAL_WIRE_HEADER_LEN + 16];   /* sample = 8 byte payload */
+    int n = thermal_wire_encode_telem_sample(buf, sizeof(buf),
+                                              g_out_seq++, ts_ms,
+                                              signal_id, /*flags*/ 0,
+                                              value, DAEMON_CRC_ENABLED);
+    if (n > 0) {
+        (void)send(g_telemetry_fd, buf, (size_t)n, MSG_DONTWAIT);
+    }
 }
 
 static void log_event_cb(uint32_t ts_ms, uint16_t code,
@@ -192,9 +338,14 @@ static void log_event_cb(uint32_t ts_ms, uint16_t code,
                 ts_ms, code, a1, a2, a3, a4);
     }
     if (g_telemetry_fd >= 0) {
-        uint8_t buf[TELEM_WIRE_EVENT_LEN];
-        telem_wire_pack_event(buf, ts_ms, code, a1, a2, a3, a4);
-        (void)send(g_telemetry_fd, buf, sizeof(buf), MSG_DONTWAIT);
+        uint8_t buf[THERMAL_WIRE_HEADER_LEN + 32]; /* event = 18 byte payload */
+        int n = thermal_wire_encode_telem_event(buf, sizeof(buf),
+                                                 g_out_seq++, ts_ms,
+                                                 code, a1, a2, a3, a4,
+                                                 DAEMON_CRC_ENABLED);
+        if (n > 0) {
+            (void)send(g_telemetry_fd, buf, (size_t)n, MSG_DONTWAIT);
+        }
     }
 }
 
@@ -521,6 +672,7 @@ int main(int argc, char **argv)
     /* === Syslog (always open) + UDP telemetry (best-effort) ===== */
     openlog("thermalcored", LOG_PID, LOG_DAEMON);
     g_telemetry_fd = open_telemetry_socket(runtime.global.telemetry_transport);
+    g_control_fd   = open_control_socket(runtime.global.control_listen);
 
     /* === Core init =============================================== */
     thermal_core_t              core;
@@ -556,7 +708,8 @@ int main(int argc, char **argv)
                    : scenario_clock_next(&now_ms);
         if (rc != 0) break;
 
-        /* Step 1: drain queued commands -- no-op until Stage 10. */
+        /* Step 1: drain queued commands (PRD §5 Stage 9). */
+        drain_commands(&core, now_ms);
 
         /* Step 2: build snapshot from current BSP state. */
         thermal_sample_t          samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
@@ -591,6 +744,10 @@ int main(int argc, char **argv)
     if (g_telemetry_fd >= 0) {
         close(g_telemetry_fd);
         g_telemetry_fd = -1;
+    }
+    if (g_control_fd >= 0) {
+        close(g_control_fd);
+        g_control_fd = -1;
     }
     closelog();
     return 0;

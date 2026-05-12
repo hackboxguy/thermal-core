@@ -89,6 +89,6 @@
   },
 
   "control": {
-    "listen": "/tmp/thermal-core-smoke/ctl.sock"
+    "listen": "udp:127.0.0.1:9002"
   }
 }

@@ -104,17 +104,6 @@ build/test/test_bsp_mock_tmpfs: \
 	    platform/linux/bsp_mock_tmpfs.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
-# --- Special: telem_wire encoder test ---
-build/test/test_telem_wire: \
-    test/unit/test_telem_wire.c test/unit/harness.h \
-    platform/linux/telem_wire.c platform/linux/telem_wire.h \
-    $(CORE_ARCHIVE)
-	@mkdir -p build/test
-	$(CC) $(CFLAGS_BASE) -I platform/linux \
-	    -o $@ test/unit/test_telem_wire.c \
-	    platform/linux/telem_wire.c \
-	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
-
 # --- Special: protocol/thermal_wire round-trip + CRC + cap test ---
 build/test/test_thermal_wire: \
     test/unit/test_thermal_wire.c test/unit/harness.h \
