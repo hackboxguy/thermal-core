@@ -250,4 +250,82 @@ TEST_CASE(validate_config) {
     cfg.config_version = 1;
     cfg.control_period_ms = 100;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* ====================================================================
+     * PID-zone rules (Stage 5 commit 5a additions, PRD §5.3 lines 796-798)
+     * ==================================================================== */
+
+    /* Build a valid PID-zone config: start from make_valid_config, then
+     * switch the zone to PID with full PID config and a critical trip. */
+    #define MAKE_PID_CONFIG(c) do {                                            \
+        make_valid_config(&(c));                                               \
+        (c).zones[0].governor = THERMAL_GOVERNOR_PID;                          \
+        (c).zones[0].pid.kp_q16 = 4915;                                        \
+        (c).zones[0].pid.ki_q16 = 327;                                         \
+        (c).zones[0].pid.kd_q16 = 0;                                           \
+        (c).zones[0].pid.setpoint_mc = 75000;                                  \
+        (c).zones[0].pid.kp_min_q16 = 0;                                       \
+        (c).zones[0].pid.kp_max_q16 = 327680;                                  \
+        (c).zones[0].pid.ki_min_q16 = 0;                                       \
+        (c).zones[0].pid.ki_max_q16 = 65536;                                   \
+        (c).zones[0].pid.kd_min_q16 = 0;                                       \
+        (c).zones[0].pid.kd_max_q16 = 65536;                                   \
+        (c).zones[0].pid.setpoint_min_mc = 50000;                              \
+        (c).zones[0].pid.setpoint_max_mc = 95000;                              \
+        (c).zones[0].pid.dt_min_ms = 50;                                       \
+        (c).zones[0].pid.dt_max_ms = 500;                                      \
+        /* Existing trips: [0]=WARN at 70000, [1]=CRITICAL at 90000.           \
+         * The CRITICAL trip already satisfies the trip-floor rule. */         \
+    } while (0)
+
+    /* === PID baseline: valid PID zone returns OK === */
+    MAKE_PID_CONFIG(cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* === Rule 28: kp_q16 below kp_min_q16 === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.kp_q16 = -1;       /* below kp_min_q16 = 0 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 28: ki_q16 above ki_max_q16 === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.ki_q16 = 1000000;  /* above ki_max_q16 = 65536 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 28: kd_q16 below kd_min_q16 === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.kd_q16 = -100;     /* below kd_min_q16 = 0 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 29: setpoint above bounds === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.setpoint_mc = 100000;  /* above setpoint_max_mc = 95000 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 30: dt_min_ms == 0 === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.dt_min_ms = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 30: dt_min_ms > control_period_ms === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.dt_min_ms = 200;     /* control_period = 100 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 30: dt_max_ms < control_period_ms === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.dt_max_ms = 50;      /* control_period = 100 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 31: PID zone with only WARN trips (no critical/shutdown floor) === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].trips[1].severity = THERMAL_TRIP_WARN;  /* downgrade CRITICAL */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 31: PID zone with SHUTDOWN trip is OK === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].trips[1].severity = THERMAL_TRIP_SHUTDOWN;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    #undef MAKE_PID_CONFIG
 }

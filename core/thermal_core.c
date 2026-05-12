@@ -180,6 +180,49 @@ static thermal_status_t validate_zone(const thermal_config_t *cfg,
             }
         }
     }
+
+    /* PID-zone-specific rules (PRD §5.3 lines 796-798) */
+    if (z->governor == THERMAL_GOVERNOR_PID) {
+        const thermal_pid_cfg_t *p = &z->pid;
+        /* Rule 28: gain bounds */
+        if (p->kp_q16 < p->kp_min_q16 || p->kp_q16 > p->kp_max_q16) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (p->ki_q16 < p->ki_min_q16 || p->ki_q16 > p->ki_max_q16) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (p->kd_q16 < p->kd_min_q16 || p->kd_q16 > p->kd_max_q16) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 29: setpoint bounds */
+        if (p->setpoint_mc < p->setpoint_min_mc ||
+            p->setpoint_mc > p->setpoint_max_mc) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 30: dt clamp sanity */
+        if (p->dt_min_ms == 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (p->dt_min_ms > cfg->control_period_ms) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (p->dt_max_ms < cfg->control_period_ms) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 31: at least one critical or shutdown trip (safety floor) */
+        int has_floor = 0;
+        for (uint8_t i = 0; i < z->trip_count; i++) {
+            if (z->trips[i].severity == THERMAL_TRIP_CRITICAL ||
+                z->trips[i].severity == THERMAL_TRIP_SHUTDOWN) {
+                has_floor = 1;
+                break;
+            }
+        }
+        if (!has_floor) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+    }
+
     return THERMAL_OK;
 }
 
