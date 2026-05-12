@@ -14,6 +14,14 @@ CORE_SRCS = $(wildcard core/*.c)
 CORE_OBJS = $(patsubst core/%.c,build/core/%.o,$(CORE_SRCS))
 CORE_ARCHIVE = build/core/libthermal_core.a
 
+# --- Protocol archive (Stage 10 10a) ---
+# Portable C99 wire codec; depends only on core/thermal_commands.h.
+# Not linked into anything in 10a -- the unit test compiles its own
+# copy directly.  10b switches the daemon to use this archive.
+PROTOCOL_SRCS    = $(wildcard protocol/*.c)
+PROTOCOL_OBJS    = $(patsubst protocol/%.c,build/protocol/%.o,$(PROTOCOL_SRCS))
+PROTOCOL_ARCHIVE = build/protocol/libthermal_protocol.a
+
 # --- Portability-guard runtime runner ---
 CORE_ONLY_RUNNER = build/test/core_only_runner
 WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc \
@@ -105,6 +113,18 @@ build/test/test_telem_wire: \
 	$(CC) $(CFLAGS_BASE) -I platform/linux \
 	    -o $@ test/unit/test_telem_wire.c \
 	    platform/linux/telem_wire.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Special: protocol/thermal_wire round-trip + CRC + cap test ---
+build/test/test_thermal_wire: \
+    test/unit/test_thermal_wire.c test/unit/harness.h \
+    protocol/thermal_wire.c protocol/thermal_wire.h \
+    protocol/thermal_wire_opcodes.h \
+    core/thermal_commands.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I protocol \
+	    -o $@ test/unit/test_thermal_wire.c \
+	    protocol/thermal_wire.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
@@ -205,6 +225,17 @@ build/core/%.o: core/%.c core/thermal_config.h
 
 $(CORE_ARCHIVE): $(CORE_OBJS)
 	@mkdir -p build/core
+	ar rcs $@ $^
+
+# --- Protocol archive (Stage 10 10a) ---
+build/protocol/%.o: protocol/%.c protocol/thermal_wire.h \
+                    protocol/thermal_wire_opcodes.h \
+                    core/thermal_commands.h
+	@mkdir -p build/protocol
+	$(CC) $(CFLAGS_BASE) -I protocol -c -o $@ $<
+
+$(PROTOCOL_ARCHIVE): $(PROTOCOL_OBJS)
+	@mkdir -p build/protocol
 	ar rcs $@ $^
 
 # --- Portability guard: static nm -u + runtime --wrap'd runner ---
@@ -475,8 +506,8 @@ build: $(CORE_ARCHIVE)
 # itself with a citation back to the upstream commit.
 clang-tidy:
 	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
-	clang-tidy --quiet core/*.c platform/linux/*.c support/*.c -- \
-	    $(CFLAGS_BASE) -I platform/linux -I support
+	clang-tidy --quiet core/*.c platform/linux/*.c support/*.c protocol/*.c -- \
+	    $(CFLAGS_BASE) -I platform/linux -I support -I protocol
 
 # --- cppcheck on core/ + platform/linux/ (Stage 9 9c scope extension).
 # Suppressions in .cppcheck-suppressions (cppcheck's format doesn't
@@ -493,8 +524,8 @@ cppcheck:
 	    --error-exitcode=1 \
 	    --std=c99 \
 	    --suppressions-list=.cppcheck-suppressions \
-	    -I core -I platform/linux -I support \
-	    core/*.c platform/linux/*.c support/*.c
+	    -I core -I platform/linux -I support -I protocol \
+	    core/*.c platform/linux/*.c support/*.c protocol/*.c
 
 clean:
 	rm -rf build
