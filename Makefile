@@ -96,6 +96,17 @@ build/test/test_bsp_mock_tmpfs: \
 	    platform/linux/bsp_mock_tmpfs.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Special: telem_wire encoder test ---
+build/test/test_telem_wire: \
+    test/unit/test_telem_wire.c test/unit/harness.h \
+    platform/linux/telem_wire.c platform/linux/telem_wire.h \
+    $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux \
+	    -o $@ test/unit/test_telem_wire.c \
+	    platform/linux/telem_wire.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
 	@mkdir -p build/core
@@ -326,12 +337,18 @@ asan:
 build:
 	$(MAKE) -C platform/linux CC=$(CC)
 
-# --- clang-tidy on core/ only (Stage 7 7d). Config in .clang-tidy. ---
+# --- clang-tidy on core/ + platform/linux/ (Stage 9 9c scope extension).
+# Config in .clang-tidy. ---
+# platform/linux/jsmn.c is vendored zserge code; clang-tidy is run
+# against it but its findings are not the project's to fix.  If/when
+# vendored noise appears, file targeted nolint comments in jsmn.c
+# itself with a citation back to the upstream commit.
 clang-tidy:
 	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
-	clang-tidy --quiet core/*.c -- $(CFLAGS_BASE)
+	clang-tidy --quiet core/*.c platform/linux/*.c -- \
+	    $(CFLAGS_BASE) -I platform/linux
 
-# --- cppcheck on core/ only (Stage 8 8b). ---
+# --- cppcheck on core/ + platform/linux/ (Stage 9 9c scope extension).
 # Suppressions in .cppcheck-suppressions (cppcheck's format doesn't
 # allow inline comments). Current suppressions:
 #   missingIncludeSystem -- cppcheck wants every <header> resolvable on
@@ -346,8 +363,8 @@ cppcheck:
 	    --error-exitcode=1 \
 	    --std=c99 \
 	    --suppressions-list=.cppcheck-suppressions \
-	    -I core \
-	    core/*.c
+	    -I core -I platform/linux \
+	    core/*.c platform/linux/*.c
 
 clean:
 	rm -rf build

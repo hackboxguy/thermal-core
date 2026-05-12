@@ -54,7 +54,6 @@
 
 typedef struct {
     const char *json;
-    size_t      json_len;
     jsmntok_t  *toks;
     int         n_toks;
     char       *err;
@@ -1719,7 +1718,6 @@ thermal_status_t thermal_config_jsmn_parse(const char *json_text,
 
     parse_ctx_t ctx = {
         .json     = json_text,
-        .json_len = json_len,
         .toks     = tokens,
         .n_toks   = 0,
         .err      = err_msg,

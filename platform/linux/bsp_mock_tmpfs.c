@@ -90,7 +90,7 @@ int bsp_mock_tmpfs_read_sensor(const thermalcored_runtime_cfg_t *runtime,
     if (!runtime || !cfg || !out) return -1;
     if (slot >= cfg->sensor_count) return -1;
 
-    long v;
+    long v = 0;
     int rc = read_int_file(runtime->sensors[slot].source, &v);
     fill_sample(out, cfg->sensors[slot].id, THERMAL_SAMPLE_TEMP_MC,
                 now_ms, rc == 0, v);
@@ -122,7 +122,7 @@ int bsp_mock_tmpfs_read_context(const thermalcored_runtime_cfg_t *runtime,
     if (!runtime || !cfg || !out) return -1;
     if (slot >= cfg->context_count) return -1;
 
-    long v;
+    long v = 0;
     int rc = read_int_file(runtime->contexts[slot].source, &v);
     fill_sample(out, cfg->contexts[slot].id, THERMAL_SAMPLE_CONTEXT_I32,
                 now_ms, rc == 0, v);

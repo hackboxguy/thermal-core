@@ -1,0 +1,597 @@
+/* platform/linux/thermalcored.c
+ *
+ * Stage 9 9c — Linux daemon entry point.
+ *
+ * Glues:
+ *   - JSON loader (9a)           → thermal_config_t + thermalcored_runtime_cfg_t
+ *   - bsp_mock_tmpfs (9b)        → file-based sensor reads + actuator writes
+ *   - core (Stages 2-7)          → thermal_core_step()
+ *   - telem_wire (this commit)   → little-endian UDP frame encoder
+ *
+ * Loop order per tick (impl-plan §5 Stage 9):
+ *   1. drain queued commands       (no-op until Stage 10)
+ *   2. build input snapshot         (bsp_mock_tmpfs_build_snapshot)
+ *   3. thermal_core_step()          (callbacks emit telemetry / events)
+ *   4. write actuator frame         (bsp_mock_tmpfs_write_frame)
+ *
+ * Clock modes:
+ *   --clock=wall      monotonic + absolute clock_nanosleep
+ *   --clock=scenario  AF_UNIX SOCK_STREAM, reads "TICK <ms>\n" lines
+ *                     from the scenario runner (default URI
+ *                     unix:/tmp/thermalcored-clock.sock).
+ */
+/* POSIX feature test: sigaction, clock_nanosleep, getaddrinfo,
+ * sockaddr_un + struct linger, openlog/syslog.  The leading
+ * underscore is required by POSIX itself; clang-tidy's
+ * reserved-identifier check is intentionally suppressed here. */
+/* NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <getopt.h>
+#include <netdb.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+
+#include "thermal_core.h"
+#include "thermal_types.h"
+#include "thermal_config.h"
+#include "config_jsmn.h"
+#include "runtime_cfg.h"
+#include "bsp_mock_tmpfs.h"
+#include "telem_wire.h"
+
+/* =============================================================== */
+/* File-scope statics                                               */
+/* =============================================================== */
+/*
+ * Limited to this translation unit; the core never sees them.
+ * The callbacks (log_event / telemetry_emit) read them to decide
+ * where to route the data.
+ */
+
+static volatile sig_atomic_t g_running       = 1;
+static int                   g_log_stderr    = 0;
+static int                   g_telemetry_fd  = -1;
+static char                  g_scenario_path[THERMAL_PATH_MAX] = {0};
+
+/* =============================================================== */
+/* Signal handling                                                  */
+/* =============================================================== */
+
+static void on_signal(int sig)
+{
+    (void)sig;
+    g_running = 0;
+}
+
+static int install_signal_handlers(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGTERM, &sa, NULL) != 0) return -1;
+    if (sigaction(SIGINT,  &sa, NULL) != 0) return -1;
+    if (sigaction(SIGHUP,  &sa, NULL) != 0) return -1;
+
+    /* Ignore SIGPIPE so a closed telemetry socket doesn't kill us. */
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, NULL);
+    return 0;
+}
+
+/* =============================================================== */
+/* Telemetry UDP                                                    */
+/* =============================================================== */
+
+/* Parse "udp:host:port" into host + port strings. Returns 0 on
+ * success, -1 if the URI doesn't match. host/port are NUL-terminated
+ * on success. */
+static int parse_udp_uri(const char *uri,
+                         char *host, size_t host_sz,
+                         char *port, size_t port_sz)
+{
+    if (!uri || strncmp(uri, "udp:", 4) != 0) return -1;
+    const char *p   = uri + 4;
+    const char *col = strrchr(p, ':');
+    if (!col || col == p) return -1;
+    size_t hlen = (size_t)(col - p);
+    if (hlen + 1 > host_sz) return -1;
+    memcpy(host, p, hlen);
+    host[hlen] = '\0';
+
+    size_t plen = strlen(col + 1);
+    if (plen == 0 || plen + 1 > port_sz) return -1;
+    memcpy(port, col + 1, plen + 1);
+    return 0;
+}
+
+/* Returns a connected UDP socket fd on success, or -1 on any
+ * error (with a stderr warning).  Caller closes the fd. */
+static int open_telemetry_socket(const char *transport_uri)
+{
+    if (!transport_uri || transport_uri[0] == '\0') {
+        fprintf(stderr,
+                "thermalcored: no telemetry transport configured\n");
+        return -1;
+    }
+
+    char host[64], port[16];
+    if (parse_udp_uri(transport_uri, host, sizeof(host),
+                      port, sizeof(port)) != 0) {
+        fprintf(stderr,
+                "thermalcored: invalid telemetry transport URI '%s'\n",
+                transport_uri);
+        return -1;
+    }
+
+    struct addrinfo hints, *ai = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    int rc = getaddrinfo(host, port, &hints, &ai);
+    if (rc != 0 || !ai) {
+        fprintf(stderr,
+                "thermalcored: getaddrinfo('%s:%s') failed: %s\n",
+                host, port, gai_strerror(rc));
+        return -1;
+    }
+
+    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd < 0) {
+        fprintf(stderr,
+                "thermalcored: socket failed: %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
+        fprintf(stderr,
+                "thermalcored: connect failed: %s\n", strerror(errno));
+        close(fd);
+        freeaddrinfo(ai);
+        return -1;
+    }
+    freeaddrinfo(ai);
+    return fd;
+}
+
+/* =============================================================== */
+/* Core callbacks                                                    */
+/* =============================================================== */
+
+static void telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
+                              int32_t value)
+{
+    if (g_telemetry_fd < 0) return;
+    uint8_t buf[TELEM_WIRE_SAMPLE_LEN];
+    telem_wire_pack_sample(buf, ts_ms, signal_id, value);
+    (void)send(g_telemetry_fd, buf, sizeof(buf), MSG_DONTWAIT);
+}
+
+static void log_event_cb(uint32_t ts_ms, uint16_t code,
+                         uint32_t a1, uint32_t a2,
+                         uint32_t a3, uint32_t a4)
+{
+    syslog(LOG_INFO,
+           "[%u ms] event 0x%04x a=(%u,%u,%u,%u)",
+           ts_ms, code, a1, a2, a3, a4);
+    if (g_log_stderr) {
+        fprintf(stderr,
+                "[%u ms] event 0x%04x a=(%u,%u,%u,%u)\n",
+                ts_ms, code, a1, a2, a3, a4);
+    }
+    if (g_telemetry_fd >= 0) {
+        uint8_t buf[TELEM_WIRE_EVENT_LEN];
+        telem_wire_pack_event(buf, ts_ms, code, a1, a2, a3, a4);
+        (void)send(g_telemetry_fd, buf, sizeof(buf), MSG_DONTWAIT);
+    }
+}
+
+/* =============================================================== */
+/* Clock                                                             */
+/* =============================================================== */
+
+/* Wall-clock state */
+static struct timespec g_t0;
+static uint64_t        g_period_ns;
+static uint64_t        g_next_deadline_ns;
+
+static uint64_t timespec_to_ns(const struct timespec *t)
+{
+    return (uint64_t)t->tv_sec * 1000000000ull + (uint64_t)t->tv_nsec;
+}
+
+static void ns_to_timespec(uint64_t ns, struct timespec *t)
+{
+    t->tv_sec  = (time_t)(ns / 1000000000ull);
+    t->tv_nsec = (long)(ns % 1000000000ull);
+}
+
+static int wall_clock_init(uint16_t period_ms)
+{
+    if (clock_gettime(CLOCK_MONOTONIC, &g_t0) != 0) return -1;
+    g_period_ns        = (uint64_t)period_ms * 1000000ull;
+    g_next_deadline_ns = timespec_to_ns(&g_t0) + g_period_ns;
+    return 0;
+}
+
+/* Sleep until the next wall-clock tick, return now_ms (relative to t0). */
+static int wall_clock_next(uint32_t *now_ms_out)
+{
+    struct timespec deadline;
+    ns_to_timespec(g_next_deadline_ns, &deadline);
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
+                           &deadline, NULL) == EINTR) {
+        if (!g_running) return -1;
+    }
+    if (!g_running) return -1;
+
+    /* now_ms = (next_deadline - t0) / 1ms */
+    uint64_t rel_ns = g_next_deadline_ns - timespec_to_ns(&g_t0);
+    *now_ms_out = (uint32_t)(rel_ns / 1000000ull);
+    g_next_deadline_ns += g_period_ns;
+    return 0;
+}
+
+/* Scenario-clock state */
+static int g_scenario_listen_fd = -1;
+static int g_scenario_conn_fd   = -1;
+static char g_scenario_line[256];
+static size_t g_scenario_pos = 0;
+
+static int scenario_clock_init(const char *uri)
+{
+    /* Expect "unix:<path>". */
+    if (strncmp(uri, "unix:", 5) != 0) {
+        fprintf(stderr,
+                "thermalcored: scenario clock URI must start with 'unix:'; got '%s'\n",
+                uri);
+        return -1;
+    }
+    const char *path = uri + 5;
+    size_t path_len = strlen(path);
+    if (path_len + 1 > sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        fprintf(stderr,
+                "thermalcored: scenario clock path too long: '%s'\n", path);
+        return -1;
+    }
+    if (path_len + 1 > sizeof(g_scenario_path)) {
+        fprintf(stderr,
+                "thermalcored: scenario clock path too long: '%s'\n", path);
+        return -1;
+    }
+    memcpy(g_scenario_path, path, path_len + 1);
+
+    /* Remove any stale socket file from a prior run. */
+    (void)unlink(path);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        fprintf(stderr,
+                "thermalcored: AF_UNIX socket failed: %s\n", strerror(errno));
+        return -1;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, path_len + 1);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        fprintf(stderr,
+                "thermalcored: bind('%s') failed: %s\n", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 1) != 0) {
+        fprintf(stderr,
+                "thermalcored: listen failed: %s\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    g_scenario_listen_fd = fd;
+
+    fprintf(stderr,
+            "thermalcored: waiting for scenario runner on %s ...\n", path);
+    int conn = accept(fd, NULL, NULL);
+    if (conn < 0) {
+        if (errno != EINTR) {
+            fprintf(stderr,
+                    "thermalcored: accept failed: %s\n", strerror(errno));
+        }
+        return -1;
+    }
+    g_scenario_conn_fd = conn;
+    return 0;
+}
+
+/* Read a newline-terminated line from the scenario connection.
+ * Returns 0 on success (line in g_scenario_line, NUL-terminated,
+ * newline stripped), -1 on EOF/error/EINTR-with-running-cleared. */
+static int scenario_read_line(void)
+{
+    g_scenario_pos = 0;
+    g_scenario_line[0] = '\0';
+    while (g_scenario_pos + 1 < sizeof(g_scenario_line)) {
+        char c;
+        ssize_t r = read(g_scenario_conn_fd, &c, 1);
+        if (r == 1) {
+            if (c == '\n') {
+                g_scenario_line[g_scenario_pos] = '\0';
+                return 0;
+            }
+            g_scenario_line[g_scenario_pos++] = c;
+            continue;
+        }
+        if (r == 0) return -1;            /* EOF */
+        if (errno == EINTR) {
+            if (!g_running) return -1;
+            continue;
+        }
+        fprintf(stderr,
+                "thermalcored: scenario read failed: %s\n", strerror(errno));
+        return -1;
+    }
+    fprintf(stderr,
+            "thermalcored: scenario line too long, dropping connection\n");
+    return -1;
+}
+
+static int scenario_clock_next(uint32_t *now_ms_out)
+{
+    if (scenario_read_line() != 0) return -1;
+    unsigned int ms = 0;
+    if (sscanf(g_scenario_line, "TICK %u", &ms) != 1) {
+        fprintf(stderr,
+                "thermalcored: bad scenario line '%s' (want 'TICK <ms>')\n",
+                g_scenario_line);
+        return -1;
+    }
+    *now_ms_out = (uint32_t)ms;
+    return 0;
+}
+
+static void scenario_clock_close(void)
+{
+    if (g_scenario_conn_fd >= 0) {
+        close(g_scenario_conn_fd);
+        g_scenario_conn_fd = -1;
+    }
+    if (g_scenario_listen_fd >= 0) {
+        close(g_scenario_listen_fd);
+        g_scenario_listen_fd = -1;
+    }
+    if (g_scenario_path[0] != '\0') {
+        (void)unlink(g_scenario_path);
+        g_scenario_path[0] = '\0';
+    }
+}
+
+/* =============================================================== */
+/* Config loader                                                    */
+/* =============================================================== */
+
+static char *read_whole_file(const char *path, size_t *out_len)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr,
+                "thermalcored: cannot open config '%s': %s\n",
+                path, strerror(errno));
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz < 0)                    { fclose(f); return NULL; }
+    if (fseek(f, 0, SEEK_SET) != 0){ fclose(f); return NULL; }
+    char *buf = (char *)malloc((size_t)sz);
+    if (!buf)                      { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (n != (size_t)sz)           { free(buf); return NULL; }
+    *out_len = n;
+    return buf;
+}
+
+/* =============================================================== */
+/* CLI                                                              */
+/* =============================================================== */
+
+static void print_usage(FILE *out)
+{
+    fprintf(out,
+        "thermalcored - thermal-core Linux daemon\n"
+        "\n"
+        "Usage:\n"
+        "  thermalcored --config=<path> [--clock=wall|scenario]\n"
+        "               [--scenario-clock-uri=unix:<path>] [--log-stderr]\n"
+        "\n"
+        "Options:\n"
+        "  --config=PATH            Required. JSON config file.\n"
+        "  --clock=MODE             wall (default) or scenario.\n"
+        "  --scenario-clock-uri=URI default unix:/tmp/thermalcored-clock.sock\n"
+        "  --log-stderr             Tee log_event lines to stderr.\n"
+        "  --help                   Print this message and exit.\n");
+}
+
+typedef enum { CLOCK_MODE_WALL, CLOCK_MODE_SCENARIO } clock_mode_t;
+
+typedef struct {
+    const char  *config_path;
+    clock_mode_t clock_mode;
+    const char  *scenario_uri;
+    int          log_stderr;
+} cli_opts_t;
+
+static int parse_cli(int argc, char **argv, cli_opts_t *opts)
+{
+    opts->config_path  = NULL;
+    opts->clock_mode   = CLOCK_MODE_WALL;
+    opts->scenario_uri = "unix:/tmp/thermalcored-clock.sock";
+    opts->log_stderr   = 0;
+
+    static struct option longopts[] = {
+        {"config",              required_argument, 0, 'c'},
+        {"clock",               required_argument, 0, 'k'},
+        {"scenario-clock-uri",  required_argument, 0, 'u'},
+        {"log-stderr",          no_argument,       0, 's'},
+        {"help",                no_argument,       0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int c;
+    while ((c = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
+        switch (c) {
+        case 'c': opts->config_path = optarg; break;
+        case 'k':
+            if (strcmp(optarg, "wall") == 0) {
+                opts->clock_mode = CLOCK_MODE_WALL;
+            } else if (strcmp(optarg, "scenario") == 0) {
+                opts->clock_mode = CLOCK_MODE_SCENARIO;
+            } else {
+                fprintf(stderr,
+                        "thermalcored: --clock must be 'wall' or 'scenario'\n");
+                return -1;
+            }
+            break;
+        case 'u': opts->scenario_uri = optarg; break;
+        case 's': opts->log_stderr   = 1;      break;
+        case 'h': print_usage(stdout); return 1;
+        default:  return -1;
+        }
+    }
+    if (!opts->config_path) {
+        fprintf(stderr,
+                "thermalcored: --config=<path> is required\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* =============================================================== */
+/* Main                                                              */
+/* =============================================================== */
+
+int main(int argc, char **argv)
+{
+    cli_opts_t opts;
+    int prc = parse_cli(argc, argv, &opts);
+    if (prc != 0) {
+        if (prc > 0) return 0;        /* --help */
+        print_usage(stderr);
+        return 2;
+    }
+    g_log_stderr = opts.log_stderr;
+
+    /* === Config load ============================================= */
+    size_t json_len;
+    char *json = read_whole_file(opts.config_path, &json_len);
+    if (!json) return 1;
+
+    thermal_config_t           cfg;
+    thermalcored_runtime_cfg_t runtime;
+    char                       err[256];
+    thermal_status_t cs = thermal_config_jsmn_parse(json, json_len,
+                                                    &cfg, &runtime,
+                                                    err, sizeof(err));
+    free(json);
+    if (cs != THERMAL_OK) {
+        fprintf(stderr,
+                "thermalcored: config rejected: %s (status=%d)\n",
+                err, (int)cs);
+        return 1;
+    }
+
+    /* === Signals ================================================= */
+    if (install_signal_handlers() != 0) {
+        fprintf(stderr,
+                "thermalcored: sigaction failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    /* === Syslog (always open) + UDP telemetry (best-effort) ===== */
+    openlog("thermalcored", LOG_PID, LOG_DAEMON);
+    g_telemetry_fd = open_telemetry_socket(runtime.global.telemetry_transport);
+
+    /* === Core init =============================================== */
+    thermal_core_t              core;
+    thermal_core_callbacks_t    callbacks;
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.log_event      = log_event_cb;
+    callbacks.telemetry_emit = telemetry_emit_cb;
+    thermal_status_t is = thermal_core_init(&core, &cfg, &callbacks);
+    if (is != THERMAL_OK) {
+        fprintf(stderr,
+                "thermalcored: thermal_core_init failed: status=%d\n", (int)is);
+        return 1;
+    }
+
+    /* === Clock setup ============================================ */
+    if (opts.clock_mode == CLOCK_MODE_WALL) {
+        if (wall_clock_init(cfg.control_period_ms) != 0) {
+            fprintf(stderr,
+                    "thermalcored: wall clock init failed: %s\n", strerror(errno));
+            return 1;
+        }
+    } else {
+        if (scenario_clock_init(opts.scenario_uri) != 0) {
+            return 1;
+        }
+    }
+
+    /* === Main loop ============================================== */
+    while (g_running) {
+        uint32_t now_ms;
+        int rc = (opts.clock_mode == CLOCK_MODE_WALL)
+                   ? wall_clock_next(&now_ms)
+                   : scenario_clock_next(&now_ms);
+        if (rc != 0) break;
+
+        /* Step 1: drain queued commands -- no-op until Stage 10. */
+
+        /* Step 2: build snapshot from current BSP state. */
+        thermal_sample_t          samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
+        thermal_input_snapshot_t  snap;
+        if (bsp_mock_tmpfs_build_snapshot(&runtime, &cfg, now_ms,
+                                          samples,
+                                          (uint8_t)(sizeof(samples) /
+                                                    sizeof(samples[0])),
+                                          &snap) != 0) {
+            fprintf(stderr,
+                    "thermalcored: build_snapshot failed (samples budget too small?)\n");
+            break;
+        }
+
+        /* Step 3: core step (telemetry + log callbacks fire inside). */
+        thermal_output_frame_t out;
+        memset(&out, 0, sizeof(out));
+        thermal_status_t ss = thermal_core_step(&core, &snap, &out);
+        if (ss != THERMAL_OK) {
+            fprintf(stderr,
+                    "thermalcored: thermal_core_step status=%d\n", (int)ss);
+        }
+
+        /* Step 4: push actuator commands to sysfs/tmpfs. */
+        (void)bsp_mock_tmpfs_write_frame(&runtime, &cfg, &out);
+    }
+
+    /* === Cleanup ================================================= */
+    if (opts.clock_mode == CLOCK_MODE_SCENARIO) {
+        scenario_clock_close();
+    }
+    if (g_telemetry_fd >= 0) {
+        close(g_telemetry_fd);
+        g_telemetry_fd = -1;
+    }
+    closelog();
+    return 0;
+}
