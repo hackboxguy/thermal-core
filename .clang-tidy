@@ -1,0 +1,71 @@
+---
+# clang-tidy config for thermal-core (Stage 7 7d).
+#
+# Conservative starting point: actionable bug-pattern checks for C99
+# embedded code. Style/modernization checks geared toward C++ codebases
+# are disabled. Project convention is -Werror everywhere; clang-tidy
+# matches via WarningsAsErrors.
+#
+# Disabled-check rationale (one line each):
+#   bugprone-easily-swappable-parameters  PRD-pinned signatures with
+#                                         multiple ints of same type.
+#   bugprone-narrowing-conversions        Deliberate uint8_t/uint16_t
+#                                         coercions throughout.
+#   bugprone-signed-char-misuse           strncpy on char[] name fields.
+#   bugprone-not-null-terminated-result   strncmp on fixed-size char[]
+#                                         name field with cfg-loader-
+#                                         guaranteed termination.
+#   bugprone-assignment-in-if-condition   Idiomatic short-circuit error
+#                                         chain: if ((s = validate_X())).
+#   cert-err33-c / cert-err34-c          core uses no stdio/strtoX.
+#   misc-include-cleaner                  Standard-lib include policy
+#                                         is enforced by the portability
+#                                         guard, not clang-tidy.
+#   misc-no-recursion                     Allow simple recursive helpers
+#                                         if/when introduced.
+#   readability-magic-numbers             Q16_ONE, trip thresholds,
+#                                         control_period etc. would
+#                                         generate hundreds of warnings.
+#   readability-function-cognitive-       thermal_core_step is large by
+#       complexity                        construction (PRD §4.6 step list).
+#   readability-identifier-length         Project uses idiomatic i/k/z.
+#   readability-else-after-return         Style preference, not a bug.
+#   readability-isolate-declaration       Multiple decls on one line are
+#                                         common in core loops.
+#   readability-implicit-bool-conversion  Idiomatic C: if (ptr), if (count).
+#   readability-braces-around-statements  Project tolerates single-stmt ifs.
+#   readability-avoid-const-params-in-decls C99 pass-by-value semantics.
+#   readability-uppercase-literal-suffix  Project uses lowercase 0u/1u.
+#   readability-redundant-casting         Explicit casts are intentional
+#                                         documentation in fixed-point math.
+#   readability-avoid-nested-conditional- Compact nested ternaries are
+#       operator                          idiomatic in min/max clamps.
+Checks: >
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-signed-char-misuse,
+  -bugprone-not-null-terminated-result,
+  -bugprone-assignment-in-if-condition,
+  cert-*,
+  -cert-err33-c,
+  -cert-err34-c,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  performance-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-else-after-return,
+  -readability-isolate-declaration,
+  -readability-implicit-bool-conversion,
+  -readability-braces-around-statements,
+  -readability-avoid-const-params-in-decls,
+  -readability-uppercase-literal-suffix,
+  -readability-redundant-casting,
+  -readability-avoid-nested-conditional-operator
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'core/.*\.h'
+FormatStyle: none

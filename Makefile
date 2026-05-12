@@ -30,12 +30,13 @@ STALL_REPLAY            = $(REPLAY_BIN_DIR)/stall_replay
 STUCK_SENSOR_REPLAY     = $(REPLAY_BIN_DIR)/stuck_sensor_replay
 RUNAWAY_REPLAY          = $(REPLAY_BIN_DIR)/runaway_replay
 STALE_CONTEXT_REPLAY    = $(REPLAY_BIN_DIR)/stale_context_replay
+FULL_STEP_REPLAY        = $(REPLAY_BIN_DIR)/full_step_replay
 
 # --- Property tests ---
 PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN       = $(PROPERTY_BIN_DIR)/property_config
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property asan clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property asan clang-tidy clean
 
 all: test build verify-portability replay property
 
@@ -123,8 +124,14 @@ $(STALE_CONTEXT_REPLAY): test/replay/stale_context_replay.c core/thermal_fault.h
 	@mkdir -p $(REPLAY_BIN_DIR)
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
+$(FULL_STEP_REPLAY): test/replay/full_step_replay.c core/thermal_core.h \
+                     $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
 replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
-        $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) $(STALE_CONTEXT_REPLAY)
+        $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \
+        $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY)
 	@echo "--- Replay: curve_sweep (C) ---"
 	@$(CURVE_REPLAY) > $(REPLAY_BIN_DIR)/curve_sweep.csv
 	@diff -u $(REPLAY_GOLDEN_DIR)/curve_sweep.csv \
@@ -221,9 +228,16 @@ replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
 	         $(REPLAY_BIN_DIR)/stale_context_sweep.py.csv \
 	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
 	@echo "PASS: Python ref == C"
+	@echo "--- Replay: full_step_sweep (C, no Python ref) ---"
+	@$(FULL_STEP_REPLAY) > $(REPLAY_BIN_DIR)/full_step_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/full_step_sweep.csv \
+	         $(REPLAY_BIN_DIR)/full_step_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
 
 regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
-                      $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) $(STALE_CONTEXT_REPLAY)
+                      $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \
+                      $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY)
 	@mkdir -p $(REPLAY_GOLDEN_DIR)
 	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
 	$(FILTER_REPLAY) > $(REPLAY_GOLDEN_DIR)/filter_sweep.csv
@@ -233,6 +247,7 @@ regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPL
 	$(STUCK_SENSOR_REPLAY) > $(REPLAY_GOLDEN_DIR)/stuck_sensor_sweep.csv
 	$(RUNAWAY_REPLAY) > $(REPLAY_GOLDEN_DIR)/runaway_sweep.csv
 	$(STALE_CONTEXT_REPLAY) > $(REPLAY_GOLDEN_DIR)/stale_context_sweep.csv
+	$(FULL_STEP_REPLAY) > $(REPLAY_GOLDEN_DIR)/full_step_sweep.csv
 	@echo "Regenerated goldens. Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
 
 # --- Property test: validate_config across random configs ---
@@ -258,6 +273,11 @@ asan:
 # --- Build (delegates to platform/linux) ---
 build:
 	$(MAKE) -C platform/linux CC=$(CC)
+
+# --- clang-tidy on core/ only (Stage 7 7d). Config in .clang-tidy. ---
+clang-tidy:
+	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
+	clang-tidy --quiet core/*.c -- $(CFLAGS_BASE)
 
 clean:
 	rm -rf build
