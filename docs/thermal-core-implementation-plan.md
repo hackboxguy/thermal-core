@@ -335,6 +335,15 @@ The multiplication is performed in `int64_t`; the shift back is by 16; the final
 
 **CI rigor added:** smoke-linux, coverage (visibility only, no gate), fuzz-json. `clang-tidy` and `cppcheck` extend their scope to `platform/linux/` starting this stage.
 
+**Stage 9 actual deliverables vs deferrals (post codex-v4 review):**
+
+- **Shipped 9a–9d:** JSON loader (`platform/linux/config_jsmn.c` backed by vendored `jsmn`), runtime cfg sibling struct (`platform/linux/runtime_cfg.h`), `bsp_mock_tmpfs` for sensor/actuator file I/O, `thermalcored` daemon with wall + scenario clocks, syslog-based `log_event`, UDP telemetry via an in-daemon `telem_wire.c` encoder, canonical SHA-256 config hash in `support/`, padding-poison test, `tools/json2static.py`, libFuzzer `fuzz-json` job, and a Python smoke harness. PRD §5.1 `fault_detection` schema (descriptive thresholds + `correlated_context: null` advisory mode) landed in the codex-v4 carryover commit.
+- **Deferred to Stage 10:** `platform/linux/bsp_telemetry_udp.c` and the wire-encoder hoist into `protocol/thermal_wire.c` (with CRC, sequence numbers, and the opcode registry). Stage 9 ships the encoder inline as `platform/linux/telem_wire.c`, explicitly labelled a stopgap; the daemon emits observable frames today, but the encoder is the only place that knows the v1 layout. Stage 10 replaces it.
+- **Deferred to Stage 10 / 11:** `tools/thermalcore-probe`. The smoke test currently decodes the stopgap frame directly; once the probe lands the smoke harness will consume the same decoder as the user-facing tool.
+- **Deferred to Stage 12:** `tools/config_hash.py` (Python-side canonical encoder). Lands when scenario-determinism actually needs cross-language hash parity. The C hash is verified against itself today by the `json2static` round-trip test.
+- **Smoke scope:** the current harness drives five ticks against `test/smoke/smoke-config.json` (a tmpfs-pathed copy of the reference config, so it runs as a normal user) and asserts ≥ 3 telemetry frames plus exit code 0. The originally-planned per-tick frame audit + reference-config use will land alongside the probe so the smoke decoder is shared with `thermalcore-probe`.
+- **Stuck-sensor `correlated_load_changing` simplification:** the v1 full-loop step in `core/thermal_core.c` (step 9, comments around `cfg->faults.stuck_sensor_defaults`) treats any valid configured context as "load changing". Proper delta-over-window tracking is future work tracked alongside scenario-injection support; the detector itself takes a correct boolean input, and advisory mode (PRD §4.7 line 632) is now expressible via `"correlated_context": null` thanks to the codex-v4 fix.
+
 **Exit gate:** unit + replay + property + asan + clang-tidy + cppcheck + smoke + fuzz-json green.
 
 ---

@@ -69,15 +69,15 @@
     }
   ],
 
-  "faults": {
+  "fault_detection": {
     "stall": {
       "enabled": true,
       "severity": "critical",
       "action": "force_pwm_max_until_recovered",
       "persist_ticks": 5,
       "recovery_ticks": 10,
-      "threshold0": 200,
-      "threshold1": 0
+      "stall_rpm": 200,
+      "stall_pwm_threshold": 80
     }
   },
 

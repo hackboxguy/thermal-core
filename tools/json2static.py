@@ -113,6 +113,80 @@ def tsig_fault_stale_context(slot):    return TSIG_FAULT_BASE + 0x30 + slot
 class ConfigError(Exception):
     pass
 
+
+# === Strict allowlists =================================================
+# Mirror the C loader's per-object allowed-key sets.  Unknown keys at
+# any level are rejected; this matches platform/linux/config_jsmn.c
+# strictness and keeps the static path from silently dropping a typo
+# the dynamic loader would have caught.
+
+TOP_LEVEL_ALLOWED = {
+    "config_version", "control_period_ms",
+    "sensors", "context_signals", "actuators", "zones",
+    "policy_modifiers", "fault_detection", "telemetry", "control",
+}
+
+SENSOR_ALLOWED = {
+    "id", "name", "iir_alpha_q16", "max_staleness_ms",
+    "source",                           # platform-only
+}
+
+CONTEXT_ALLOWED = {
+    "id", "name", "unit", "iir_alpha_q16", "timeout_ms", "fail_safe",
+    "source", "fail_safe_value",        # platform-only
+}
+
+ACTUATOR_ALLOWED = {
+    "id", "name", "pwm_min", "pwm_max", "slew_per_tick",
+    "spinup_pwm", "spinup_ms", "state_pwm",
+    "pwm", "tach", "pwm_freq_hz", "tach_pulses_per_rev",   # platform-only
+}
+
+ZONE_ALLOWED = {
+    "name", "sensors", "sensor_weights_q16", "aggregation",
+    "fallback_temp_mc", "governor", "pid",
+    "actuators", "trips",
+}
+
+TRIP_ALLOWED = {
+    "temp_mc", "hyst_mc", "severity", "cooling_state",
+}
+
+PID_ALLOWED = {
+    "kp_q16", "ki_q16", "kd_q16", "setpoint_mc",
+    "kp_min_q16", "kp_max_q16", "ki_min_q16", "ki_max_q16",
+    "kd_min_q16", "kd_max_q16", "setpoint_min_mc", "setpoint_max_mc",
+    "dt_min_ms", "dt_max_ms",
+}
+
+MODIFIER_ALLOWED = {
+    "name", "context", "stages", "curve", "fail_safe",
+}
+
+CURVE_POINT_ALLOWED = {"x", "value0", "value1"}
+
+FAULT_DETECTION_ALLOWED = {"stall", "stuck_sensor", "runaway", "stale_context"}
+
+DETECTOR_COMMON = {"enabled", "severity", "action", "persist_ticks", "recovery_ticks"}
+DETECTOR_ALLOWED = {
+    "stall":         DETECTOR_COMMON | {"stall_rpm", "stall_pwm_threshold"},
+    "stuck_sensor":  DETECTOR_COMMON | {"delta_mc", "window_ticks", "correlated_context"},
+    "runaway":       DETECTOR_COMMON | {"rise_mc_threshold", "cooling_pwm_threshold"},
+    "stale_context": DETECTOR_COMMON,
+}
+
+TELEMETRY_ALLOWED = {"enable", "period_ticks", "signals", "transport"}
+
+CONTROL_ALLOWED = {"listen"}
+
+
+def reject_unknown(obj, allowed, where):
+    if not isinstance(obj, dict):
+        raise ConfigError(f"{where}: expected object, got {type(obj).__name__}")
+    extras = set(obj.keys()) - allowed
+    if extras:
+        raise ConfigError(f"{where}: unknown key(s) {sorted(extras)}")
+
 # === Loader (mirrors config_jsmn.c semantics) ========================
 
 def expand_signal(sel: str, cfg) -> list[int]:
@@ -190,18 +264,20 @@ def normalise(raw: dict) -> dict:
     normalised dict that mirrors thermal_config_t.  Platform-only
     fields are dropped (json2static is for CORE only; the daemon's
     runtime cfg lives elsewhere)."""
+    reject_unknown(raw, TOP_LEVEL_ALLOWED, "$")
     if "config_version" not in raw:
         raise ConfigError("missing config_version")
     if "control_period_ms" not in raw:
         raise ConfigError("missing control_period_ms")
 
-    def pop_enum(name, m):
+    def pop_enum(name, m, where):
         v = m.get(name)
-        if v is None: raise ConfigError(f"unknown enum '{name}'")
+        if v is None: raise ConfigError(f"{where}: unknown enum '{name}'")
         return v
 
     sensors = []
-    for s in raw.get("sensors", []):
+    for i, s in enumerate(raw.get("sensors", [])):
+        reject_unknown(s, SENSOR_ALLOWED, f"sensors[{i}]")
         sensors.append({
             "id":               int(s["id"]),
             "name":             s["name"],
@@ -210,21 +286,25 @@ def normalise(raw: dict) -> dict:
         })
 
     contexts = []
-    for c in raw.get("context_signals", []):
+    for i, c in enumerate(raw.get("context_signals", [])):
+        reject_unknown(c, CONTEXT_ALLOWED, f"context_signals[{i}]")
         contexts.append({
             "id":            int(c["id"]),
             "name":          c["name"],
-            "unit":          pop_enum(c["unit"], CONTEXT_UNIT_MAP),
+            "unit":          pop_enum(c["unit"], CONTEXT_UNIT_MAP, f"context_signals[{i}].unit"),
             "iir_alpha_q16": int(c["iir_alpha_q16"]),
             "timeout_ms":    int(c["timeout_ms"]),
-            "fail_safe":     pop_enum(c["fail_safe"], FAILSAFE_MAP),
+            "fail_safe":     pop_enum(c["fail_safe"], FAILSAFE_MAP, f"context_signals[{i}].fail_safe"),
         })
 
     actuators = []
-    for a in raw.get("actuators", []):
+    state_pwm_lens = []  # JSON-explicit length per actuator slot (for #6)
+    for i, a in enumerate(raw.get("actuators", [])):
+        reject_unknown(a, ACTUATOR_ALLOWED, f"actuators[{i}]")
         sp = a["state_pwm"]
         if len(sp) > MAX_COOLING_STATES:
-            raise ConfigError("too many cooling states")
+            raise ConfigError(f"actuators[{i}].state_pwm: too many cooling states")
+        state_pwm_lens.append(len(sp))
         actuators.append({
             "id":             int(a["id"]),
             "name":           a["name"],
@@ -236,36 +316,66 @@ def normalise(raw: dict) -> dict:
             "state_pwm":      [int(x) for x in sp] + [0] * (MAX_COOLING_STATES - len(sp)),
         })
 
-    def find_slot(arr, name, kind):
+    def find_slot(arr, name, kind, where):
         for i, e in enumerate(arr):
             if e["name"] == name:
                 return i
-        raise ConfigError(f"unknown {kind} '{name}'")
+        raise ConfigError(f"{where}: unknown {kind} '{name}'")
 
     zones = []
-    for z in raw.get("zones", []):
+    for zi, z in enumerate(raw.get("zones", [])):
+        reject_unknown(z, ZONE_ALLOWED, f"zones[{zi}]")
         sens_names = z.get("sensors", [])
-        sens_ids   = [sensors[find_slot(sensors, n, "sensor")]["id"] for n in sens_names]
+        sens_ids   = [sensors[find_slot(sensors, n, "sensor", f"zones[{zi}].sensors[{j}]")]["id"]
+                      for j, n in enumerate(sens_names)]
         act_names  = z.get("actuators", [])
-        act_ids    = [actuators[find_slot(actuators, n, "actuator")]["id"] for n in act_names]
-        weights    = [int(x) for x in z.get("sensor_weights_q16", [])]
+        act_slots  = [find_slot(actuators, n, "actuator", f"zones[{zi}].actuators[{j}]")
+                      for j, n in enumerate(act_names)]
+        act_ids    = [actuators[s]["id"] for s in act_slots]
+        raw_weights = z.get("sensor_weights_q16", [])
+        weights     = [int(x) for x in raw_weights]
         trips = []
-        for t in z.get("trips", []):
+        for ti, t in enumerate(z.get("trips", [])):
+            reject_unknown(t, TRIP_ALLOWED, f"zones[{zi}].trips[{ti}]")
             trips.append({
                 "temp_mc":       int(t["temp_mc"]),
                 "hyst_mc":       int(t["hyst_mc"]),
-                "severity":      pop_enum(t["severity"], TRIP_SEVERITY_MAP),
+                "severity":      pop_enum(t["severity"], TRIP_SEVERITY_MAP,
+                                          f"zones[{zi}].trips[{ti}].severity"),
                 "cooling_state": int(t["cooling_state"]),
             })
         pid = z.get("pid", {})
+        reject_unknown(pid, PID_ALLOWED, f"zones[{zi}].pid")
+        aggregation = pop_enum(z["aggregation"], AGGREGATION_MAP, f"zones[{zi}].aggregation")
+
+        # PRD §5.3 line 800: weighted aggregation requires len(weights) == len(sensors).
+        if aggregation == AGGREGATION_MAP["weighted"]:
+            if len(weights) != len(sens_ids):
+                raise ConfigError(
+                    f"zones[{zi}]: weighted aggregation needs sensor_weights_q16 "
+                    f"length {len(sens_ids)}, got {len(weights)}"
+                )
+
+        # PRD §5.3 line 805: trip cooling_state must fall inside the
+        # JSON-explicit state_pwm length of every referenced actuator.
+        for ti, t in enumerate(trips):
+            cs = t["cooling_state"]
+            for j, slot in enumerate(act_slots):
+                if cs >= state_pwm_lens[slot]:
+                    raise ConfigError(
+                        f"zones[{zi}].trips[{ti}]: cooling_state {cs} past "
+                        f"actuator '{actuators[slot]['name']}' state_pwm "
+                        f"length {state_pwm_lens[slot]}"
+                    )
+
         zones.append({
             "name":               z["name"],
             "sensor_ids":         sens_ids,
             "sensor_weights_q16": weights,
             "sensor_count":       len(sens_ids),
-            "aggregation":        pop_enum(z["aggregation"], AGGREGATION_MAP),
+            "aggregation":        aggregation,
             "fallback_temp_mc":   int(z["fallback_temp_mc"]),
-            "governor":           pop_enum(z["governor"], GOVERNOR_MAP),
+            "governor":           pop_enum(z["governor"], GOVERNOR_MAP, f"zones[{zi}].governor"),
             "pid": {
                 "kp_q16":          int(pid.get("kp_q16", 0)),
                 "ki_q16":          int(pid.get("ki_q16", 0)),
@@ -289,14 +399,17 @@ def normalise(raw: dict) -> dict:
         })
 
     modifiers = []
-    for m in raw.get("policy_modifiers", []):
+    for mi, m in enumerate(raw.get("policy_modifiers", [])):
+        reject_unknown(m, MODIFIER_ALLOWED, f"policy_modifiers[{mi}]")
         ctx_name = m["context"]
-        ctx_id   = contexts[find_slot(contexts, ctx_name, "context")]["id"]
+        ctx_id   = contexts[find_slot(contexts, ctx_name, "context",
+                                       f"policy_modifiers[{mi}].context")]["id"]
         stages = 0
         for st in m["stages"]:
-            stages |= pop_enum(st, MOD_STAGE_MAP)
+            stages |= pop_enum(st, MOD_STAGE_MAP, f"policy_modifiers[{mi}].stages")
         curve = []
-        for cp in m.get("curve", []):
+        for ci, cp in enumerate(m.get("curve", [])):
+            reject_unknown(cp, CURVE_POINT_ALLOWED, f"policy_modifiers[{mi}].curve[{ci}]")
             curve.append({
                 "x":      int(cp["x"]),
                 "value0": int(cp["value0"]),
@@ -308,37 +421,82 @@ def normalise(raw: dict) -> dict:
             "stages":      stages,
             "curve":       curve,
             "curve_count": len(curve),
-            "fail_safe":   pop_enum(m["fail_safe"], FAILSAFE_MAP),
+            "fail_safe":   pop_enum(m["fail_safe"], FAILSAFE_MAP,
+                                    f"policy_modifiers[{mi}].fail_safe"),
         })
 
-    # Faults (a single object with up to four detector defaults).
-    f_raw = raw.get("faults", {})
-    def mk_det(d):
-        if d is None: return None
+    # PRD §5.1: top-level key is `fault_detection`, not `faults`.
+    if "faults" in raw:
+        raise ConfigError("$: unknown key 'faults' (use 'fault_detection')")
+    f_raw = raw.get("fault_detection", {})
+    if f_raw:
+        reject_unknown(f_raw, FAULT_DETECTION_ALLOWED, "fault_detection")
+
+    def mk_det(d, kind):
+        if d is None:
+            return None
+        reject_unknown(d, DETECTOR_ALLOWED[kind], f"fault_detection.{kind}")
+        # Descriptive thresholds -> generic threshold0/1 (PRD §5 line 611).
+        if kind == "stall":
+            t0 = d.get("stall_rpm",            0)
+            t1 = d.get("stall_pwm_threshold",  0)
+        elif kind == "stuck_sensor":
+            t0 = d.get("delta_mc",     0)
+            t1 = d.get("window_ticks", 0)
+        elif kind == "runaway":
+            t0 = d.get("rise_mc_threshold",     0)
+            t1 = d.get("cooling_pwm_threshold", 0)
+        else:  # stale_context
+            t0 = 0
+            t1 = 0
+
+        # correlated_context: only meaningful for stuck_sensor.  null /
+        # absent → 0xFFFF (advisory; PRD §4.7 line 632).
+        cc_id = 0xFFFF
+        if kind == "stuck_sensor":
+            cc_raw = d.get("correlated_context", None)
+            if cc_raw is None:
+                cc_id = 0xFFFF
+            elif isinstance(cc_raw, str):
+                cc_id = contexts[find_slot(contexts, cc_raw, "context",
+                                            f"fault_detection.stuck_sensor.correlated_context")]["id"]
+            else:
+                raise ConfigError(
+                    f"fault_detection.stuck_sensor.correlated_context: "
+                    f"expected string or null, got {type(cc_raw).__name__}"
+                )
+
         return {
             "enabled":               1 if d.get("enabled", False) else 0,
-            "severity":              pop_enum(d["severity"], FAULT_SEVERITY_MAP) if "severity" in d else 0,
-            "action":                pop_enum(d["action"], FAULT_ACTION_MAP) if "action" in d else 0,
+            "severity":              pop_enum(d["severity"], FAULT_SEVERITY_MAP,
+                                              f"fault_detection.{kind}.severity")
+                                       if "severity" in d else 0,
+            "action":                pop_enum(d["action"], FAULT_ACTION_MAP,
+                                              f"fault_detection.{kind}.action")
+                                       if "action" in d else 0,
             "persist_ticks":         int(d.get("persist_ticks", 0)),
             "recovery_ticks":        int(d.get("recovery_ticks", 0)),
-            "threshold0":            int(d.get("threshold0", 0)),
-            "threshold1":            int(d.get("threshold1", 0)),
-            "correlated_context_id": int(d.get("correlated_context", 0))
-                                       if isinstance(d.get("correlated_context"), int)
-                                       else (contexts[find_slot(contexts, d["correlated_context"], "context")]["id"]
-                                             if "correlated_context" in d else 0),
+            "threshold0":            int(t0),
+            "threshold1":            int(t1),
+            "correlated_context_id": int(cc_id),
         }
+
     faults = {
-        "stall":         mk_det(f_raw.get("stall")),
-        "stuck_sensor":  mk_det(f_raw.get("stuck_sensor")),
-        "runaway":       mk_det(f_raw.get("runaway")),
-        "stale_context": mk_det(f_raw.get("stale_context")),
+        "stall":         mk_det(f_raw.get("stall"),         "stall"),
+        "stuck_sensor":  mk_det(f_raw.get("stuck_sensor"),  "stuck_sensor"),
+        "runaway":       mk_det(f_raw.get("runaway"),       "runaway"),
+        "stale_context": mk_det(f_raw.get("stale_context"), "stale_context"),
     }
 
     # Telemetry: expand wildcards now that counts are known.
     cfg_view = {"sensors": sensors, "actuators": actuators, "zones": zones,
                 "contexts": contexts, "modifiers": modifiers}
     t_raw = raw.get("telemetry", {})
+    if t_raw:
+        reject_unknown(t_raw, TELEMETRY_ALLOWED, "telemetry")
+    # `control` is platform-only; just sanity-check the allowlist if present.
+    if "control" in raw and raw["control"]:
+        reject_unknown(raw["control"], CONTROL_ALLOWED, "control")
     enabled_ids = []
     for sel in t_raw.get("signals", []):
         enabled_ids.extend(expand_signal(sel, cfg_view))

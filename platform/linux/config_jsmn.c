@@ -58,6 +58,12 @@ typedef struct {
     int         n_toks;
     char       *err;
     size_t      err_size;
+    /* Loader scratch: number of state_pwm entries the JSON
+     * explicitly listed per actuator slot.  Lets parse_zone reject
+     * a trip whose cooling_state falls past the explicit length,
+     * which the tail-zero-fill in the C struct would otherwise
+     * disguise as a legal "off" (PRD §5.3 line 805). */
+    uint8_t     state_pwm_lens[THERMAL_MAX_ACTUATORS];
 } parse_ctx_t;
 
 /* =============================================================== */
@@ -481,6 +487,7 @@ static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
 
 static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                                        int obj_idx,
+                                       uint8_t slot,
                                        thermal_actuator_cfg_t *out,
                                        runtime_actuator_cfg_t *r_out,
                                        const char *path)
@@ -567,6 +574,10 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                 out->state_pwm[j] = (uint8_t)sval;
                 sk = skip_token(ctx->toks, sk);
             }
+            /* Record JSON-explicit length so parse_zone can later
+             * reject trips whose cooling_state runs past it (PRD
+             * §5.3 line 805). */
+            ctx->state_pwm_lens[slot] = (uint8_t)sn;
             seen |= F_STATES;
         } else if (tok_str_eq(ctx, k, "pwm")) {
             if (r_out) {
@@ -788,6 +799,10 @@ static thermal_status_t parse_zone(parse_ctx_t *ctx,
            F_GOV = 1u << 3, F_FB = 1u << 4, F_ACTUATORS = 1u << 5,
            F_TRIPS = 1u << 6 };
 
+    /* Track JSON-explicit weights length so we can match it against
+     * sensor_count for weighted aggregation (PRD §5.3 line 800). */
+    int weights_explicit_len = -1;
+
     int n = ctx->toks[obj_idx].size;
     int k = obj_idx + 1;
     for (int i = 0; i < n; i++) {
@@ -854,6 +869,7 @@ static thermal_status_t parse_zone(parse_ctx_t *ctx,
                 out->sensor_weights_q16[j] = (int32_t)val;
                 sk = skip_token(ctx->toks, sk);
             }
+            weights_explicit_len = sn;
         } else if (tok_str_eq(ctx, k, "aggregation")) {
             int val;
             if (enum_lookup(ctx, v, AGGREGATION_MAP, &val) != 0) {
@@ -938,6 +954,44 @@ static thermal_status_t parse_zone(parse_ctx_t *ctx,
                             F_ACTUATORS | F_TRIPS;
     if ((seen & required) != required) {
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "required field missing");
+    }
+
+    /* PRD §5.3 line 800: weighted aggregation requires a weights
+     * array whose length matches sensor_count.  Tail-zero-fill
+     * would silently give a missing sensor weight 0. */
+    if (out->aggregation == THERMAL_AGG_WEIGHTED) {
+        if (weights_explicit_len < 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                           "weighted aggregation requires sensor_weights_q16");
+        }
+        if ((uint8_t)weights_explicit_len != out->sensor_count) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                           "sensor_weights_q16 length must match sensor_count");
+        }
+    }
+
+    /* PRD §5.3 line 805: each trip's cooling_state must fall inside
+     * the JSON-explicit state_pwm length of every referenced
+     * actuator.  Validates against ctx->state_pwm_lens[] recorded
+     * during pass A. */
+    for (uint8_t t = 0; t < out->trip_count; t++) {
+        uint8_t cs = out->trips[t].cooling_state;
+        for (uint8_t a = 0; a < out->actuator_count; a++) {
+            uint16_t act_id = out->actuator_ids[a];
+            int slot = -1;
+            for (uint8_t i = 0; i < cfg_view->actuator_count; i++) {
+                if (cfg_view->actuators[i].id == act_id) { slot = (int)i; break; }
+            }
+            if (slot < 0) continue;  /* should not happen — name resolved earlier */
+            if (cs >= ctx->state_pwm_lens[slot]) {
+                char elem_path[PATH_MAX_LEN + 32];
+                snprintf(elem_path, sizeof(elem_path),
+                         "%s.trips[%u]", path, (unsigned)t);
+                return set_errf(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                                "cooling_state past actuator state_pwm length '%s'",
+                                cfg_view->actuators[slot].name);
+            }
+        }
     }
     return THERMAL_OK;
 }
@@ -1094,8 +1148,37 @@ static thermal_status_t parse_modifier(parse_ctx_t *ctx,
 /* Pass B — fault detector defaults                                 */
 /* =============================================================== */
 
+/* PRD §4.7 line 617: only stuck_sensor uses correlated_context_id;
+ * for the other three detectors it is set to 0xFFFF by convention.
+ * Per-detector threshold key naming comes from PRD §5 line 611:
+ *
+ *   detector       | threshold0           | threshold1
+ *   ---            | ---                  | ---
+ *   stall          | stall_rpm            | stall_pwm_threshold
+ *   stuck_sensor   | delta_mc             | window_ticks
+ *   runaway        | rise_mc_threshold    | cooling_pwm_threshold
+ *   stale_context  | (unused)             | (unused)
+ */
+typedef enum {
+    DET_STALL = 0,
+    DET_STUCK_SENSOR,
+    DET_RUNAWAY,
+    DET_STALE_CONTEXT
+} detector_kind_t;
+
+/* Check JSMN PRIMITIVE token for the literal `null`. */
+static int tok_is_null(const parse_ctx_t *ctx, int t)
+{
+    if (!tok_in_range(ctx, t)) return 0;
+    const jsmntok_t *tok = &ctx->toks[t];
+    if (tok->type != JSMN_PRIMITIVE) return 0;
+    size_t len = (size_t)(tok->end - tok->start);
+    return len == 4 && memcmp(ctx->json + tok->start, "null", 4) == 0;
+}
+
 static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
                                              int obj_idx,
+                                             detector_kind_t kind,
                                              const thermal_config_t *cfg_view,
                                              thermal_fault_detector_cfg_t *out,
                                              const char *path)
@@ -1103,6 +1186,12 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
     }
+
+    /* PRD §4.7 line 617: 0xFFFF by convention for non-stuck_sensor
+     * detectors, and the advisory default for stuck_sensor when
+     * `correlated_context` is absent or null. */
+    out->correlated_context_id = 0xFFFFu;
+
     int n = ctx->toks[obj_idx].size;
     int k = obj_idx + 1;
     for (int i = 0; i < n; i++) {
@@ -1114,6 +1203,7 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
         }
         snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
 
+        /* Shared keys ------------------------------------------------- */
         if (tok_str_eq(ctx, k, "enabled")) {
             int val;
             if (tok_parse_bool(ctx, v, &val) != 0) {
@@ -1144,29 +1234,92 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer in [0, 65535]");
             }
             out->recovery_ticks = (uint16_t)val;
-        } else if (tok_str_eq(ctx, k, "threshold0")) {
+
+        /* Per-detector descriptive thresholds ------------------------- */
+        } else if (tok_str_eq(ctx, k, "stall_rpm")) {
+            if (kind != DET_STALL) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "stall_rpm only valid for stall detector");
+            }
             long long val;
             if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
             }
             out->threshold0 = (int32_t)val;
-        } else if (tok_str_eq(ctx, k, "threshold1")) {
+        } else if (tok_str_eq(ctx, k, "stall_pwm_threshold")) {
+            if (kind != DET_STALL) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "stall_pwm_threshold only valid for stall detector");
+            }
             long long val;
             if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
             }
             out->threshold1 = (int32_t)val;
+        } else if (tok_str_eq(ctx, k, "delta_mc")) {
+            if (kind != DET_STUCK_SENSOR) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "delta_mc only valid for stuck_sensor detector");
+            }
+            long long val;
+            if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
+            }
+            out->threshold0 = (int32_t)val;
+        } else if (tok_str_eq(ctx, k, "window_ticks")) {
+            if (kind != DET_STUCK_SENSOR) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "window_ticks only valid for stuck_sensor detector");
+            }
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected non-negative integer");
+            }
+            out->threshold1 = (int32_t)val;
+        } else if (tok_str_eq(ctx, k, "rise_mc_threshold")) {
+            if (kind != DET_RUNAWAY) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "rise_mc_threshold only valid for runaway detector");
+            }
+            long long val;
+            if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
+            }
+            out->threshold0 = (int32_t)val;
+        } else if (tok_str_eq(ctx, k, "cooling_pwm_threshold")) {
+            if (kind != DET_RUNAWAY) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "cooling_pwm_threshold only valid for runaway detector");
+            }
+            long long val;
+            if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
+            }
+            out->threshold1 = (int32_t)val;
+
+        /* Per-stuck-sensor correlated context ------------------------- */
         } else if (tok_str_eq(ctx, k, "correlated_context")) {
-            char nm[THERMAL_NAME_MAX];
-            if (tok_str_copy(ctx, v, nm, sizeof(nm)) != 0) {
-                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected string");
+            if (kind != DET_STUCK_SENSOR) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "correlated_context only valid for stuck_sensor detector");
             }
-            int idx = resolve_name_in_contexts(cfg_view, nm);
-            if (idx < 0) {
-                return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
-                                "unknown context '%s'", nm);
+            if (tok_is_null(ctx, v)) {
+                /* PRD §4.7 line 632: null → advisory mode. */
+                out->correlated_context_id = 0xFFFFu;
+            } else {
+                char nm[THERMAL_NAME_MAX];
+                if (tok_str_copy(ctx, v, nm, sizeof(nm)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "expected string or null");
+                }
+                int idx = resolve_name_in_contexts(cfg_view, nm);
+                if (idx < 0) {
+                    return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                    "unknown context '%s'", nm);
+                }
+                out->correlated_context_id = cfg_view->contexts[idx].id;
             }
-            out->correlated_context_id = cfg_view->contexts[idx].id;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -1176,11 +1329,11 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
     return THERMAL_OK;
 }
 
-static thermal_status_t parse_faults_object(parse_ctx_t *ctx,
-                                            int obj_idx,
-                                            const thermal_config_t *cfg_view,
-                                            thermal_fault_detection_cfg_t *out,
-                                            const char *path)
+static thermal_status_t parse_fault_detection_object(parse_ctx_t *ctx,
+                                                     int obj_idx,
+                                                     const thermal_config_t *cfg_view,
+                                                     thermal_fault_detection_cfg_t *out,
+                                                     const char *path)
 {
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
@@ -1197,15 +1350,16 @@ static thermal_status_t parse_faults_object(parse_ctx_t *ctx,
         snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
 
         thermal_fault_detector_cfg_t *dst = NULL;
-        if      (tok_str_eq(ctx, k, "stall"))         dst = &out->stall_defaults;
-        else if (tok_str_eq(ctx, k, "stuck_sensor"))  dst = &out->stuck_sensor_defaults;
-        else if (tok_str_eq(ctx, k, "runaway"))       dst = &out->runaway_defaults;
-        else if (tok_str_eq(ctx, k, "stale_context")) dst = &out->stale_context_defaults;
+        detector_kind_t kind = DET_STALL;
+        if      (tok_str_eq(ctx, k, "stall"))         { dst = &out->stall_defaults;         kind = DET_STALL; }
+        else if (tok_str_eq(ctx, k, "stuck_sensor"))  { dst = &out->stuck_sensor_defaults;  kind = DET_STUCK_SENSOR; }
+        else if (tok_str_eq(ctx, k, "runaway"))       { dst = &out->runaway_defaults;       kind = DET_RUNAWAY; }
+        else if (tok_str_eq(ctx, k, "stale_context")) { dst = &out->stale_context_defaults; kind = DET_STALE_CONTEXT; }
         else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
         }
-        thermal_status_t s = parse_fault_detector(ctx, v, cfg_view, dst, sub_path);
+        thermal_status_t s = parse_fault_detector(ctx, v, kind, cfg_view, dst, sub_path);
         if (s != THERMAL_OK) return s;
         k = skip_token(ctx->toks, v);
     }
@@ -1599,7 +1753,7 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
                 char elem_path[PATH_MAX_LEN + 32];
                 snprintf(elem_path, sizeof(elem_path), "actuators[%d]", j);
                 runtime_actuator_cfg_t *r = runtime ? &runtime->actuators[j] : NULL;
-                thermal_status_t s = parse_actuator(ctx, ak,
+                thermal_status_t s = parse_actuator(ctx, ak, (uint8_t)j,
                                                     &cfg->actuators[j], r, elem_path);
                 if (s != THERMAL_OK) return s;
                 ak = skip_token(ctx->toks, ak);
@@ -1688,8 +1842,9 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
                 ak = skip_token(ctx->toks, ak);
             }
             cfg->modifier_count = (uint8_t)an;
-        } else if (tok_str_eq(ctx, k, "faults")) {
-            thermal_status_t s = parse_faults_object(ctx, v, cfg, &cfg->faults, "faults");
+        } else if (tok_str_eq(ctx, k, "fault_detection")) {
+            thermal_status_t s = parse_fault_detection_object(
+                                     ctx, v, cfg, &cfg->faults, "fault_detection");
             if (s != THERMAL_OK) return s;
         } else if (tok_str_eq(ctx, k, "telemetry")) {
             runtime_global_cfg_t *r_glob = runtime ? &runtime->global : NULL;

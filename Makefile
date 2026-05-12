@@ -403,7 +403,11 @@ asan:
 	@$(MAKE) clean >/dev/null
 
 # --- Build (delegates to platform/linux) ---
-build:
+# Depend on the core archive explicitly so `make clean && make build`
+# works without first running `make test` -- the platform makefile
+# has a deliberate-failure rule when the archive is missing, but the
+# orchestration belongs at this level.
+build: $(CORE_ARCHIVE)
 	$(MAKE) -C platform/linux CC=$(CC)
 
 # --- clang-tidy on core/ + platform/linux/ (Stage 9 9c scope extension).

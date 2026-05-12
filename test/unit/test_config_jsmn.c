@@ -302,4 +302,158 @@ TEST_CASE(config_jsmn) {
                                                        &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
+
+    /* === Scenario 13: PRD fault_detection schema round-trip ===== */
+    {
+        /* Minimal valid config + a stall detector using the PRD's
+         * descriptive thresholds (stall_rpm -> threshold0,
+         * stall_pwm_threshold -> threshold1).  PRD §5 line 611. */
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
+            "                \"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0,100,160,220,255]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\",\"cooling_state\":1}] }],"
+            "  \"fault_detection\":{ \"stall\":{"
+            "       \"enabled\":true, \"severity\":\"critical\","
+            "       \"action\":\"force_pwm_max_until_recovered\","
+            "       \"persist_ticks\":5, \"recovery_ticks\":10,"
+            "       \"stall_rpm\":200, \"stall_pwm_threshold\":80 } } }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        if (s != THERMAL_OK) {
+            fprintf(stderr, "scenario 13: status=%d err='%s'\n", (int)s, err);
+        }
+        EXPECT_STATUS_OK(s);
+        EXPECT_EQ(cfg.faults.stall_defaults.threshold0, 200);
+        EXPECT_EQ(cfg.faults.stall_defaults.threshold1, 80);
+        /* Non-stuck_sensor detector → correlated_context_id == 0xFFFF
+         * by convention (PRD §4.7 line 617). */
+        EXPECT_EQ(cfg.faults.stall_defaults.correlated_context_id, 0xFFFFu);
+    }
+
+    /* === Scenario 14: stuck_sensor correlated_context: null ===== */
+    {
+        /* Same minimal config + stuck_sensor with null
+         * correlated_context → advisory mode (0xFFFF). */
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
+            "                \"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0,100,160,220,255]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\",\"cooling_state\":1}] }],"
+            "  \"fault_detection\":{ \"stuck_sensor\":{"
+            "       \"enabled\":true, \"severity\":\"degraded\","
+            "       \"action\":\"use_zone_fallback\","
+            "       \"persist_ticks\":5, \"recovery_ticks\":10,"
+            "       \"delta_mc\":100, \"window_ticks\":600,"
+            "       \"correlated_context\": null } } }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        if (s != THERMAL_OK) {
+            fprintf(stderr, "scenario 14: status=%d err='%s'\n", (int)s, err);
+        }
+        EXPECT_STATUS_OK(s);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold0, 100);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold1, 600);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.correlated_context_id, 0xFFFFu);
+    }
+
+    /* === Scenario 15: legacy `faults` key is now rejected ======= */
+    {
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"faults\":{} }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+        if (strstr(err, "faults") == NULL) {
+            fprintf(stderr, "scenario 15: err did not name 'faults': '%s'\n", err);
+            exit(1);
+        }
+    }
+
+    /* === Scenario 16: trip cooling_state past state_pwm length === */
+    {
+        /* state_pwm has 2 entries (cooling_state 0..1 only), but trip
+         * references cooling_state=3.  Old behavior would silently map
+         * to the tail-zero-fill; the fix rejects this. */
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
+            "                \"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0, 100]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\","
+            "                           \"cooling_state\":3}] }] }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+        if (strstr(err, "cooling_state") == NULL) {
+            fprintf(stderr,
+                    "scenario 16: err did not name cooling_state: '%s'\n", err);
+            exit(1);
+        }
+    }
+
+    /* === Scenario 17: weighted aggregation needs N weights ====== */
+    {
+        /* Two sensors, weighted aggregation, but only one weight.
+         * Old behavior silently zero-filled the second weight. */
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":["
+            "    {\"id\":0,\"name\":\"a\",\"iir_alpha_q16\":16384,\"max_staleness_ms\":500},"
+            "    {\"id\":1,\"name\":\"b\",\"iir_alpha_q16\":16384,\"max_staleness_ms\":500}"
+            "  ],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0,100,160,220,255]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"a\",\"b\"],"
+            "               \"sensor_weights_q16\":[32768],"
+            "               \"aggregation\":\"weighted\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\",\"cooling_state\":1}] }] }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+        if (strstr(err, "sensor_weights_q16") == NULL) {
+            fprintf(stderr,
+                    "scenario 17: err did not name sensor_weights_q16: '%s'\n", err);
+            exit(1);
+        }
+    }
 }
