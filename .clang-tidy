@@ -17,6 +17,10 @@
 #                                         guaranteed termination.
 #   bugprone-assignment-in-if-condition   Idiomatic short-circuit error
 #                                         chain: if ((s = validate_X())).
+#   bugprone-branch-clone                 apply_command's per-command
+#                                         validation has multiple
+#                                         distinct rules that share a
+#                                         single status return.
 #   cert-err33-c / cert-err34-c          core uses no stdio/strtoX.
 #   misc-include-cleaner                  Standard-lib include policy
 #                                         is enforced by the portability
@@ -47,6 +51,7 @@ Checks: >
   -bugprone-signed-char-misuse,
   -bugprone-not-null-terminated-result,
   -bugprone-assignment-in-if-condition,
+  -bugprone-branch-clone,
   cert-*,
   -cert-err33-c,
   -cert-err34-c,

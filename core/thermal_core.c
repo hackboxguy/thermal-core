@@ -42,6 +42,11 @@ typedef struct {
     uint8_t  sensor_slot_count;  /* copy of cfg.zones[i].sensor_count */
     uint8_t  sensor_slots[THERMAL_MAX_SENSORS_PER_ZONE];  /* resolved at init */
     thermal_pid_state_t pid;     /* PID integrator + derivative history (Stage 5b) */
+    /* Stage 8: runtime-mutable shadow of cfg fields commands can change.
+     * Copied from cfg at init; mutated by thermal_core_apply_command.
+     * The step function reads from these (not cfg->zones[i].pid / .trips). */
+    thermal_pid_cfg_t   shadow_pid;
+    thermal_trip_cfg_t  shadow_trips[THERMAL_MAX_TRIPS_PER_ZONE];
     /* Stage 7c: handoff into step-7 arbitration */
     uint8_t  pwm_this_tick;      /* PID zone's PWM demand for this tick;
                                   * step-wise zones derive per-actuator from
@@ -79,6 +84,11 @@ typedef struct {
     uint8_t                   modifier_active[THERMAL_MAX_MODIFIERS];
     int32_t                   modifier_pwm_cap[THERMAL_MAX_MODIFIERS];
     int32_t                   modifier_trip_offset[THERMAL_MAX_MODIFIERS];
+
+    /* Stage 8: per-modifier shadow of cfg fields commands can change.
+     * Copied from cfg at init; CMD_SET_CURVE_POINT mutates the curve.
+     * step5_modifier_eval reads from this (not cfg->modifiers). */
+    thermal_modifier_cfg_t    shadow_modifiers[THERMAL_MAX_MODIFIERS];
 
     /* Stage 7c: fault-detector instances (PRD §4.7 — one per target) */
     thermal_fault_stall_state_t          stall_states[THERMAL_MAX_ACTUATORS];
@@ -424,7 +434,10 @@ static void step5_modifier_eval(thermal_core_internal_t *core) {
 
     if (cfg->modifier_count == 0) return;
 
-    const thermal_modifier_cfg_t *m = &cfg->modifiers[0];
+    /* Stage 8: read modifier params from shadow (CMD_SET_CURVE_POINT
+     * mutates curve[] here; stages/fail_safe/context_id are init-time
+     * copies that match cfg). */
+    const thermal_modifier_cfg_t *m = &core->shadow_modifiers[0];
     int ctx_slot = find_context_slot(cfg, m->context_id);
     if (ctx_slot < 0) return; /* validate_config rule 34 prevents this */
 
@@ -571,6 +584,16 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
             zr->sensor_slots[k] = (uint8_t)find_sensor_slot(cfg, zc->sensor_ids[k]);
         }
         thermal_pid_reset(&zr->pid);
+        /* Stage 8: shadow cfg sub-structs that commands can mutate. */
+        zr->shadow_pid = zc->pid;
+        for (uint8_t t = 0; t < zc->trip_count; t++) {
+            zr->shadow_trips[t] = zc->trips[t];
+        }
+    }
+
+    /* Stage 8: shadow modifiers (CMD_SET_CURVE_POINT target). */
+    for (uint8_t i = 0; i < cfg->modifier_count; i++) {
+        core->shadow_modifiers[i] = cfg->modifiers[i];
     }
 
     for (uint8_t i = 0; i < THERMAL_MAX_ACTUATORS; i++) {
@@ -623,7 +646,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     int32_t  weights      [THERMAL_MAX_SENSORS_PER_ZONE];
     int32_t  trip_offset_mc = 0;
     if (cfg->modifier_count > 0 && core->modifier_active[0]
-        && (cfg->modifiers[0].stages &
+        && (core->shadow_modifiers[0].stages &
             THERMAL_MOD_STAGE_PRE_GOVERNOR_TRIP_OFFSET)) {
         trip_offset_mc = core->modifier_trip_offset[0];
     }
@@ -645,12 +668,14 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         zr->temp_mc = agg.temp_mc;
         zr->aggregation_valid = agg.valid;
 
-        /* Build offset-adjusted trip array if modifier active. */
+        /* Build offset-adjusted trip array if modifier active. Trip
+         * temp/hyst come from shadow (CMD_SET_TRIP target); severity
+         * and cooling_state are init-time copies matching cfg. */
         thermal_trip_cfg_t adj_trips[THERMAL_MAX_TRIPS_PER_ZONE];
-        const thermal_trip_cfg_t *trips_eff = zc->trips;
+        const thermal_trip_cfg_t *trips_eff = zr->shadow_trips;
         if (trip_offset_mc != 0) {
             for (uint8_t t = 0; t < zc->trip_count; t++) {
-                adj_trips[t] = zc->trips[t];
+                adj_trips[t] = zr->shadow_trips[t];
                 adj_trips[t].temp_mc += trip_offset_mc;
             }
             trips_eff = adj_trips;
@@ -669,13 +694,19 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             zr->pid_i_term_q16 = 0;
             zr->pid_d_term_q16 = 0;
         } else {
-            int32_t setpoint_eff = zc->pid.setpoint_mc + trip_offset_mc;
+            /* Stage 8: PID gains + setpoint come from shadow
+             * (CMD_SET_PID / CMD_SET_SETPOINT targets). dt bounds are
+             * init-time copies. */
+            int32_t setpoint_eff = zr->shadow_pid.setpoint_mc + trip_offset_mc;
             thermal_pid_step_result_t pr;
             thermal_pid_step(&zr->pid,
-                             zc->pid.kp_q16, zc->pid.ki_q16, zc->pid.kd_q16,
+                             zr->shadow_pid.kp_q16,
+                             zr->shadow_pid.ki_q16,
+                             zr->shadow_pid.kd_q16,
                              setpoint_eff, agg.temp_mc,
                              in->now_ms,
-                             zc->pid.dt_min_ms, zc->pid.dt_max_ms,
+                             zr->shadow_pid.dt_min_ms,
+                             zr->shadow_pid.dt_max_ms,
                              0, 255,
                              &pr);
             zr->pwm_this_tick = (uint8_t)pr.output_pwm;
@@ -954,8 +985,219 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
                                             uint32_t now_ms,
                                             const thermal_command_t *cmd,
                                             thermal_command_result_t *result) {
-    (void)ctx; (void)now_ms; (void)cmd; (void)result;
-    return THERMAL_ERR_UNAVAILABLE;
+    if (!ctx || !cmd || !result) return THERMAL_ERR_INVALID_ARG;
+    thermal_core_internal_t *core = (thermal_core_internal_t *)ctx;
+    const thermal_config_t *cfg = core->cfg;
+
+    thermal_status_t status;
+    uint16_t target_id = 0;   /* event arg a2 */
+
+    switch (cmd->command_id) {
+    case THERMAL_CMD_SET_PID: {
+        uint16_t z = cmd->u.set_pid.zone_id;
+        target_id = z;
+        if (z >= cfg->zone_count) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else if (cfg->zones[z].governor != THERMAL_GOVERNOR_PID) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else {
+            const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
+            int32_t kp = cmd->u.set_pid.kp_q16;
+            int32_t ki = cmd->u.set_pid.ki_q16;
+            int32_t kd = cmd->u.set_pid.kd_q16;
+            if (kp < b->kp_min_q16 || kp > b->kp_max_q16 ||
+                ki < b->ki_min_q16 || ki > b->ki_max_q16 ||
+                kd < b->kd_min_q16 || kd > b->kd_max_q16) {
+                status = THERMAL_ERR_BOUNDS;
+            } else {
+                core->zones[z].shadow_pid.kp_q16 = kp;
+                core->zones[z].shadow_pid.ki_q16 = ki;
+                core->zones[z].shadow_pid.kd_q16 = kd;
+                /* PRD §7.5: reset integrator + derivative history on
+                 * gain change to avoid long unwind. */
+                thermal_pid_reset(&core->zones[z].pid);
+                status = THERMAL_OK;
+            }
+        }
+        break;
+    }
+    case THERMAL_CMD_SET_SETPOINT: {
+        uint16_t z = cmd->u.set_setpoint.zone_id;
+        target_id = z;
+        if (z >= cfg->zone_count) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else if (cfg->zones[z].governor != THERMAL_GOVERNOR_PID) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else {
+            int32_t sp = cmd->u.set_setpoint.setpoint_mc;
+            const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
+            if (sp < b->setpoint_min_mc || sp > b->setpoint_max_mc) {
+                status = THERMAL_ERR_BOUNDS;
+            } else {
+                core->zones[z].shadow_pid.setpoint_mc = sp;
+                /* No PID reset: setpoint changes don't wind anti-windup
+                 * (D is on measurement, not error). */
+                status = THERMAL_OK;
+            }
+        }
+        break;
+    }
+    case THERMAL_CMD_SET_TRIP: {
+        uint16_t z = cmd->u.set_trip.zone_id;
+        uint16_t t = cmd->u.set_trip.trip_idx;
+        target_id = z;
+        if (z >= cfg->zone_count) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else if (t >= cfg->zones[z].trip_count) {
+            status = THERMAL_ERR_BOUNDS;
+        } else {
+            int32_t temp = cmd->u.set_trip.temp_mc;
+            int32_t hyst = cmd->u.set_trip.hyst_mc;
+            const thermal_trip_cfg_t *trips = core->zones[z].shadow_trips;
+            uint8_t cnt = cfg->zones[z].trip_count;
+            int ok = (hyst >= 0);
+            if (ok && t > 0) {
+                if (temp <= trips[t - 1].temp_mc) ok = 0;
+                if ((int64_t)temp - (int64_t)hyst <
+                    (int64_t)trips[t - 1].temp_mc) ok = 0;
+            }
+            if (ok && (t + 1) < cnt) {
+                if (temp >= trips[t + 1].temp_mc) ok = 0;
+                int64_t next_cold = (int64_t)trips[t + 1].temp_mc -
+                                    (int64_t)trips[t + 1].hyst_mc;
+                if (next_cold < (int64_t)temp) ok = 0;
+            }
+            if (!ok) {
+                status = THERMAL_ERR_BOUNDS;
+            } else {
+                core->zones[z].shadow_trips[t].temp_mc = temp;
+                core->zones[z].shadow_trips[t].hyst_mc = hyst;
+                status = THERMAL_OK;
+            }
+        }
+        break;
+    }
+    case THERMAL_CMD_SET_CURVE_POINT: {
+        uint16_t m = cmd->u.set_curve_point.modifier_id;
+        uint16_t p = cmd->u.set_curve_point.point_idx;
+        target_id = m;
+        if (m >= cfg->modifier_count) {
+            status = THERMAL_ERR_INVALID_ARG;
+        } else if (p >= cfg->modifiers[m].curve_count) {
+            status = THERMAL_ERR_BOUNDS;
+        } else {
+            int32_t x = cmd->u.set_curve_point.x;
+            const thermal_curve_point_t *pts = core->shadow_modifiers[m].curve;
+            uint8_t cnt = cfg->modifiers[m].curve_count;
+            int ok = 1;
+            if (p > 0 && x <= pts[p - 1].x) ok = 0;
+            if ((p + 1) < cnt && x >= pts[p + 1].x) ok = 0;
+            if (!ok) {
+                status = THERMAL_ERR_BOUNDS;
+            } else {
+                core->shadow_modifiers[m].curve[p].x = x;
+                core->shadow_modifiers[m].curve[p].value0 =
+                    cmd->u.set_curve_point.value0;
+                core->shadow_modifiers[m].curve[p].value1 =
+                    cmd->u.set_curve_point.value1;
+                status = THERMAL_OK;
+            }
+        }
+        break;
+    }
+    case THERMAL_CMD_CLEAR_FAULT: {
+        uint16_t ftype = cmd->u.clear_fault.fault_type;
+        uint16_t tid = cmd->u.clear_fault.target_id;
+        target_id = tid;
+        switch (ftype) {
+        case THERMAL_FAULT_TYPE_STALL: {
+            int slot = find_actuator_slot(cfg, tid);
+            if (slot < 0) {
+                status = THERMAL_ERR_INVALID_ARG;
+            } else if (core->stall_states[slot].state == THERMAL_FAULT_NORMAL) {
+                status = THERMAL_OK;
+            } else if (!thermal_fault_stall_clear_allowed(
+                        &core->stall_states[slot],
+                        &cfg->faults.stall_defaults)) {
+                status = THERMAL_ERR_REJECTED_SAFETY;
+            } else {
+                thermal_fault_stall_reset(&core->stall_states[slot]);
+                status = THERMAL_OK;
+            }
+            break;
+        }
+        case THERMAL_FAULT_TYPE_STUCK_SENSOR: {
+            int slot = find_sensor_slot(cfg, tid);
+            if (slot < 0) {
+                status = THERMAL_ERR_INVALID_ARG;
+            } else if (core->stuck_sensor_states[slot].state == THERMAL_FAULT_NORMAL) {
+                status = THERMAL_OK;
+            } else if (!thermal_fault_stuck_sensor_clear_allowed(
+                        &core->stuck_sensor_states[slot],
+                        &cfg->faults.stuck_sensor_defaults)) {
+                status = THERMAL_ERR_REJECTED_SAFETY;
+            } else {
+                thermal_fault_stuck_sensor_reset(&core->stuck_sensor_states[slot]);
+                status = THERMAL_OK;
+            }
+            break;
+        }
+        case THERMAL_FAULT_TYPE_RUNAWAY: {
+            /* Per 7c emission convention, runaway target_id is zone INDEX. */
+            if (tid >= cfg->zone_count) {
+                status = THERMAL_ERR_INVALID_ARG;
+            } else if (core->runaway_states[tid].state == THERMAL_FAULT_NORMAL) {
+                status = THERMAL_OK;
+            } else if (!thermal_fault_runaway_clear_allowed(
+                        &core->runaway_states[tid],
+                        &cfg->faults.runaway_defaults)) {
+                status = THERMAL_ERR_REJECTED_SAFETY;
+            } else {
+                thermal_fault_runaway_reset(&core->runaway_states[tid]);
+                status = THERMAL_OK;
+            }
+            break;
+        }
+        case THERMAL_FAULT_TYPE_STALE_CONTEXT: {
+            int slot = find_context_slot(cfg, tid);
+            if (slot < 0) {
+                status = THERMAL_ERR_INVALID_ARG;
+            } else if (core->stale_context_states[slot].state == THERMAL_FAULT_NORMAL) {
+                status = THERMAL_OK;
+            } else if (!thermal_fault_stale_context_clear_allowed(
+                        &core->stale_context_states[slot],
+                        &cfg->faults.stale_context_defaults)) {
+                status = THERMAL_ERR_REJECTED_SAFETY;
+            } else {
+                thermal_fault_stale_context_reset(&core->stale_context_states[slot]);
+                status = THERMAL_OK;
+            }
+            break;
+        }
+        default:
+            status = THERMAL_ERR_INVALID_ARG;
+            break;
+        }
+        break;
+    }
+    default:
+        status = THERMAL_ERR_INVALID_ARG;
+        target_id = 0;
+        break;
+    }
+
+    result->status = status;
+    result->detail_code = 0;
+
+    if (core->cb.log_event) {
+        uint16_t code = (status == THERMAL_OK)
+            ? TEVENT_COMMAND_APPLIED : TEVENT_COMMAND_REJECTED;
+        core->cb.log_event(now_ms, code,
+                           (uint32_t)cmd->command_id,
+                           (uint32_t)target_id,
+                           (uint32_t)status, 0u);
+    }
+    return status;
 }
 
 thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
