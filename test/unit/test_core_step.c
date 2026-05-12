@@ -848,4 +848,37 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ((state.flags & THERMAL_STATE_ANY_CONTEXT_STALE) != 0, 1);
         EXPECT_EQ((state.flags & THERMAL_STATE_ANY_FAULT_ACTIVE) != 0, 1);
     }
+
+    /* ============================================================
+     * S23 (codex v3-#6) -- stuck-sensor REQUEST_SHUTDOWN action emits
+     * TEVENT_SHUTDOWN_REQUEST on the detector's rising edge, mirroring
+     * stall/runaway/stale-context behavior.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        add_acoustic_mask(&cfg);
+        cfg.faults.stuck_sensor_defaults.enabled = 1;
+        cfg.faults.stuck_sensor_defaults.severity =
+            THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.stuck_sensor_defaults.action =
+            THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN;
+        cfg.faults.stuck_sensor_defaults.persist_ticks = 1;
+        cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
+        cfg.faults.stuck_sensor_defaults.threshold0 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        for (int i = 0; i < 20; i++) {
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
+        }
+        /* Exactly one TEVENT_SHUTDOWN_REQUEST emitted across the run
+         * (rising edge once; latch keeps state but does not re-emit). */
+        EXPECT_EQ(count_events(TEVENT_SHUTDOWN_REQUEST), 1);
+        /* Reason is SAFETY_SHUTDOWN (shutdown_action path overrides). */
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SAFETY_SHUTDOWN);
+        /* State flag latched. */
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
+    }
 }

@@ -769,6 +769,19 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                   cfg->sensors[s].id, prev,
                                   core->stuck_sensor_states[s].state,
                                   in->now_ms);
+            /* Codex-v3 #6: emit TEVENT_SHUTDOWN_REQUEST once per detector
+             * rising edge when action == REQUEST_SHUTDOWN. The force-max +
+             * latch path runs later in step 9; the event itself belongs
+             * here next to the other detector rising-edge emissions. */
+            if (prev == THERMAL_FAULT_NORMAL
+                && core->stuck_sensor_states[s].state != THERMAL_FAULT_NORMAL
+                && fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN
+                && core->cb.log_event) {
+                core->cb.log_event(in->now_ms, TEVENT_SHUTDOWN_REQUEST,
+                                   (uint32_t)cfg->sensors[s].id,
+                                   (uint32_t)THERMAL_FAULT_TYPE_STUCK_SENSOR,
+                                   0u, 0u);
+            }
             if (fault_state_active(core->stuck_sensor_states[s].state)
                 && fc->action == THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK) {
                 /* Mark every zone that references this sensor for fallback. */
