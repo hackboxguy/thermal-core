@@ -126,3 +126,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Run libFuzzer over the JSON loader (60 s)
         run: make fuzz-json FUZZ_CC=clang
+
+  coverage:
+    runs-on: ubuntu-latest
+    # impl-plan section 3 row 9 / section 5 Stage 9: visibility only,
+    # no gate.  A coverage-target failure should never block a merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dev dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+      - name: Generate coverage report
+        run: make coverage
+      - name: Upload coverage HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: build/coverage/html/
+          if-no-files-found: warn

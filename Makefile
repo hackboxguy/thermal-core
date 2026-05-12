@@ -37,7 +37,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke fuzz-json clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke fuzz-json coverage clean
 
 all: test build verify-portability replay property property-command smoke
 
@@ -162,19 +162,41 @@ fuzz-json: build/fuzz/fuzz_jsmn
 	    -artifact_prefix=build/fuzz/artifacts/ \
 	    build/fuzz/corpus/ test/fuzz/seeds/
 
+# Per-fuzz sanitized core archive.  fuzz_jsmn would otherwise reach
+# thermal_core_validate_config (called by the loader) through the
+# non-sanitized $(CORE_ARCHIVE), which silenced OOB/UB detection in
+# core/ for fuzz inputs.  The core objects are compiled with
+# `-fsanitize=fuzzer-no-link,address,undefined` so SanitizerCoverage
+# + ASan/UBSan apply but libFuzzer's `main` isn't pulled in twice
+# (the final fuzz_jsmn link supplies it via `-fsanitize=fuzzer`).
+FUZZ_CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic \
+                   -I core -I test/unit \
+                   -O1 -g -fno-omit-frame-pointer \
+                   -fsanitize=fuzzer-no-link,address,undefined
+FUZZ_CORE_OBJS    = $(patsubst core/%.c,build/fuzz/core/%.o,$(CORE_SRCS))
+FUZZ_CORE_ARCHIVE = build/fuzz/core/libthermal_core.a
+
+build/fuzz/core/%.o: core/%.c core/thermal_config.h
+	@mkdir -p build/fuzz/core
+	$(FUZZ_CC) $(FUZZ_CFLAGS_BASE) -c -o $@ $<
+
+$(FUZZ_CORE_ARCHIVE): $(FUZZ_CORE_OBJS)
+	@mkdir -p build/fuzz/core
+	ar rcs $@ $^
+
 build/fuzz/fuzz_jsmn: \
     test/fuzz/fuzz_jsmn.c \
     platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
     platform/linux/jsmn.c platform/linux/jsmn.h \
     platform/linux/runtime_cfg.h \
-    core/thermal_config.h $(CORE_ARCHIVE)
+    core/thermal_config.h $(FUZZ_CORE_ARCHIVE)
 	@mkdir -p build/fuzz
 	$(FUZZ_CC) -std=c99 -O1 -g \
 	    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
 	    -I core -I test/unit -I platform/linux \
 	    -o $@ test/fuzz/fuzz_jsmn.c \
 	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
-	    $(CORE_ARCHIVE)
+	    $(FUZZ_CORE_ARCHIVE)
 
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
@@ -401,6 +423,41 @@ asan:
 	    LDFLAGS_EXTRA="-fsanitize=address,undefined"
 	@echo "--- Cleaning sanitizer artifacts so non-asan targets relink cleanly ---"
 	@$(MAKE) clean >/dev/null
+
+# --- Coverage (impl-plan §3 row 9 / §5 Stage 9). ----
+# Rebuilds test + replay stack with --coverage, captures via lcov,
+# generates HTML at build/coverage/html/.  Visibility only -- the
+# CI job runs `continue-on-error: true` so this never gates a PR.
+# After capturing, removes the coverage-instrumented .o + .gc*
+# build artifacts so a subsequent `make all` relinks against
+# fresh uninstrumented objects (same intent as the `asan` target,
+# but the build/coverage/ HTML report has to survive).
+COVERAGE_DIR = build/coverage
+coverage:
+	@which lcov >/dev/null || { echo "lcov not installed"; exit 1; }
+	@which genhtml >/dev/null || { echo "genhtml not installed"; exit 1; }
+	$(MAKE) clean
+	$(MAKE) test \
+	    CFLAGS_EXTRA="--coverage -O0 -g" \
+	    LDFLAGS_EXTRA="--coverage"
+	$(MAKE) replay \
+	    CFLAGS_EXTRA="--coverage -O0 -g" \
+	    LDFLAGS_EXTRA="--coverage"
+	@mkdir -p $(COVERAGE_DIR)
+	# `--ignore-errors mismatch,inconsistent` works around a known
+	# lcov 2.x quirk with gcov 13's main-line accounting on
+	# `TEST_CASE` expansions (harmless line-number drift).
+	lcov --capture --directory build/ \
+	    --base-directory . --no-external \
+	    --ignore-errors mismatch,inconsistent \
+	    --output-file $(COVERAGE_DIR)/coverage.info
+	genhtml --quiet --ignore-errors inconsistent \
+	    $(COVERAGE_DIR)/coverage.info \
+	    --output-directory $(COVERAGE_DIR)/html
+	@echo "Coverage HTML at $(COVERAGE_DIR)/html/index.html"
+	@echo "--- Cleaning coverage-instrumented artifacts (preserves $(COVERAGE_DIR)) ---"
+	@rm -rf build/core build/test build/replay build/property build/platform-linux build/fuzz
+	@$(MAKE) -C platform/linux clean >/dev/null 2>&1 || true
 
 # --- Build (delegates to platform/linux) ---
 # Depend on the core archive explicitly so `make clean && make build`
