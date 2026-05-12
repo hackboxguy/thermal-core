@@ -413,5 +413,16 @@ TEST_CASE(validate_config) {
     cfg.modifiers[0].curve[2].x = 10;       /* below previous knot (30) */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+    /* Rule 36 (Stage 7 7c): modifier.fail_safe == ASSUME_VALUE -> INVALID_CONFIG.
+     * v1 context cfg has no fallback value field to "assume." */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].fail_safe = THERMAL_FAILSAFE_ASSUME_VALUE;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 36: context.fail_safe == ASSUME_VALUE -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_VALUE;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
     #undef MAKE_MODIFIER_CONFIG
 }
