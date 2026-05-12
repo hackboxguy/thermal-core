@@ -25,9 +25,13 @@ REPLAY_GOLDEN_DIR  = test/replay/golden
 CURVE_REPLAY       = $(REPLAY_BIN_DIR)/curve_replay
 FILTER_REPLAY      = $(REPLAY_BIN_DIR)/filter_replay
 
-.PHONY: all test build verify-portability replay regen-replay-goldens clean
+# --- Property tests ---
+PROPERTY_BIN_DIR   = build/property
+PROPERTY_BIN       = $(PROPERTY_BIN_DIR)/property_config
 
-all: test build verify-portability replay
+.PHONY: all test build verify-portability replay regen-replay-goldens property clean
+
+all: test build verify-portability replay property
 
 # --- Unit tests ---
 test: $(TEST_BINS)
@@ -114,6 +118,15 @@ regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY)
 	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
 	$(FILTER_REPLAY) > $(REPLAY_GOLDEN_DIR)/filter_sweep.csv
 	@echo "Regenerated goldens. Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
+
+# --- Property test: validate_config across random configs ---
+$(PROPERTY_BIN): test/property/property_config.c core/thermal_core.h \
+                 $(CORE_ARCHIVE)
+	@mkdir -p $(PROPERTY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+property: $(PROPERTY_BIN)
+	@python3 test/property/run_property.py
 
 # --- Build (delegates to platform/linux) ---
 build:

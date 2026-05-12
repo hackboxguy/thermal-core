@@ -35,10 +35,10 @@ long  __wrap_read(int fd, void *b, size_t n)           { (void)fd; (void)b; (voi
 long  __wrap_write(int fd, const void *b, size_t n)    { (void)fd; (void)b; (void)n; abort_forbidden("write");   return -1;   }
 
 TEST_CASE(core_only_no_forbidden_calls) {
-    /* Stage 1 onward: exercise the real API surface from inside the
-     * portability check. validate_config returns THERMAL_ERR_UNAVAILABLE
-     * until Stage 9 fills in the body. Extended as real core functions
-     * land. */
+    /* Stage 4 commit 3a: validate_config is now a real implementation.
+     * validate_config(NULL) returns INVALID_ARG per rule 1; this also
+     * proves the validator + its static helpers reach no forbidden
+     * libc symbols (the static nm -u check covers the rest). */
     thermal_status_t s = thermal_core_validate_config(NULL);
-    EXPECT_EQ(s, THERMAL_ERR_UNAVAILABLE);
+    EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
 }
