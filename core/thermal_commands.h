@@ -8,6 +8,25 @@
  * Sourced from PRD §4.3 (lines 251-273). The polymorphic thermal_command_t
  * is a typed payload — wire framing, CRC, and seq tracking live in
  * protocol/, not here.
+ *
+ * Target naming in v1 (all union members):
+ *   zone_id        — slot index into cfg->zones[] (v1: zones have no
+ *                    separate numeric id field; the slot IS the
+ *                    addressable identity).
+ *   trip_idx       — slot index into the zone's trips[] array.
+ *   modifier_id    — slot index into cfg->modifiers[].
+ *   point_idx      — slot index into the modifier's curve[] array.
+ *   fault_type     — thermal_fault_type_t (STALL / STUCK_SENSOR /
+ *                    RUNAWAY / STALE_CONTEXT).
+ *   target_id      — for STALL: actuator id; STUCK_SENSOR: sensor id;
+ *                    RUNAWAY: zone slot; STALE_CONTEXT: context id.
+ *                    The convention is "configured id where one
+ *                    exists; slot index where not" — matches
+ *                    thermal_fault_state_snapshot_t.target_id.
+ *
+ * Tools (Stage 10 thermalcore-tune) map human zone names like "soc"
+ * to slot indexes during command construction. The wire payload
+ * carries only the slot/id integers defined here.
  */
 #ifndef THERMAL_COMMANDS_H
 #define THERMAL_COMMANDS_H

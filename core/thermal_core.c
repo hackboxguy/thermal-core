@@ -164,9 +164,20 @@ static int severity_known(uint8_t sev) {
         || sev == THERMAL_TRIP_SHUTDOWN;
 }
 
+/* Forward decl: defined alongside dispatch_signal_value below. Used by
+ * validate_telemetry to check enabled_signal_ids[] decode to supported
+ * (range, sub, slot) tuples for this cfg. */
+static int signal_id_is_supported(const thermal_config_t *cfg, uint16_t sig);
+
 static thermal_status_t validate_sensors(const thermal_config_t *cfg) {
     for (uint8_t i = 0; i < cfg->sensor_count; i++) {
         if (cfg->sensors[i].max_staleness_ms == 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 41 (codex-C v1-#8): IIR coefficient must be in
+         * [0, Q16_ONE] per PRD §4.5 ("0..Q16_ONE in normal use"). */
+        if (cfg->sensors[i].iir_alpha_q16 < 0 ||
+            cfg->sensors[i].iir_alpha_q16 > Q16_ONE) {
             return THERMAL_ERR_INVALID_CONFIG;
         }
     }
@@ -224,10 +235,36 @@ static thermal_status_t validate_modifiers(const thermal_config_t *cfg) {
             }
         }
         /* Rule 36 (Stage 7 7c): v1 context cfg has no fallback value field,
-         * so ASSUME_VALUE is not implementable. Reject it rather than
-         * silently treating it as STATIONARY. */
+         * so ASSUME_VALUE is not implementable. */
         if (m->fail_safe == THERMAL_FAILSAFE_ASSUME_VALUE) {
             return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 39 (codex-C): fail_safe must be a known value. */
+        if (m->fail_safe != THERMAL_FAILSAFE_ASSUME_STATIONARY &&
+            m->fail_safe != THERMAL_FAILSAFE_HOLD_LAST) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 42 (codex-C v2-#9): modifier fail_safe must equal the
+         * context's fail_safe. PRD §4.5 describes fail_safe as a
+         * context-signal behavior; v1 keeps the modifier field for
+         * forward-compat but requires equality at validate-time so
+         * tooling/schema can't surprise consumers. */
+        {
+            int ctx_slot = find_context_slot(cfg, m->context_id);
+            if (ctx_slot >= 0 &&
+                cfg->contexts[ctx_slot].fail_safe != m->fail_safe) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+        }
+        /* Rule 43 (codex-C): stages must be nonzero and contain only
+         * known bits (PRE_GOVERNOR_TRIP_OFFSET | POST_GOVERNOR_PWM_CAP). */
+        {
+            uint8_t known_bits = (uint8_t)(
+                THERMAL_MOD_STAGE_PRE_GOVERNOR_TRIP_OFFSET |
+                THERMAL_MOD_STAGE_POST_GOVERNOR_PWM_CAP);
+            if (m->stages == 0 || (m->stages & ~known_bits) != 0) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
         }
     }
     return THERMAL_OK;
@@ -235,14 +272,136 @@ static thermal_status_t validate_modifiers(const thermal_config_t *cfg) {
 
 static thermal_status_t validate_contexts(const thermal_config_t *cfg) {
     for (uint8_t i = 0; i < cfg->context_count; i++) {
-        /* Rule 36 (Stage 7 7c): see comment in validate_modifiers. */
-        if (cfg->contexts[i].fail_safe == THERMAL_FAILSAFE_ASSUME_VALUE) {
+        const thermal_context_cfg_t *c = &cfg->contexts[i];
+        /* Rule 37 (codex-C): unit must be a known thermal_context_unit_t. */
+        if (c->unit != THERMAL_CONTEXT_UNIT_NONE &&
+            c->unit != THERMAL_CONTEXT_UNIT_KMH &&
+            c->unit != THERMAL_CONTEXT_UNIT_BOOL &&
+            c->unit != THERMAL_CONTEXT_UNIT_RPM &&
+            c->unit != THERMAL_CONTEXT_UNIT_CELSIUS_MC) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 38 (codex-C): timeout_ms must be > 0 -- stale-context
+         * detection depends on it. */
+        if (c->timeout_ms == 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 36 (Stage 7 7c): ASSUME_VALUE not implementable in v1. */
+        if (c->fail_safe == THERMAL_FAILSAFE_ASSUME_VALUE) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 39 (codex-C): fail_safe must be a known value. */
+        if (c->fail_safe != THERMAL_FAILSAFE_ASSUME_STATIONARY &&
+            c->fail_safe != THERMAL_FAILSAFE_HOLD_LAST) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* Rule 40 (codex-C v1-#8): IIR alpha must be in [0, Q16_ONE]. */
+        if (c->iir_alpha_q16 < 0 || c->iir_alpha_q16 > Q16_ONE) {
             return THERMAL_ERR_INVALID_CONFIG;
         }
         for (uint8_t j = (uint8_t)(i + 1); j < cfg->context_count; j++) {
             if (cfg->contexts[i].id == cfg->contexts[j].id) {
                 return THERMAL_ERR_INVALID_CONFIG;
             }
+        }
+    }
+    return THERMAL_OK;
+}
+
+/* Codex-C v3-#7 / v1-#8 / v2-#6 -- per-detector severity/action enum
+ * checks plus rule-46 stuck_sensor correlated context resolution.
+ * Each enabled detector kind is validated; disabled ones get their
+ * configured fields skipped (a disabled detector with garbage fields
+ * is a config smell but not a runtime hazard since the detector
+ * never runs). */
+static int fault_action_known(uint8_t action) {
+    return action == THERMAL_FAULT_ACTION_NONE
+        || action == THERMAL_FAULT_ACTION_MARK_DEGRADED
+        || action == THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK
+        || action == THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED
+        || action == THERMAL_FAULT_ACTION_FORCE_PWM_MAX_AND_LATCH
+        || action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN;
+}
+
+static int fault_severity_known(uint8_t sev) {
+    return sev == THERMAL_FAULT_SEVERITY_DEGRADED
+        || sev == THERMAL_FAULT_SEVERITY_CRITICAL;
+}
+
+static thermal_status_t validate_fault_defaults(const thermal_config_t *cfg,
+                                                const thermal_fault_detector_cfg_t *fc,
+                                                int needs_correlated_ctx_resolution) {
+    if (!fc->enabled) return THERMAL_OK;
+    /* Rule 44 (codex-C): severity must be known. */
+    if (!fault_severity_known(fc->severity)) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    /* Rule 45 (codex-C): action must be known. */
+    if (!fault_action_known(fc->action)) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    /* Rule 46 (codex-C v1-#8): stuck_sensor's correlated_context_id
+     * (when not advisory 0xFFFF) must resolve to a configured context. */
+    if (needs_correlated_ctx_resolution &&
+        fc->correlated_context_id != 0xFFFFu &&
+        find_context_slot(cfg, fc->correlated_context_id) < 0) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    return THERMAL_OK;
+}
+
+static thermal_status_t validate_fault_detectors(const thermal_config_t *cfg) {
+    thermal_status_t s;
+    if ((s = validate_fault_defaults(cfg, &cfg->faults.stall_defaults, 0))
+        != THERMAL_OK) return s;
+    if ((s = validate_fault_defaults(cfg, &cfg->faults.stuck_sensor_defaults, 1))
+        != THERMAL_OK) return s;
+    if ((s = validate_fault_defaults(cfg, &cfg->faults.runaway_defaults, 0))
+        != THERMAL_OK) return s;
+    if ((s = validate_fault_defaults(cfg, &cfg->faults.stale_context_defaults, 0))
+        != THERMAL_OK) return s;
+    return THERMAL_OK;
+}
+
+/* Rule 47 (codex-C): every (actuator, cooling_state) pair referenced
+ * by zone trips must have state_pwm[cs] either 0 or in [pwm_min,
+ * pwm_max]. PRD §4.3 line 506 establishes the 0-stays-0 special case;
+ * other state_pwm entries that map a trip's cooling_state must be
+ * legal PWM commands. */
+static thermal_status_t validate_state_pwm_references(const thermal_config_t *cfg) {
+    for (uint8_t z = 0; z < cfg->zone_count; z++) {
+        const thermal_zone_cfg_t *zc = &cfg->zones[z];
+        for (uint8_t t = 0; t < zc->trip_count; t++) {
+            uint8_t cs = zc->trips[t].cooling_state;
+            for (uint8_t k = 0; k < zc->actuator_count; k++) {
+                int slot = find_actuator_slot(cfg, zc->actuator_ids[k]);
+                if (slot < 0) continue; /* caught elsewhere */
+                uint8_t pwm = cfg->actuators[slot].state_pwm[cs];
+                if (pwm == 0) continue; /* off is always legal */
+                if (pwm < cfg->actuators[slot].pwm_min ||
+                    pwm > cfg->actuators[slot].pwm_max) {
+                    return THERMAL_ERR_BOUNDS;
+                }
+            }
+        }
+    }
+    return THERMAL_OK;
+}
+
+/* Rule 48 + Rule 49 (codex-C v1-#8 / v3-#1): telemetry-cfg sanity.
+ * - enable=1 with period_ticks=0 silently disables emission today;
+ *   reject so the schema can't have a "looks enabled, actually muted"
+ *   state.
+ * - every enabled_signal_ids[i] must decode to a supported
+ *   (range, sub, slot) for the configured counts. */
+static thermal_status_t validate_telemetry(const thermal_config_t *cfg) {
+    const thermal_telemetry_cfg_t *t = &cfg->telemetry;
+    if (t->enable && t->period_ticks == 0) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    for (uint8_t i = 0; i < t->enabled_signal_count; i++) {
+        if (!signal_id_is_supported(cfg, t->enabled_signal_ids[i])) {
+            return THERMAL_ERR_INVALID_CONFIG;
         }
     }
     return THERMAL_OK;
@@ -456,13 +615,18 @@ static void step5_modifier_eval(thermal_core_internal_t *core) {
     int ctx_slot = find_context_slot(cfg, m->context_id);
     if (ctx_slot < 0) return; /* validate_config rule 34 prevents this */
 
+    /* Codex-C v2-#9 / v3-#3: context-level fail_safe is authoritative.
+     * validate_config rule 42 already enforces modifier.fail_safe ==
+     * context.fail_safe, so reading from the context is the documented
+     * source of truth. */
+    const thermal_context_cfg_t *cc = &cfg->contexts[ctx_slot];
     int32_t effective_value;
     uint8_t fail_safe_active;
     if (core->context_filters[ctx_slot].valid) {
         effective_value = core->context_filters[ctx_slot].filtered_value;
         fail_safe_active = 0;
     } else {
-        if (m->fail_safe == THERMAL_FAILSAFE_HOLD_LAST &&
+        if (cc->fail_safe == THERMAL_FAILSAFE_HOLD_LAST &&
             core->context_ever_valid[ctx_slot]) {
             effective_value = core->context_filters[ctx_slot].filtered_value;
         } else {
@@ -482,59 +646,170 @@ static void step5_modifier_eval(thermal_core_internal_t *core) {
     core->modifier_active[0] = (r.trip_offset_mc != 0) || (r.pwm_cap < 255);
 }
 
-/* Returns 1 and writes *out if signal id is recognized. */
+/* Returns 1 and writes *out if signal id decodes to a (range, sub, slot)
+ * supported by the current config. PRD §7.1 range layout; within-range
+ * sub-signal stride is 0x10, slots 0..15 per sub. */
 static int dispatch_signal_value(const thermal_core_internal_t *core,
                                  uint16_t sig, int32_t *out) {
     const thermal_config_t *cfg = core->cfg;
-    switch (sig) {
-    case TSIG_ZONE_TEMP_SOC:
-        if (cfg->zone_count > 0) { *out = core->zones[0].temp_mc; return 1; }
-        return 0;
-    case TSIG_ZONE_TEMP_AMP:
-        if (cfg->zone_count > 1) { *out = core->zones[1].temp_mc; return 1; }
-        return 0;
-    case TSIG_ACTUATOR_PWM_MAIN_FAN:
-        if (cfg->actuator_count > 0) {
-            *out = (int32_t)core->actuator_prev_duty[0];
-            return 1;
+
+    /* Zone range 0x0100..0x01FF */
+    if (sig >= TSIG_ZONE_BASE && sig < TSIG_ZONE_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_ZONE_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_ZONE_BASE) & 0x0Fu);
+        if (slot >= cfg->zone_count) return 0;
+        switch (sub) {
+        case TSIG_ZONE_SUB_TEMP:
+            *out = core->zones[slot].temp_mc; return 1;
+        case TSIG_ZONE_SUB_COOLING_STATE:
+            *out = (int32_t)core->zones[slot].cooling_state; return 1;
+        case TSIG_ZONE_SUB_TRIP_MASK:
+            *out = (int32_t)core->zones[slot].active_trip_mask; return 1;
+        case TSIG_ZONE_SUB_EFFECTIVE_SETPOINT:
+            *out = core->zones[slot].effective_setpoint_mc; return 1;
+        default:
+            return 0;
         }
-        return 0;
-    case TSIG_ACTUATOR_RPM_MAIN_FAN:
-        if (cfg->actuator_count > 0) {
-            *out = (int32_t)core->actuator_tach_rpm[0];
-            return 1;
-        }
-        return 0;
-    case TSIG_PID_ERROR_SOC:
-        if (cfg->zone_count > 0) { *out = core->zones[0].pid_error_mc; return 1; }
-        return 0;
-    case TSIG_PID_INTEGRAL_SOC:
-        if (cfg->zone_count > 0) { *out = core->zones[0].pid_i_term_q16; return 1; }
-        return 0;
-    case TSIG_PID_DERIVATIVE_SOC:
-        if (cfg->zone_count > 0) { *out = core->zones[0].pid_d_term_q16; return 1; }
-        return 0;
-    case TSIG_SPEED_KMH:
-        if (cfg->context_count > 0) {
-            *out = core->context_effective_value[0];
-            return 1;
-        }
-        return 0;
-    case TSIG_MODIFIER_PWM_CAP:
-        if (cfg->modifier_count > 0) {
-            *out = core->modifier_pwm_cap[0];
-            return 1;
-        }
-        return 0;
-    case TSIG_FAULT_STALL_COUNT:
-        if (cfg->actuator_count > 0) {
-            *out = (int32_t)core->stall_states[0].persist_count;
-            return 1;
-        }
-        return 0;
-    default:
-        return 0;
     }
+    /* Actuator range 0x0200..0x02FF */
+    if (sig >= TSIG_ACTUATOR_BASE && sig < TSIG_ACTUATOR_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_ACTUATOR_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_ACTUATOR_BASE) & 0x0Fu);
+        if (slot >= cfg->actuator_count) return 0;
+        switch (sub) {
+        case TSIG_ACTUATOR_SUB_DUTY:
+            *out = (int32_t)core->actuator_prev_duty[slot]; return 1;
+        case TSIG_ACTUATOR_SUB_RPM:
+            *out = (int32_t)core->actuator_tach_rpm[slot]; return 1;
+        case TSIG_ACTUATOR_SUB_SLEW_LIMITED:
+            *out = (int32_t)core->actuator_prev_slew_limited[slot]; return 1;
+        default:
+            return 0;
+        }
+    }
+    /* PID range 0x0300..0x03FF (PRD-locked: zone*4 + term) */
+    if (sig >= TSIG_PID_BASE && sig < TSIG_PID_BASE + TSIG_RANGE_SIZE) {
+        uint8_t off  = (uint8_t)(sig - TSIG_PID_BASE);
+        uint8_t zone = (uint8_t)(off / 4u);
+        uint8_t term = (uint8_t)(off % 4u);
+        if (zone >= cfg->zone_count) return 0;
+        switch (term) {
+        case 0: *out = core->zones[zone].pid_error_mc;   return 1;
+        case 1: *out = core->zones[zone].pid_i_term_q16; return 1;
+        case 2: *out = core->zones[zone].pid_d_term_q16; return 1;
+        case 3: *out = (int32_t)core->zones[zone].pwm_this_tick; return 1;
+        default: return 0;
+        }
+    }
+    /* Context range 0x0400..0x04FF */
+    if (sig >= TSIG_CONTEXT_BASE && sig < TSIG_CONTEXT_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_CONTEXT_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_CONTEXT_BASE) & 0x0Fu);
+        if (slot >= cfg->context_count) return 0;
+        switch (sub) {
+        case TSIG_CONTEXT_SUB_VALUE:
+            *out = core->context_effective_value[slot]; return 1;
+        case TSIG_CONTEXT_SUB_VALID:
+            *out = (int32_t)core->context_filters[slot].valid; return 1;
+        default:
+            return 0;
+        }
+    }
+    /* Modifier range 0x0500..0x05FF */
+    if (sig >= TSIG_MODIFIER_BASE && sig < TSIG_MODIFIER_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_MODIFIER_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_MODIFIER_BASE) & 0x0Fu);
+        if (slot >= cfg->modifier_count) return 0;
+        switch (sub) {
+        case TSIG_MODIFIER_SUB_PWM_CAP:
+            *out = core->modifier_pwm_cap[slot]; return 1;
+        case TSIG_MODIFIER_SUB_TRIP_OFFSET:
+            *out = core->modifier_trip_offset[slot]; return 1;
+        case TSIG_MODIFIER_SUB_ACTIVE:
+            *out = (int32_t)core->modifier_active[slot]; return 1;
+        default:
+            return 0;
+        }
+    }
+    /* Fault range 0x0600..0x06FF; each sub uses its detector kind's slot space. */
+    if (sig >= TSIG_FAULT_BASE && sig < TSIG_FAULT_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_FAULT_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_FAULT_BASE) & 0x0Fu);
+        switch (sub) {
+        case TSIG_FAULT_SUB_STALL_STATE:
+            if (slot >= cfg->actuator_count) return 0;
+            *out = (int32_t)core->stall_states[slot].state; return 1;
+        case TSIG_FAULT_SUB_STUCK_SENSOR_STATE:
+            if (slot >= cfg->sensor_count) return 0;
+            *out = (int32_t)core->stuck_sensor_states[slot].state; return 1;
+        case TSIG_FAULT_SUB_RUNAWAY_STATE:
+            if (slot >= cfg->zone_count) return 0;
+            *out = (int32_t)core->runaway_states[slot].state; return 1;
+        case TSIG_FAULT_SUB_STALE_CONTEXT_STATE:
+            if (slot >= cfg->context_count) return 0;
+            *out = (int32_t)core->stale_context_states[slot].state; return 1;
+        default:
+            return 0;
+        }
+    }
+    return 0;
+}
+
+/* Like dispatch_signal_value but cfg-only -- used by validate_config
+ * rule 49 to reject telemetry signal IDs that don't decode for the
+ * current configured counts. Mirrors the dispatch arithmetic without
+ * any state lookup. Returns 1 iff sig is a supported (range, sub,
+ * slot) for this cfg. */
+static int signal_id_is_supported(const thermal_config_t *cfg, uint16_t sig) {
+    if (sig >= TSIG_ZONE_BASE && sig < TSIG_ZONE_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_ZONE_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_ZONE_BASE) & 0x0Fu);
+        if (slot >= cfg->zone_count) return 0;
+        return (sub == TSIG_ZONE_SUB_TEMP ||
+                sub == TSIG_ZONE_SUB_COOLING_STATE ||
+                sub == TSIG_ZONE_SUB_TRIP_MASK ||
+                sub == TSIG_ZONE_SUB_EFFECTIVE_SETPOINT);
+    }
+    if (sig >= TSIG_ACTUATOR_BASE && sig < TSIG_ACTUATOR_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_ACTUATOR_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_ACTUATOR_BASE) & 0x0Fu);
+        if (slot >= cfg->actuator_count) return 0;
+        return (sub == TSIG_ACTUATOR_SUB_DUTY ||
+                sub == TSIG_ACTUATOR_SUB_RPM ||
+                sub == TSIG_ACTUATOR_SUB_SLEW_LIMITED);
+    }
+    if (sig >= TSIG_PID_BASE && sig < TSIG_PID_BASE + TSIG_RANGE_SIZE) {
+        uint8_t off  = (uint8_t)(sig - TSIG_PID_BASE);
+        uint8_t zone = (uint8_t)(off / 4u);
+        return zone < cfg->zone_count;
+    }
+    if (sig >= TSIG_CONTEXT_BASE && sig < TSIG_CONTEXT_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_CONTEXT_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_CONTEXT_BASE) & 0x0Fu);
+        if (slot >= cfg->context_count) return 0;
+        return (sub == TSIG_CONTEXT_SUB_VALUE ||
+                sub == TSIG_CONTEXT_SUB_VALID);
+    }
+    if (sig >= TSIG_MODIFIER_BASE && sig < TSIG_MODIFIER_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_MODIFIER_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_MODIFIER_BASE) & 0x0Fu);
+        if (slot >= cfg->modifier_count) return 0;
+        return (sub == TSIG_MODIFIER_SUB_PWM_CAP ||
+                sub == TSIG_MODIFIER_SUB_TRIP_OFFSET ||
+                sub == TSIG_MODIFIER_SUB_ACTIVE);
+    }
+    if (sig >= TSIG_FAULT_BASE && sig < TSIG_FAULT_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_FAULT_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_FAULT_BASE) & 0x0Fu);
+        switch (sub) {
+        case TSIG_FAULT_SUB_STALL_STATE:         return slot < cfg->actuator_count;
+        case TSIG_FAULT_SUB_STUCK_SENSOR_STATE:  return slot < cfg->sensor_count;
+        case TSIG_FAULT_SUB_RUNAWAY_STATE:       return slot < cfg->zone_count;
+        case TSIG_FAULT_SUB_STALE_CONTEXT_STATE: return slot < cfg->context_count;
+        default: return 0;
+        }
+    }
+    return 0;
 }
 
 /* === Public API === */
@@ -570,6 +845,11 @@ thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
     }
 
     if ((s = validate_modifiers(cfg)) != THERMAL_OK) return s;
+
+    /* Codex-C v1-#8 / v2-#6 / v3-#2 additions. */
+    if ((s = validate_fault_detectors(cfg)) != THERMAL_OK) return s;
+    if ((s = validate_state_pwm_references(cfg)) != THERMAL_OK) return s;
+    if ((s = validate_telemetry(cfg)) != THERMAL_OK) return s;
 
     return THERMAL_OK;
 }
@@ -742,7 +1022,12 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
      * a zone's temperature for fallback_temp_mc BEFORE the governor
      * sees it (PRD §4.7 use_zone_fallback). Event emission stays here
      * to keep transitions in deterministic order. */
-    uint8_t zone_force_fallback[THERMAL_MAX_ZONES] = { 0 };
+    /* Codex-v3 #4: per-zone bitmask of stuck sensor slots (within the
+     * zone's sensor_ids[] indexing). Step 6 aggregation masks these to
+     * invalid; aggregation naturally computes "max of remaining valid
+     * sensors" and falls back to fallback_temp_mc only when every
+     * sensor in the zone is masked (PRD §4.7 use_zone_fallback). */
+    uint8_t zone_stuck_mask[THERMAL_MAX_ZONES] = { 0 };
     if (cfg->faults.stuck_sensor_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
         /* Derive correlated_load_changing once per tick from the
@@ -784,12 +1069,16 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             }
             if (fault_state_active(core->stuck_sensor_states[s].state)
                 && fc->action == THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK) {
-                /* Mark every zone that references this sensor for fallback. */
+                /* For each zone referencing this sensor, set the
+                 * within-zone slot bit in the stuck mask. Step 6's
+                 * aggregation will treat that slot as invalid; the
+                 * zone falls back to fallback_temp_mc only if every
+                 * referencing sensor is masked. */
                 for (uint8_t z = 0; z < cfg->zone_count; z++) {
                     const thermal_zone_cfg_t *zc = &cfg->zones[z];
                     for (uint8_t k = 0; k < zc->sensor_count; k++) {
                         if (zc->sensor_ids[k] == cfg->sensors[s].id) {
-                            zone_force_fallback[z] = 1;
+                            zone_stuck_mask[z] |= (uint8_t)(1u << k);
                             break;
                         }
                     }
@@ -817,21 +1106,21 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             uint8_t slot = zr->sensor_slots[k];
             filter_values[k] = core->filters[slot].filtered_value;
             filter_valid[k]  = core->filters[slot].valid;
+            /* Codex-v3 #4: mask out stuck sensors so aggregation
+             * computes the max of remaining valid sensors. If every
+             * slot is masked, thermal_zone_aggregate falls back to
+             * fallback_temp_mc per its existing contract. */
+            if (zone_stuck_mask[i] & (uint8_t)(1u << k)) {
+                filter_valid[k] = 0;
+            }
             weights[k]       = zc->sensor_weights_q16[k];
         }
         thermal_zone_aggregate_result_t agg;
         thermal_zone_aggregate((thermal_aggregation_t)zc->aggregation,
                                filter_values, filter_valid, weights,
                                zc->sensor_count, zc->fallback_temp_mc, &agg);
-        /* USE_ZONE_FALLBACK action: override zone temp with fallback_temp_mc.
-         * PRD §4.7 use_zone_fallback table entry. */
-        if (zone_force_fallback[i]) {
-            zr->temp_mc = zc->fallback_temp_mc;
-            zr->aggregation_valid = 0;
-        } else {
-            zr->temp_mc = agg.temp_mc;
-            zr->aggregation_valid = agg.valid;
-        }
+        zr->temp_mc = agg.temp_mc;
+        zr->aggregation_valid = agg.valid;
 
         /* Build offset-adjusted trip array if modifier active. Trip
          * temp/hyst come from shadow (CMD_SET_TRIP target); severity
@@ -976,6 +1265,8 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     uint8_t shutdown_action[THERMAL_MAX_ACTUATORS]  = { 0 };
     uint8_t cause_stall[THERMAL_MAX_ACTUATORS]      = { 0 };
     uint8_t cause_runaway[THERMAL_MAX_ACTUATORS]    = { 0 };
+    uint8_t cause_stuck[THERMAL_MAX_ACTUATORS]      = { 0 };
+    uint8_t cause_stale[THERMAL_MAX_ACTUATORS]      = { 0 };
 
     /* Severity-derived flags. */
     for (uint8_t a = 0; a < cfg->actuator_count; a++) {
@@ -1104,7 +1395,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                         slew_override_up[a] = 1;
                         force_pwm_max[a] = 1;
                         if (forces_max) {
-                            cause_runaway[a] = 1;  /* reuse closest enum */
+                            cause_stale[a] = 1;
                         } else {
                             shutdown_action[a] = 1;
                         }
@@ -1150,7 +1441,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                         slew_override_up[slot] = 1;
                         force_pwm_max[slot] = 1;
                         if (forces_max) {
-                            cause_runaway[slot] = 1;  /* reuse closest enum */
+                            cause_stuck[slot] = 1;
                         } else {
                             shutdown_action[slot] = 1;
                         }
@@ -1256,12 +1547,20 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                 reason = THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP;
             }
         }
-        /* Fault force-max overrides governor/modifier reason. */
+        /* Fault force-max overrides governor/modifier reason. Codex-C
+         * v3-#7: each detector kind gets its own reason code (instead
+         * of stuck-sensor/stale-context borrowing FAULT_RUNAWAY). */
         if (cause_stall[a]) {
             reason = THERMAL_ACT_REASON_FAULT_STALL;
         }
+        if (cause_stuck[a]) {
+            reason = THERMAL_ACT_REASON_FAULT_STUCK_SENSOR;
+        }
         if (cause_runaway[a]) {
             reason = THERMAL_ACT_REASON_FAULT_RUNAWAY;
+        }
+        if (cause_stale[a]) {
+            reason = THERMAL_ACT_REASON_FAULT_STALE_CONTEXT;
         }
         /* Shutdown overrides everything: SHUTDOWN trip severity OR a
          * request_shutdown fault action. */

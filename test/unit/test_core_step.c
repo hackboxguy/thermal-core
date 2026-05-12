@@ -765,6 +765,10 @@ TEST_CASE(core_step_full_loop) {
             step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
         }
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+        /* Codex-C v3-#7: distinct reason code for stuck-sensor (was
+         * borrowing FAULT_RUNAWAY before this commit). */
+        EXPECT_EQ(out.actuator_cmds[0].reason,
+                  THERMAL_ACT_REASON_FAULT_STUCK_SENSOR);
     }
 
     /* ============================================================
@@ -789,6 +793,9 @@ TEST_CASE(core_step_full_loop) {
             step_t1(&ctx, (uint32_t)(200 + i * 100), 50000, &out);
         }
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+        /* Codex-C v3-#7: distinct reason for stale-context. */
+        EXPECT_EQ(out.actuator_cmds[0].reason,
+                  THERMAL_ACT_REASON_FAULT_STALE_CONTEXT);
     }
 
     /* ============================================================
@@ -880,5 +887,113 @@ TEST_CASE(core_step_full_loop) {
         /* State flag latched. */
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
         EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
+    }
+
+    /* ============================================================
+     * S24 (codex v3-#4) -- multi-sensor stuck-sensor "max of remaining
+     * valid sensors". Two-sensor zone: one sensor stuck flat (50000),
+     * other sensor warm (78000 → above WARN trip). Zone temp should
+     * track the warm sensor, NOT the fallback. cooling_state = 2
+     * (WARN active via 78000).
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        add_acoustic_mask(&cfg);
+        /* Two sensors, both feeding zone 0. */
+        cfg.sensor_count = 2;
+        cfg.sensors[1].id = 2;
+        cfg.sensors[1].iir_alpha_q16 = Q16_ONE;
+        cfg.sensors[1].max_staleness_ms = 1000;
+        cfg.zones[0].sensor_count = 2;
+        cfg.zones[0].sensor_ids[0] = 1;
+        cfg.zones[0].sensor_ids[1] = 2;
+        cfg.zones[0].fallback_temp_mc = 95000;  /* would force SHUTDOWN if used */
+        /* state_pwm[0] must remain valid for new rule 47. */
+        cfg.actuators[0].state_pwm[0] = 0;
+        cfg.faults.stuck_sensor_defaults.enabled = 1;
+        cfg.faults.stuck_sensor_defaults.severity =
+            THERMAL_FAULT_SEVERITY_DEGRADED;
+        cfg.faults.stuck_sensor_defaults.action =
+            THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK;
+        cfg.faults.stuck_sensor_defaults.persist_ticks = 1;
+        cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
+        cfg.faults.stuck_sensor_defaults.threshold0 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        /* sensor 1 stuck at 50000 (flat -> detector flags as stuck);
+         * sensor 2 warm-and-varying around 78000 so its window delta
+         * exceeds threshold and the detector keeps it NORMAL. */
+        for (int i = 0; i < 25; i++) {
+            int32_t s2 = 78000 + ((i % 3) * 100);  /* 78000, 78100, 78200 */
+            run_step(&ctx, (uint32_t)(100 + i * 100),
+                     50000, 1,    /* sensor 1: flat */
+                     s2, 1,       /* sensor 2: varying */
+                     60, 1,
+                     3, &out);
+        }
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        /* Zone temp tracks the warm sensor (varying around 78000), not
+         * the fallback (95000). Detector latched sensor 1 only. */
+        EXPECT_EQ(state.zones[0].temp_mc >= 78000 &&
+                  state.zones[0].temp_mc < 79000, 1);
+        EXPECT_EQ(state.zones[0].cooling_state, 2);  /* WARN active */
+        /* Sensor 1 is latched as stuck. */
+        int stuck_count = 0;
+        for (uint8_t i = 0; i < state.fault_count; i++) {
+            if (state.faults[i].fault_type == THERMAL_FAULT_TYPE_STUCK_SENSOR) {
+                stuck_count++;
+            }
+        }
+        EXPECT_EQ(stuck_count, 1);
+    }
+
+    /* ============================================================
+     * S25 (codex v3-#1) -- range-based telemetry dispatch across two
+     * zones and two actuators. Verifies the new TSIG_*(slot) macros
+     * decode to the right state values; not just slot-0 named aliases.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        /* Add a second zone + sensor + actuator to exercise slot 1. */
+        cfg.sensor_count = 2;
+        cfg.sensors[1].id = 2;
+        cfg.sensors[1].iir_alpha_q16 = Q16_ONE;
+        cfg.sensors[1].max_staleness_ms = 1000;
+        cfg.actuator_count = 2;
+        cfg.actuators[1] = cfg.actuators[0];
+        cfg.actuators[1].id = 11;
+        cfg.zone_count = 2;
+        cfg.zones[1] = cfg.zones[0];
+        cfg.zones[1].sensor_ids[0] = 2;
+        cfg.zones[1].actuator_ids[0] = 11;
+        cfg.telemetry.enable = 1;
+        cfg.telemetry.period_ticks = 1;
+        cfg.telemetry.enabled_signal_count = 6;
+        cfg.telemetry.enabled_signal_ids[0] = TSIG_ZONE_TEMP(0);
+        cfg.telemetry.enabled_signal_ids[1] = TSIG_ZONE_TEMP(1);
+        cfg.telemetry.enabled_signal_ids[2] = TSIG_ZONE_COOLING_STATE(0);
+        cfg.telemetry.enabled_signal_ids[3] = TSIG_ACTUATOR_DUTY(0);
+        cfg.telemetry.enabled_signal_ids[4] = TSIG_ACTUATOR_DUTY(1);
+        cfg.telemetry.enabled_signal_ids[5] = TSIG_ACTUATOR_RPM(0);
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        run_step(&ctx, 100, 55000, 1, 65000, 1, 0, 0, 2, &out);
+        EXPECT_EQ(mock_tlm_count, 6);
+        /* Check the two zone temps came through with the right values. */
+        int saw_z0 = 0, saw_z1 = 0;
+        for (uint16_t i = 0; i < mock_tlm_count; i++) {
+            if (mock_tlms[i].sig == TSIG_ZONE_TEMP(0)) {
+                EXPECT_EQ(mock_tlms[i].val, 55000);
+                saw_z0 = 1;
+            }
+            if (mock_tlms[i].sig == TSIG_ZONE_TEMP(1)) {
+                EXPECT_EQ(mock_tlms[i].val, 65000);
+                saw_z1 = 1;
+            }
+        }
+        EXPECT_EQ(saw_z0, 1);
+        EXPECT_EQ(saw_z1, 1);
     }
 }

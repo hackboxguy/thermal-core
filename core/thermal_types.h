@@ -123,6 +123,8 @@ typedef enum {
     THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP = 0x0201,
     THERMAL_ACT_REASON_FAULT_STALL           = 0x0301,
     THERMAL_ACT_REASON_FAULT_RUNAWAY         = 0x0302,
+    THERMAL_ACT_REASON_FAULT_STUCK_SENSOR    = 0x0303,
+    THERMAL_ACT_REASON_FAULT_STALE_CONTEXT   = 0x0304,
     THERMAL_ACT_REASON_SAFETY_SHUTDOWN       = 0x0401,
     THERMAL_ACT_REASON_MANUAL_CMD            = 0x0501,
     THERMAL_ACT_REASON_SPINUP                = 0x0601
@@ -179,7 +181,10 @@ typedef struct {
  * target_id namespace per PRD §4.3:
  *   STALL         → actuator id
  *   STUCK_SENSOR  → sensor id
- *   RUNAWAY       → zone id
+ *   RUNAWAY       → zone slot index in cfg->zones[] (v1: zones have
+ *                   no separate numeric id field; the slot IS the
+ *                   addressable identity, matching CMD_CLEAR_FAULT's
+ *                   target_id convention)
  *   STALE_CONTEXT → context signal id
  */
 typedef struct {

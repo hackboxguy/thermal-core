@@ -279,6 +279,8 @@ asan:
 	$(MAKE) test \
 	    CFLAGS_EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
 	    LDFLAGS_EXTRA="-fsanitize=address,undefined"
+	@echo "--- Cleaning sanitizer artifacts so non-asan targets relink cleanly ---"
+	@$(MAKE) clean >/dev/null
 
 # --- Build (delegates to platform/linux) ---
 build:

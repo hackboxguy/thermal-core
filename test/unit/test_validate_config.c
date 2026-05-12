@@ -10,6 +10,7 @@
 #include "harness.h"
 #include "thermal_core.h"
 #include "thermal_config.h"
+#include "thermal_signals.h"
 
 static void make_valid_config(thermal_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -338,6 +339,8 @@ TEST_CASE(validate_config) {
     /* Within bounds: OK */
     make_valid_config(&cfg);
     cfg.faults.runaway_defaults.enabled = 1;
+    cfg.faults.runaway_defaults.severity = THERMAL_FAULT_SEVERITY_CRITICAL;
+    cfg.faults.runaway_defaults.action = THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED;
     cfg.faults.runaway_defaults.persist_ticks = THERMAL_FAULT_RUNAWAY_WINDOW_MAX;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
@@ -423,6 +426,133 @@ TEST_CASE(validate_config) {
     MAKE_MODIFIER_CONFIG(cfg);
     cfg.contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_VALUE;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* ====================================================================
+     * Codex-C rules 37-49: pre-Stage-9 validate_config tightening
+     * ==================================================================== */
+
+    /* Rule 37: unknown context unit -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].unit = 99;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 38: context timeout_ms == 0 -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].timeout_ms = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 39: unknown context fail_safe value (not ASSUME_VALUE which is
+     * rule 36, and not in known set) -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].fail_safe = 99;
+    cfg.modifiers[0].fail_safe = 99;          /* keep rule 42 consistent */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 40: context alpha < 0 -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].iir_alpha_q16 = -1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 40: context alpha > Q16_ONE -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].iir_alpha_q16 = Q16_ONE + 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 41: sensor alpha > Q16_ONE -> INVALID_CONFIG. */
+    make_valid_config(&cfg);
+    cfg.sensors[0].iir_alpha_q16 = Q16_ONE + 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 42: modifier fail_safe differs from context fail_safe -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_STATIONARY;
+    cfg.modifiers[0].fail_safe = THERMAL_FAILSAFE_HOLD_LAST;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 43: modifier stages == 0 -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].stages = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 43: modifier stages with unknown bit -> INVALID_CONFIG. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].stages = (uint8_t)(
+        THERMAL_MOD_STAGE_PRE_GOVERNOR_TRIP_OFFSET | 0x80u);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 44: enabled fault detector with unknown severity -> INVALID_CONFIG. */
+    make_valid_config(&cfg);
+    cfg.faults.stall_defaults.enabled = 1;
+    cfg.faults.stall_defaults.severity = 99;
+    cfg.faults.stall_defaults.action = THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 45: enabled fault detector with unknown action -> INVALID_CONFIG. */
+    make_valid_config(&cfg);
+    cfg.faults.runaway_defaults.enabled = 1;
+    cfg.faults.runaway_defaults.severity = THERMAL_FAULT_SEVERITY_CRITICAL;
+    cfg.faults.runaway_defaults.action = 99;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 46: stuck_sensor correlated_context_id refers to a missing context. */
+    make_valid_config(&cfg);
+    cfg.faults.stuck_sensor_defaults.enabled = 1;
+    cfg.faults.stuck_sensor_defaults.severity = THERMAL_FAULT_SEVERITY_DEGRADED;
+    cfg.faults.stuck_sensor_defaults.action = THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK;
+    cfg.faults.stuck_sensor_defaults.correlated_context_id = 77;  /* not configured */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 46: 0xFFFF advisory -> OK. */
+    make_valid_config(&cfg);
+    cfg.faults.stuck_sensor_defaults.enabled = 1;
+    cfg.faults.stuck_sensor_defaults.severity = THERMAL_FAULT_SEVERITY_DEGRADED;
+    cfg.faults.stuck_sensor_defaults.action = THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK;
+    cfg.faults.stuck_sensor_defaults.correlated_context_id = 0xFFFF;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* Rule 47: state_pwm[cs] referenced by a trip is non-zero but
+     * below pwm_min -> BOUNDS. */
+    make_valid_config(&cfg);
+    /* trips[0].cooling_state = 1 maps to state_pwm[1] = 100 (>= pwm_min=80
+     * -- valid). Mutate state_pwm[1] to 50 (below pwm_min). */
+    cfg.actuators[0].state_pwm[1] = 50;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_BOUNDS);
+
+    /* Rule 47: state_pwm[cs] = 0 (off) is always legal even below pwm_min. */
+    make_valid_config(&cfg);
+    cfg.actuators[0].state_pwm[1] = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* Rule 48: telemetry.enable=1 with period_ticks=0 -> INVALID_CONFIG. */
+    make_valid_config(&cfg);
+    cfg.telemetry.enable = 1;
+    cfg.telemetry.period_ticks = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 49: enabled_signal_ids[i] outside any known range -> INVALID_CONFIG. */
+    make_valid_config(&cfg);
+    cfg.telemetry.enable = 1;
+    cfg.telemetry.period_ticks = 1;
+    cfg.telemetry.enabled_signal_count = 1;
+    cfg.telemetry.enabled_signal_ids[0] = 0x0700;   /* no range covers this */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 49: enabled_signal_ids[i] in zone range but slot out of bounds. */
+    make_valid_config(&cfg);
+    cfg.telemetry.enable = 1;
+    cfg.telemetry.period_ticks = 1;
+    cfg.telemetry.enabled_signal_count = 1;
+    cfg.telemetry.enabled_signal_ids[0] = TSIG_ZONE_TEMP(5);  /* zone_count=1 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 49 positive: valid range/slot OK. */
+    make_valid_config(&cfg);
+    cfg.telemetry.enable = 1;
+    cfg.telemetry.period_ticks = 1;
+    cfg.telemetry.enabled_signal_count = 2;
+    cfg.telemetry.enabled_signal_ids[0] = TSIG_ZONE_TEMP(0);
+    cfg.telemetry.enabled_signal_ids[1] = TSIG_ACTUATOR_DUTY(0);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
     #undef MAKE_MODIFIER_CONFIG
 }
