@@ -538,41 +538,48 @@ TEST_CASE(core_step_full_loop) {
     }
 
     /* ============================================================
-     * S12 -- USE_ZONE_FALLBACK action on stuck_sensor. Zone temp
-     * swaps to fallback_temp_mc; governor reflects the fallback.
-     * Codex #6.
+     * S12 (tightened, Codex v2-#2): USE_ZONE_FALLBACK action on
+     * stuck_sensor with a correlated context configured. Sensor flat
+     * for window+persist ticks -> detector latches -> zone temp swaps
+     * to fallback_temp_mc -> governor SEES the fallback (this was the
+     * bug from Commit A: zr->temp_mc had the fallback but governor
+     * still received agg.temp_mc).
      * ============================================================ */
     {
         build_base_cfg(&cfg);
-        cfg.zones[0].fallback_temp_mc = 90000;   /* triggers CRITICAL */
+        add_acoustic_mask(&cfg);
+        cfg.zones[0].fallback_temp_mc = 87000;  /* >=CRITICAL trip(85000) */
         cfg.faults.stuck_sensor_defaults.enabled = 1;
         cfg.faults.stuck_sensor_defaults.severity =
             THERMAL_FAULT_SEVERITY_DEGRADED;
         cfg.faults.stuck_sensor_defaults.action =
             THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK;
-        cfg.faults.stuck_sensor_defaults.persist_ticks = 3;
+        cfg.faults.stuck_sensor_defaults.persist_ticks = 1;
         cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
-        cfg.faults.stuck_sensor_defaults.threshold0 = 5;       /* delta_mc */
-        cfg.faults.stuck_sensor_defaults.threshold1 = 10;      /* window_ticks */
-        cfg.faults.stuck_sensor_defaults.correlated_context_id = 0xFFFF;
+        cfg.faults.stuck_sensor_defaults.threshold0 = 5;    /* delta_mc */
+        cfg.faults.stuck_sensor_defaults.threshold1 = 5;    /* window_ticks */
+        cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
-        /* Send a flat sensor value over many ticks (stuck). Without
-         * correlated context advisory, this scenario relies on the
-         * window-based detection. */
-        for (int i = 0; i < 30; i++) {
-            step_t1(&ctx, (uint32_t)(100 + i * 100), 50000, &out);
+        /* Send valid speed context + flat sensor for many ticks. */
+        for (int i = 0; i < 20; i++) {
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
         }
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
-        /* If stuck_sensor latched and use_zone_fallback applied, zone
-         * temp should be 90000 (fallback) not 50000 (sensor). The
-         * stuck_sensor module's correlated_context advisory mode means
-         * this may not fire in v1 without a correlated context -- the
-         * relevant assertion is that IF it fires, zone temp swaps.
-         * Loose check: zone temp is either 50000 (no fault) or 90000
-         * (fault active + fallback applied), never anything else. */
-        EXPECT_EQ(state.zones[0].temp_mc == 50000 ||
-                  state.zones[0].temp_mc == 90000, 1);
+        /* Detector latched -> fallback applied. Zone temp = 87000;
+         * cooling_state reflects fallback (CRITICAL trip at 85000 is
+         * active, cs=4). */
+        EXPECT_EQ(state.zones[0].temp_mc, 87000);
+        EXPECT_EQ(state.zones[0].cooling_state, 4);
+        /* Fault count includes the stuck_sensor entry. */
+        int stuck_active = 0;
+        for (uint8_t i = 0; i < state.fault_count; i++) {
+            if (state.faults[i].fault_type == THERMAL_FAULT_TYPE_STUCK_SENSOR) {
+                stuck_active = 1;
+                break;
+            }
+        }
+        EXPECT_EQ(stuck_active, 1);
     }
 
     /* ============================================================
@@ -693,5 +700,152 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ(thermal_core_apply_command(&fresh, 100, &c, &r),
                   THERMAL_ERR_STATE);
         EXPECT_EQ(thermal_core_get_state(&fresh, &state), THERMAL_ERR_STATE);
+    }
+
+    /* ============================================================
+     * S18 (codex v2-#1) -- tach plumbing + full-loop stall.
+     * Feed valid tach=0 with arb_pwm at pwm_max after spin-up grace;
+     * stall detector should latch + force pwm_max + reason FAULT_STALL.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].spinup_ms = 0;  /* no spinup grace */
+        cfg.faults.stall_defaults.enabled = 1;
+        cfg.faults.stall_defaults.severity = THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.stall_defaults.action =
+            THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED;
+        cfg.faults.stall_defaults.persist_ticks = 2;
+        cfg.faults.stall_defaults.recovery_ticks = 2;
+        cfg.faults.stall_defaults.threshold0 = 100;  /* stall_rpm */
+        cfg.faults.stall_defaults.threshold1 = 50;   /* stall_pwm_threshold */
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        /* Drive temp into CRITICAL so PWM ramps to 255; provide valid
+         * tach=0 (stalled) each tick. */
+        thermal_sample_t s[2];
+        thermal_input_snapshot_t snap;
+        for (int i = 0; i < 10; i++) {
+            s[0].id = 1; s[0].kind = THERMAL_SAMPLE_TEMP_MC;
+            s[0].valid = 1; s[0].value = 90000;
+            s[1].id = 10; s[1].kind = THERMAL_SAMPLE_TACH_RPM;
+            s[1].valid = 1; s[1].value = 0;
+            snap.now_ms = (uint32_t)(100 + i * 100);
+            snap.samples = s;
+            snap.sample_count = 2;
+            EXPECT_STATUS_OK(thermal_core_step(&ctx, &snap, &out));
+        }
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_FAULT_STALL);
+        /* RPM reported in state snapshot. */
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ(state.actuators[0].rpm, 0);
+        EXPECT_EQ(state.actuators[0].tach_valid, 1);
+    }
+
+    /* ============================================================
+     * S19 (codex v2-#3) -- stuck-sensor with FORCE_PWM_MAX action
+     * pushes affected actuators to pwm_max.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        add_acoustic_mask(&cfg);
+        cfg.faults.stuck_sensor_defaults.enabled = 1;
+        cfg.faults.stuck_sensor_defaults.severity =
+            THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.stuck_sensor_defaults.action =
+            THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED;
+        cfg.faults.stuck_sensor_defaults.persist_ticks = 1;
+        cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
+        cfg.faults.stuck_sensor_defaults.threshold0 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        for (int i = 0; i < 20; i++) {
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
+        }
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+    }
+
+    /* ============================================================
+     * S20 (codex v2-#3) -- stale-context with FORCE_PWM_MAX action.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        add_acoustic_mask(&cfg);
+        cfg.faults.stale_context_defaults.enabled = 1;
+        cfg.faults.stale_context_defaults.severity =
+            THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.stale_context_defaults.action =
+            THERMAL_FAULT_ACTION_FORCE_PWM_MAX_UNTIL_RECOVERED;
+        cfg.faults.stale_context_defaults.persist_ticks = 2;
+        cfg.faults.stale_context_defaults.recovery_ticks = 2;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        /* First valid context to mark ever_valid, then omit context for
+         * > timeout_ms to fire stale detection. */
+        step_t1c(&ctx, 100, 50000, 60, &out);
+        for (int i = 0; i < 15; i++) {
+            step_t1(&ctx, (uint32_t)(200 + i * 100), 50000, &out);
+        }
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+    }
+
+    /* ============================================================
+     * S21 (codex v2-#4) -- THERMAL_STATE_SHUTDOWN_REQUESTED latches
+     * persistently across ticks after the triggering runaway has
+     * already cleared.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.faults.runaway_defaults.enabled = 1;
+        cfg.faults.runaway_defaults.severity = THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.runaway_defaults.action =
+            THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN;
+        cfg.faults.runaway_defaults.persist_ticks = 3;
+        cfg.faults.runaway_defaults.recovery_ticks = 5;
+        cfg.faults.runaway_defaults.threshold0 = 500;
+        cfg.faults.runaway_defaults.threshold1 = 200;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        int32_t t = 86000;
+        for (int i = 0; i < 8; i++) {
+            step_t1(&ctx, (uint32_t)(100 + i * 100), t, &out);
+            if (t < 93000) t += 600;
+        }
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
+        /* Now drop temp far below all trips. Even after runaway clears
+         * (and zone severity drops below SHUTDOWN), the latch stays. */
+        for (int i = 0; i < 50; i++) {
+            step_t1(&ctx, (uint32_t)(2000 + i * 100), 40000, &out);
+        }
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
+    }
+
+    /* ============================================================
+     * S22 (codex v1-#11 / v2-#5) -- stale-context fault sets both
+     * ANY_CONTEXT_STALE AND ANY_FAULT_ACTIVE.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        add_acoustic_mask(&cfg);
+        cfg.faults.stale_context_defaults.enabled = 1;
+        cfg.faults.stale_context_defaults.severity =
+            THERMAL_FAULT_SEVERITY_DEGRADED;
+        cfg.faults.stale_context_defaults.action =
+            THERMAL_FAULT_ACTION_MARK_DEGRADED;
+        cfg.faults.stale_context_defaults.persist_ticks = 2;
+        cfg.faults.stale_context_defaults.recovery_ticks = 2;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        step_t1c(&ctx, 100, 50000, 60, &out);
+        for (int i = 0; i < 15; i++) {
+            step_t1(&ctx, (uint32_t)(200 + i * 100), 50000, &out);
+        }
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ((state.flags & THERMAL_STATE_ANY_CONTEXT_STALE) != 0, 1);
+        EXPECT_EQ((state.flags & THERMAL_STATE_ANY_FAULT_ACTIVE) != 0, 1);
     }
 }

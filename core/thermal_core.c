@@ -81,6 +81,20 @@ typedef struct {
     uint16_t                  actuator_prev_reason[THERMAL_MAX_ACTUATORS];
     uint8_t                   actuator_prev_safety_override[THERMAL_MAX_ACTUATORS];
 
+    /* Stage 8.5 codex-B: per-actuator tach state populated by step 3b
+     * from THERMAL_SAMPLE_TACH_RPM samples (one per tick per actuator).
+     * Fed into the stall detector + reported via state snapshot and
+     * telemetry signal TSIG_ACTUATOR_RPM_MAIN_FAN. */
+    uint16_t                  actuator_tach_rpm[THERMAL_MAX_ACTUATORS];
+    uint8_t                   actuator_tach_valid[THERMAL_MAX_ACTUATORS];
+
+    /* Stage 8.5 codex-B: one-way latch set on any SHUTDOWN-trip rising
+     * edge OR any active detector with REQUEST_SHUTDOWN action. Stays
+     * set across ticks until thermal_core_init clears it (PRD §4.7
+     * "latch a shutdown-request condition"). Reported via
+     * THERMAL_STATE_SHUTDOWN_REQUESTED. */
+    uint8_t                   shutdown_request_latched;
+
     /* Stage 7c: per-modifier last-tick eval (steps 5/8) */
     uint8_t                   modifier_active[THERMAL_MAX_MODIFIERS];
     int32_t                   modifier_pwm_cap[THERMAL_MAX_MODIFIERS];
@@ -486,8 +500,11 @@ static int dispatch_signal_value(const thermal_core_internal_t *core,
         }
         return 0;
     case TSIG_ACTUATOR_RPM_MAIN_FAN:
-        *out = 0; /* No tach support in v1. */
-        return 1;
+        if (cfg->actuator_count > 0) {
+            *out = (int32_t)core->actuator_tach_rpm[0];
+            return 1;
+        }
+        return 0;
     case TSIG_PID_ERROR_SOC:
         if (cfg->zone_count > 0) { *out = core->zones[0].pid_error_mc; return 1; }
         return 0;
@@ -692,6 +709,28 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                             value, found_valid);
     }
 
+    /* === Step 3b: per-actuator tach pickup from THERMAL_SAMPLE_TACH_RPM.
+     * Preflight already validated id-as-actuator. Step 9's stall detector
+     * reads these; get_state reports them via thermal_actuator_state_t. */
+    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+        uint16_t rpm = 0;
+        uint8_t  found_valid = 0;
+        for (uint8_t k = 0; k < in->sample_count; k++) {
+            const thermal_sample_t *smp = &in->samples[k];
+            if (smp->kind == THERMAL_SAMPLE_TACH_RPM &&
+                smp->id == cfg->actuators[a].id) {
+                int32_t v = smp->value;
+                if (v < 0) v = 0;
+                if (v > 0xFFFF) v = 0xFFFF;
+                rpm = (uint16_t)v;
+                found_valid = smp->valid;
+                break;
+            }
+        }
+        core->actuator_tach_rpm[a] = rpm;
+        core->actuator_tach_valid[a] = found_valid;
+    }
+
     /* === §4.6 step 4: context filters + staleness === */
     step4_context_filters(core, in);
 
@@ -706,11 +745,25 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     uint8_t zone_force_fallback[THERMAL_MAX_ZONES] = { 0 };
     if (cfg->faults.stuck_sensor_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
+        /* Derive correlated_load_changing once per tick from the
+         * configured correlated context's validity. v1 simplification:
+         * presence of a valid correlated context implies "the workload
+         * is observable" -- the sensor-flatness window is still the
+         * primary signal. A richer "context value changed across a
+         * window" gate is deferred to a future commit. */
+        uint8_t correlated_load_changing = 0;
+        if (fc->correlated_context_id != 0xFFFF) {
+            int ctx_slot = find_context_slot(cfg, fc->correlated_context_id);
+            if (ctx_slot >= 0 && core->context_filters[ctx_slot].valid) {
+                correlated_load_changing = 1;
+            }
+        }
         for (uint8_t s = 0; s < cfg->sensor_count; s++) {
             uint8_t prev = core->stuck_sensor_states[s].state;
             thermal_fault_stuck_sensor_step(&core->stuck_sensor_states[s], fc,
                                             core->filters[s].filtered_value,
-                                            core->filters[s].valid, 0,
+                                            core->filters[s].valid,
+                                            correlated_load_changing,
                                             in->now_ms);
             emit_fault_transition(core, THERMAL_FAULT_TYPE_STUCK_SENSOR,
                                   cfg->sensors[s].id, prev,
@@ -782,7 +835,9 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
 
         if (zc->governor == THERMAL_GOVERNOR_STEP_WISE) {
             thermal_governor_step_result_t gr;
-            thermal_governor_step_wise(agg.temp_mc, trips_eff, zc->trip_count,
+            /* Use zr->temp_mc (post-fallback) so USE_ZONE_FALLBACK actually
+             * drives control; codex-v2 #2 bug fix. */
+            thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
                                        zr->active_trip_mask, &gr);
             zr->active_trip_mask = gr.active_trip_mask;
             zr->cooling_state    = gr.cooling_state;
@@ -797,12 +852,14 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
              * (CMD_SET_PID / CMD_SET_SETPOINT targets). dt bounds are
              * init-time copies. */
             int32_t setpoint_eff = zr->shadow_pid.setpoint_mc + trip_offset_mc;
+            /* Use zr->temp_mc (post-fallback) so USE_ZONE_FALLBACK drives
+             * the PID; codex-v2 #2 bug fix. */
             thermal_pid_step_result_t pr;
             thermal_pid_step(&zr->pid,
                              zr->shadow_pid.kp_q16,
                              zr->shadow_pid.ki_q16,
                              zr->shadow_pid.kd_q16,
-                             setpoint_eff, agg.temp_mc,
+                             setpoint_eff, zr->temp_mc,
                              in->now_ms,
                              zr->shadow_pid.dt_min_ms,
                              zr->shadow_pid.dt_max_ms,
@@ -810,7 +867,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                              &pr);
             zr->pwm_this_tick = (uint8_t)pr.output_pwm;
             zr->effective_setpoint_mc = setpoint_eff;
-            zr->pid_error_mc   = agg.temp_mc - setpoint_eff;
+            zr->pid_error_mc   = zr->temp_mc - setpoint_eff;
             zr->pid_p_term_q16 = pr.p_term_q16;
             zr->pid_i_term_q16 = pr.i_term_q16;
             zr->pid_d_term_q16 = pr.d_term_q16;
@@ -819,7 +876,7 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
              * trips (PRD §4.8 line 670): cooling_state for the snapshot
              * reflects only CRITICAL/SHUTDOWN trips. */
             thermal_governor_step_result_t gr;
-            thermal_governor_step_wise(agg.temp_mc, trips_eff, zc->trip_count,
+            thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
                                        zr->active_trip_mask, &gr);
             zr->active_trip_mask = gr.active_trip_mask;
             uint8_t pid_cs = 0;
@@ -917,8 +974,9 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         }
     }
 
-    /* Stall (per actuator). Tach is not plumbed in v1 -> tach_valid=0 means
-     * the detector never fires in normal operation. Commit B plumbs tach. */
+    /* Stall (per actuator). Tach is now plumbed (Stage 8.5 codex-B):
+     * step 3b populated actuator_tach_rpm / actuator_tach_valid from
+     * THERMAL_SAMPLE_TACH_RPM samples. */
     if (cfg->faults.stall_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stall_defaults;
         for (uint8_t a = 0; a < cfg->actuator_count; a++) {
@@ -929,7 +987,9 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                 : 0;
             uint8_t prev = core->stall_states[a].state;
             thermal_fault_stall_step(&core->stall_states[a], fc,
-                                     arb_pwm[a], 0, 0,
+                                     arb_pwm[a],
+                                     core->actuator_tach_rpm[a],
+                                     core->actuator_tach_valid[a],
                                      cfg->actuators[a].spinup_pwm,
                                      spinup_ticks, in->now_ms);
             emit_fault_transition(core, THERMAL_FAULT_TYPE_STALL,
@@ -1002,8 +1062,10 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         }
     }
 
-    /* Stale context (per context). Detector emits events; doesn't drive
-     * actuator overrides directly in v1. */
+    /* Stale context (per context). Detector emits events; v1 codex-B
+     * extends action dispatch to honor FORCE_PWM_MAX_* and
+     * REQUEST_SHUTDOWN per PRD §4.7 (applies globally since v1's only
+     * modifier is global). */
     if (cfg->faults.stale_context_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stale_context_defaults;
         for (uint8_t c = 0; c < cfg->context_count; c++) {
@@ -1019,10 +1081,76 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                   cfg->contexts[c].id, prev,
                                   core->stale_context_states[c].state,
                                   in->now_ms);
+            if (fault_state_active(core->stale_context_states[c].state)) {
+                int forces_max = action_forces_pwm_max(fc->action);
+                int requests_sd = (fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN);
+                if (forces_max || requests_sd) {
+                    /* v1: stale_context affects every actuator (the
+                     * only modifier is global). */
+                    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+                        slew_override_up[a] = 1;
+                        force_pwm_max[a] = 1;
+                        if (forces_max) {
+                            cause_runaway[a] = 1;  /* reuse closest enum */
+                        } else {
+                            shutdown_action[a] = 1;
+                        }
+                    }
+                    if (requests_sd && prev == THERMAL_FAULT_NORMAL
+                        && core->cb.log_event) {
+                        core->cb.log_event(in->now_ms, TEVENT_SHUTDOWN_REQUEST,
+                                           (uint32_t)cfg->contexts[c].id,
+                                           (uint32_t)THERMAL_FAULT_TYPE_STALE_CONTEXT,
+                                           0u, 0u);
+                    }
+                }
+            }
         }
     }
 
-    /* Edge-trigger shutdown event on any zone reaching SHUTDOWN severity. */
+    /* Stuck-sensor force-max / request-shutdown action dispatch.
+     * Detector was stepped in the pre-pass for USE_ZONE_FALLBACK; this
+     * loop walks the same states again to apply force-max / request-
+     * shutdown to all actuators of zones referencing the stuck sensor. */
+    if (cfg->faults.stuck_sensor_defaults.enabled) {
+        const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
+        int forces_max = action_forces_pwm_max(fc->action);
+        int requests_sd = (fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN);
+        if (forces_max || requests_sd) {
+            for (uint8_t s = 0; s < cfg->sensor_count; s++) {
+                if (!fault_state_active(core->stuck_sensor_states[s].state)) continue;
+                /* Affected actuators: every actuator of every zone
+                 * referencing this sensor. */
+                for (uint8_t z = 0; z < cfg->zone_count; z++) {
+                    const thermal_zone_cfg_t *zc = &cfg->zones[z];
+                    int refs_sensor = 0;
+                    for (uint8_t k = 0; k < zc->sensor_count; k++) {
+                        if (zc->sensor_ids[k] == cfg->sensors[s].id) {
+                            refs_sensor = 1;
+                            break;
+                        }
+                    }
+                    if (!refs_sensor) continue;
+                    for (uint8_t k = 0; k < zc->actuator_count; k++) {
+                        int slot = find_actuator_slot(cfg, zc->actuator_ids[k]);
+                        if (slot < 0) continue;
+                        slew_override_up[slot] = 1;
+                        force_pwm_max[slot] = 1;
+                        if (forces_max) {
+                            cause_runaway[slot] = 1;  /* reuse closest enum */
+                        } else {
+                            shutdown_action[slot] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Edge-trigger shutdown event on any zone reaching SHUTDOWN severity.
+     * Codex-B: also latch shutdown_request_latched so the state flag
+     * persists across ticks per PRD §4.7 "latch a shutdown-request
+     * condition." */
     for (uint8_t z = 0; z < cfg->zone_count; z++) {
         uint8_t curr_sev = zone_max_severity(&core->zones[z], &cfg->zones[z]);
         if (curr_sev >= THERMAL_TRIP_SHUTDOWN
@@ -1032,7 +1160,20 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                    (uint32_t)z, (uint32_t)curr_sev, 0u, 0u);
             }
         }
+        if (curr_sev >= THERMAL_TRIP_SHUTDOWN) {
+            core->shutdown_request_latched = 1;
+        }
         core->prev_zone_max_severity[z] = curr_sev;
+    }
+
+    /* Codex-B: any actuator with an active shutdown_action[] this tick
+     * (from a fault REQUEST_SHUTDOWN action) latches the
+     * shutdown_request_latched flag. The actual event was emitted on the
+     * detector's rising edge above. */
+    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+        if (shutdown_action[a]) {
+            core->shutdown_request_latched = 1;
+        }
     }
 
     /* Apply force_pwm_max and emit safety-override events on rising edge.
@@ -1396,8 +1537,8 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
     for (uint8_t i = 0; i < cfg->actuator_count; i++) {
         state->actuators[i].requested_duty_0_255 = core->actuator_prev_requested[i];
         state->actuators[i].duty_0_255           = core->actuator_prev_duty[i];
-        state->actuators[i].rpm                  = 0;
-        state->actuators[i].tach_valid           = 0;
+        state->actuators[i].rpm                  = core->actuator_tach_rpm[i];
+        state->actuators[i].tach_valid           = core->actuator_tach_valid[i];
         state->actuators[i].slew_limited         = core->actuator_prev_slew_limited[i];
         state->actuators[i].reason               = core->actuator_prev_reason[i];
     }
@@ -1462,7 +1603,10 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
             state->faults[fc].state         = core->stale_context_states[i].state;
             state->faults[fc].entered_ts_ms = core->stale_context_states[i].entered_ts_ms;
             fc++;
+            /* Codex-B #5: stale_context counts as a fault per PRD §4.7
+             * (it is one of the four detector types); set both flags. */
             flags |= THERMAL_STATE_ANY_CONTEXT_STALE;
+            flags |= THERMAL_STATE_ANY_FAULT_ACTIVE;
         }
     }
     state->fault_count = fc;
@@ -1474,11 +1618,11 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
             break;
         }
     }
-    for (uint8_t i = 0; i < cfg->zone_count; i++) {
-        if (core->prev_zone_max_severity[i] >= THERMAL_TRIP_SHUTDOWN) {
-            flags |= THERMAL_STATE_SHUTDOWN_REQUESTED;
-            break;
-        }
+    /* Codex-B #4: SHUTDOWN_REQUESTED is driven by the persistent latch,
+     * not a tick-edge zone-severity check (which fluctuates if temp
+     * dips below SHUTDOWN). */
+    if (core->shutdown_request_latched) {
+        flags |= THERMAL_STATE_SHUTDOWN_REQUESTED;
     }
     state->flags = flags;
 
