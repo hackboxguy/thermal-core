@@ -37,9 +37,9 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke fuzz-json clean
 
-all: test build verify-portability replay property property-command
+all: test build verify-portability replay property property-command smoke
 
 # --- Unit tests ---
 test: $(TEST_BINS)
@@ -106,6 +106,75 @@ build/test/test_telem_wire: \
 	    -o $@ test/unit/test_telem_wire.c \
 	    platform/linux/telem_wire.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
+build/test/test_config_hash: \
+    test/unit/test_config_hash.c test/unit/harness.h \
+    support/sha256.c support/sha256.h \
+    support/thermal_config_hash.c support/thermal_config_hash.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I support \
+	    -o $@ test/unit/test_config_hash.c \
+	    support/sha256.c support/thermal_config_hash.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Generated static config (json2static.py) ---
+build/test/generated/minimal_static.c: \
+    configs/minimal-1zone-1fan.json tools/json2static.py
+	@mkdir -p build/test/generated
+	python3 tools/json2static.py -o $@ configs/minimal-1zone-1fan.json
+
+# --- Special: json2static round-trip test ---
+build/test/test_json2static_roundtrip: \
+    test/unit/test_json2static_roundtrip.c test/unit/harness.h \
+    build/test/generated/minimal_static.c \
+    platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
+    platform/linux/jsmn.c platform/linux/jsmn.h \
+    platform/linux/runtime_cfg.h \
+    support/sha256.c support/thermal_config_hash.c support/thermal_config_hash.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux -I support \
+	    -o $@ test/unit/test_json2static_roundtrip.c \
+	    build/test/generated/minimal_static.c \
+	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    support/sha256.c support/thermal_config_hash.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Smoke: spawn thermalcored + drive ticks + verify telemetry ---
+smoke: build test/smoke/test_thermalcored_smoke.py test/smoke/smoke-config.json
+	@python3 test/smoke/test_thermalcored_smoke.py
+
+# --- Fuzz: libFuzzer over the JSON loader (needs clang) ---
+# Not part of `make all` -- it runs for 60 s.  CI runs it as a
+# dedicated job.  Build the harness with clang + fuzzer + ASan.
+#
+# The growing corpus + crash artifacts go to build/fuzz/corpus and
+# build/fuzz/artifacts respectively so test/fuzz/seeds/ stays
+# pristine and committable.  libFuzzer reads seeds AND adds new
+# discoveries to the first positional dir; the seed dir is read-only
+# in this layout.
+FUZZ_CC ?= clang
+fuzz-json: build/fuzz/fuzz_jsmn
+	@mkdir -p build/fuzz/corpus build/fuzz/artifacts
+	@build/fuzz/fuzz_jsmn -max_total_time=60 \
+	    -artifact_prefix=build/fuzz/artifacts/ \
+	    build/fuzz/corpus/ test/fuzz/seeds/
+
+build/fuzz/fuzz_jsmn: \
+    test/fuzz/fuzz_jsmn.c \
+    platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
+    platform/linux/jsmn.c platform/linux/jsmn.h \
+    platform/linux/runtime_cfg.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/fuzz
+	$(FUZZ_CC) -std=c99 -O1 -g \
+	    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+	    -I core -I test/unit -I platform/linux \
+	    -o $@ test/fuzz/fuzz_jsmn.c \
+	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    $(CORE_ARCHIVE)
 
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h
@@ -345,8 +414,8 @@ build:
 # itself with a citation back to the upstream commit.
 clang-tidy:
 	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
-	clang-tidy --quiet core/*.c platform/linux/*.c -- \
-	    $(CFLAGS_BASE) -I platform/linux
+	clang-tidy --quiet core/*.c platform/linux/*.c support/*.c -- \
+	    $(CFLAGS_BASE) -I platform/linux -I support
 
 # --- cppcheck on core/ + platform/linux/ (Stage 9 9c scope extension).
 # Suppressions in .cppcheck-suppressions (cppcheck's format doesn't
@@ -363,8 +432,8 @@ cppcheck:
 	    --error-exitcode=1 \
 	    --std=c99 \
 	    --suppressions-list=.cppcheck-suppressions \
-	    -I core -I platform/linux \
-	    core/*.c platform/linux/*.c
+	    -I core -I platform/linux -I support \
+	    core/*.c platform/linux/*.c support/*.c
 
 clean:
 	rm -rf build

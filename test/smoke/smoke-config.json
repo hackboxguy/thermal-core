@@ -1,0 +1,94 @@
+{
+  "config_version": 1,
+  "control_period_ms": 100,
+
+  "sensors": [
+    {
+      "id": 0,
+      "name": "soc",
+      "iir_alpha_q16": 16384,
+      "max_staleness_ms": 500,
+      "source": "/tmp/thermal-core-smoke/sensors/soc"
+    }
+  ],
+
+  "context_signals": [
+    {
+      "id": 0,
+      "name": "vehicle_speed",
+      "unit": "kmh",
+      "iir_alpha_q16": 2048,
+      "timeout_ms": 3000,
+      "fail_safe": "assume_stationary",
+      "source": "/tmp/thermal-core-smoke/contexts/vehicle_speed"
+    }
+  ],
+
+  "actuators": [
+    {
+      "id": 0,
+      "name": "main_fan",
+      "pwm_min": 80,
+      "pwm_max": 255,
+      "slew_per_tick": 8,
+      "spinup_pwm": 200,
+      "spinup_ms": 500,
+      "state_pwm": [0, 100, 160, 220, 255],
+      "pwm": "/tmp/thermal-core-smoke/pwm1",
+      "tach": "/tmp/thermal-core-smoke/fan1_input",
+      "pwm_freq_hz": 25000,
+      "tach_pulses_per_rev": 2
+    }
+  ],
+
+  "zones": [
+    {
+      "name": "soc_zone",
+      "sensors": ["soc"],
+      "aggregation": "max",
+      "fallback_temp_mc": 85000,
+      "governor": "step_wise",
+      "actuators": ["main_fan"],
+      "trips": [
+        { "temp_mc": 70000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 1 },
+        { "temp_mc": 90000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 }
+      ]
+    }
+  ],
+
+  "policy_modifiers": [
+    {
+      "name": "acoustic_mask",
+      "context": "vehicle_speed",
+      "stages": ["post_governor_pwm_cap"],
+      "curve": [
+        { "x": 0,     "value0": 180, "value1": 0 },
+        { "x": 30000, "value0": 255, "value1": 0 }
+      ],
+      "fail_safe": "assume_stationary"
+    }
+  ],
+
+  "faults": {
+    "stall": {
+      "enabled": true,
+      "severity": "critical",
+      "action": "force_pwm_max_until_recovered",
+      "persist_ticks": 5,
+      "recovery_ticks": 10,
+      "threshold0": 200,
+      "threshold1": 0
+    }
+  },
+
+  "telemetry": {
+    "enable": true,
+    "period_ticks": 1,
+    "signals": ["zone_temp_*", "actuator_pwm_*", "speed_kmh"],
+    "transport": "udp:127.0.0.1:9000"
+  },
+
+  "control": {
+    "listen": "/tmp/thermal-core-smoke/ctl.sock"
+  }
+}

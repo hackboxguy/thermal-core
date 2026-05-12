@@ -95,26 +95,49 @@ static thermal_status_t set_errf(parse_ctx_t *ctx,
 /* =============================================================== */
 
 /* Return the index past the value at idx, recursing through any
- * nested OBJECT/ARRAY tokens. */
-static int skip_token(const jsmntok_t *toks, int idx)
+ * nested OBJECT/ARRAY tokens.  Bounded by n_toks so a malformed
+ * JSON producing a token with a corrupted .size value can't walk
+ * past the valid range.  All callers that index into ctx->toks
+ * with the returned value are themselves guarded by tok_in_range. */
+static int skip_token_n(const jsmntok_t *toks, int n_toks, int idx)
 {
+    if (idx < 0 || idx >= n_toks) return n_toks;
     int j = idx + 1;
     if (toks[idx].type == JSMN_OBJECT) {
-        for (int i = 0; i < toks[idx].size; i++) {
+        for (int i = 0; i < toks[idx].size && j < n_toks; i++) {
             j = j + 1;             /* skip key (string, no recursion) */
-            j = skip_token(toks, j);
+            j = skip_token_n(toks, n_toks, j);
         }
     } else if (toks[idx].type == JSMN_ARRAY) {
-        for (int i = 0; i < toks[idx].size; i++) {
-            j = skip_token(toks, j);
+        for (int i = 0; i < toks[idx].size && j < n_toks; i++) {
+            j = skip_token_n(toks, n_toks, j);
         }
     }
     return j;
 }
 
-/* Compare a JSMN_STRING token to a C string literal. */
+/* Wrapper: pulls n_toks from the parse_ctx_t.  Almost all call sites
+ * have ctx in scope, so this keeps them concise. */
+#define skip_token(toks, idx)  skip_token_n((toks), ctx->n_toks, (idx))
+
+/* Return non-zero if token index `t` is within the parsed token
+ * array AND its start/end form a usable range.  Used by every
+ * primitive accessor below so a malformed JSON that confuses JSMN's
+ * accounting (object/key/value mismatches) can never walk into
+ * uninitialised tokens past ctx->n_toks. */
+static int tok_in_range(const parse_ctx_t *ctx, int t)
+{
+    if (t < 0 || t >= ctx->n_toks) return 0;
+    const jsmntok_t *tok = &ctx->toks[t];
+    if (tok->start < 0 || tok->end < tok->start) return 0;
+    return 1;
+}
+
+/* Compare a JSMN_STRING token to a C string literal.  Returns 0 if
+ * `t` is out of range, not a string, or content differs. */
 static int tok_str_eq(const parse_ctx_t *ctx, int t, const char *s)
 {
+    if (!tok_in_range(ctx, t)) return 0;
     const jsmntok_t *tok = &ctx->toks[t];
     if (tok->type != JSMN_STRING) return 0;
     size_t len = (size_t)(tok->end - tok->start);
@@ -123,9 +146,11 @@ static int tok_str_eq(const parse_ctx_t *ctx, int t, const char *s)
 }
 
 /* Copy a JSMN_STRING token's contents into a fixed-size buffer.
- * Returns 0 on success, -1 if not a string or doesn't fit. */
+ * Returns 0 on success, -1 if `t` is out of range, not a string, or
+ * the string doesn't fit. */
 static int tok_str_copy(const parse_ctx_t *ctx, int t, char *dst, size_t dst_sz)
 {
+    if (!tok_in_range(ctx, t)) return -1;
     const jsmntok_t *tok = &ctx->toks[t];
     if (tok->type != JSMN_STRING) return -1;
     size_t len = (size_t)(tok->end - tok->start);
@@ -136,9 +161,11 @@ static int tok_str_copy(const parse_ctx_t *ctx, int t, char *dst, size_t dst_sz)
 }
 
 /* Parse a JSMN_PRIMITIVE token as a signed long long. Returns 0 on
- * success, -1 if the token isn't a numeric primitive or doesn't fit. */
+ * success, -1 if the token is out of range, isn't a numeric primitive,
+ * or doesn't fit in 32 chars. */
 static int tok_parse_long(const parse_ctx_t *ctx, int t, long long *out)
 {
+    if (!tok_in_range(ctx, t)) return -1;
     const jsmntok_t *tok = &ctx->toks[t];
     if (tok->type != JSMN_PRIMITIVE) return -1;
     size_t len = (size_t)(tok->end - tok->start);
@@ -160,6 +187,7 @@ static int tok_parse_long(const parse_ctx_t *ctx, int t, long long *out)
  * Returns 0 on success, -1 otherwise. */
 static int tok_parse_bool(const parse_ctx_t *ctx, int t, int *out)
 {
+    if (!tok_in_range(ctx, t)) return -1;
     const jsmntok_t *tok = &ctx->toks[t];
     if (tok->type != JSMN_PRIMITIVE) return -1;
     size_t len = (size_t)(tok->end - tok->start);
@@ -698,7 +726,7 @@ static thermal_status_t parse_pid(parse_ctx_t *ctx,
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
             }
             *dst32 = (int32_t)val;
-        } else {
+        } else if (dst16) {
             if (tok_parse_int_range(ctx, v, 0, UINT16_MAX, &val) != 0) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer in [0, 65535]");
             }
