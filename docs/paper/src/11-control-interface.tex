@@ -2,7 +2,7 @@
 
 \subsection{Telemetry}
 
-The core emits numeric telemetry tuples through the platform vtable. Platforms decide whether those tuples are sent over UDP, USB-CDC, UART, CAN, or written as CSV.
+The core emits numeric telemetry through the platform callback surface; platforms decide whether tuples are sent over UDP, USB-CDC, UART, CAN, or written as CSV. The core itself never opens a socket or a file.
 
 \begin{lstlisting}[caption={Telemetry frame sketch}]
 u32 timestamp_ms
@@ -11,21 +11,52 @@ u16 reserved
 i32 value
 \end{lstlisting}
 
+Signal IDs are partitioned by namespace --- zone temperatures, actuator outputs, PID terms, context values, modifier outputs, fault counters --- and configured at load time via \texttt{enabled\_signal\_ids[]}. Emission is gated by a \texttt{period\_ticks} cadence so a low-priority signal can be decimated without removing it from the configured set. Unknown signal IDs are silently skipped at emission, keeping forward-compatibility with future namespaces while leaving config validation as the canonical "is this a real signal" gate.
+
 \subsection{Runtime Tuning}
 
-Runtime tuning is a bench and development feature. Commands may adjust PID gains, setpoints, trip points, curve points, and fault injection state, but all values remain bounded by compile-time or configuration limits.
+Runtime tuning is a bench and development feature. The v1 command set covers PID gains, setpoint, trip points, modifier curve points, and fault clearing. Every command lands in an internal \emph{shadow} of the configuration; the original \texttt{thermal\_config\_t} passed to \texttt{thermal\_core\_init} is immutable for the context's lifetime. The step function reads PID gains, setpoint, trip thresholds, and modifier curves from the shadow, so a successful command takes effect at the next tick without re-init.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cll}
+\toprule
+\textbf{ID} & \textbf{Command} & \textbf{Payload} \\
+\midrule
+0x0001 & CMD\_SET\_PID          & zone\_id, $K_p$, $K_i$, $K_d$ (Q16.16) \\
+0x0002 & CMD\_SET\_SETPOINT     & zone\_id, setpoint\,(m$^\circ$C) \\
+0x0003 & CMD\_SET\_TRIP         & zone\_id, trip\_idx, temp\_mc, hyst\_mc \\
+0x0004 & CMD\_SET\_CURVE\_POINT & modifier\_id, point\_idx, x, value0, value1 \\
+0x0005 & CMD\_CLEAR\_FAULT      & fault\_type, target\_id \\
+\bottomrule
+\end{tabular}
+\caption{v1 runtime command set per PRD §7.5.}
+\label{tab:v1-commands}
+\end{table}
+
+\paragraph{Status taxonomy.} Each command returns one of four documented codes:
+
+\begin{itemize}[leftmargin=*]
+    \item \texttt{THERMAL\_OK} --- command applied; shadow updated; one \texttt{TEVENT\_COMMAND\_APPLIED} emitted.
+    \item \texttt{THERMAL\_ERR\_INVALID\_ARG} --- the target does not exist (unknown command id, zone id out of range, fault type unrecognized) or is structurally incompatible (a PID command against a step-wise zone). The shadow is untouched.
+    \item \texttt{THERMAL\_ERR\_BOUNDS} --- the target is valid but a value or index violates a documented range: a gain outside its configured \(\min/\max\) window, a trip index past \texttt{trip\_count}, a curve point that would break x-strict-ascending monotonicity, a setpoint outside its zone's bounds, a negative hysteresis. The shadow is untouched.
+    \item \texttt{THERMAL\_ERR\_REJECTED\_SAFETY} --- CMD\_CLEAR\_FAULT targets a detector whose underlying condition has not yet cleared. The per-detector \texttt{recovery\_ticks} must elapse with the condition inactive before a clear succeeds. The detector state is left intact.
+\end{itemize}
+
+\paragraph{Side effects.} CMD\_SET\_PID also resets the affected zone's integrator and derivative history. Without this, a step in gains would push a stale integrator through the new $K_i$ for many ticks before unwinding, producing transient overshoot; PRD §7.5 makes the reset part of the command's contract. CMD\_SET\_SETPOINT does \emph{not} reset state because the PID derivative is taken on measurement, not error --- a setpoint change does not produce a D kick. CMD\_CLEAR\_FAULT, when allowed, calls the detector module's per-type reset; \texttt{LATCHED} faults that need a reboot or maintenance reset under v1 policy are configured via the detector's \texttt{action} field, not via this command.
+
+\paragraph{Auditability.} Every call --- success or failure --- emits exactly one event: \texttt{TEVENT\_COMMAND\_APPLIED} on \texttt{THERMAL\_OK}, \texttt{TEVENT\_COMMAND\_REJECTED} otherwise. Event arguments carry the command id, target id, and returned status, giving the platform a single per-command audit record without needing a separate command-history table.
 
 \subsection{Scenario Runner}
 
-Scenario files should make benchmark runs reproducible. For speed-aware scenarios, the runner may command \texttt{car-can-emulator} over TCP while \texttt{thermal-core} observes only CAN traffic.
+Scenario files make benchmark runs reproducible: a deterministic snapshot stream drives the core through a known sequence of inputs, and the resulting output frame plus telemetry are captured for replay against a golden. Speed-aware scenarios may command \texttt{car-can-emulator} over TCP while \texttt{thermal-core} observes only CAN traffic, so the same configuration runs on bench, HIL, and (eventually) vehicle without scenario-runner code in the production path.
+
+\subsection{Verification}
+
+The command surface is verified at three levels. Per-command scenarios in \texttt{test/unit/test\_apply\_command.c} cover every positive path, every error path, and event-emission invariants (one event per call; right code; right args). Random-fuzz testing in \texttt{test/property/property\_command.c} hammers \texttt{apply\_command} with 1000 LCG-seeded random commands per CI run against a persistent core context, asserting every returned status is in \(\{\texttt{OK}, \texttt{INVALID\_ARG}, \texttt{BOUNDS}, \texttt{REJECTED\_SAFETY}\}\) and every call emits exactly one event. Range and monotonicity invariants are shared between \texttt{validate\_config} (at load time) and \texttt{apply\_command} (at runtime), so the same constraint cannot be tightened in one place without tightening it in the other.
 
 \subsection{To Fill In Later}
 
-\begin{itemize}[leftmargin=*]
-    \item final command frame format;
-    \item \texttt{thermalcore-probe} CLI examples;
-    \item \texttt{thermalcore-tune} CLI examples;
-    \item first three canonical scenario files.
-\end{itemize}
+Stage 10 of the implementation plan defines the wire codec; this section will absorb the framing format, CRC, and \texttt{thermalcore-probe} / \texttt{thermalcore-tune} CLI examples once that lands. The first three canonical scenario files arrive with Stage 12.
 
 \endinput
