@@ -63,11 +63,37 @@ build/test/test_config_jsmn: \
     test/unit/test_config_jsmn.c test/unit/harness.h \
     platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
     platform/linux/jsmn.c platform/linux/jsmn.h \
+    platform/linux/runtime_cfg.h \
     core/thermal_config.h $(CORE_ARCHIVE)
 	@mkdir -p build/test
 	$(CC) $(CFLAGS_BASE) -I platform/linux \
 	    -o $@ test/unit/test_config_jsmn.c \
 	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Special: runtime cfg load test (same shape as test_config_jsmn) ---
+build/test/test_runtime_cfg_load: \
+    test/unit/test_runtime_cfg_load.c test/unit/harness.h \
+    platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
+    platform/linux/jsmn.c platform/linux/jsmn.h \
+    platform/linux/runtime_cfg.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux \
+	    -o $@ test/unit/test_runtime_cfg_load.c \
+	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Special: bsp_mock_tmpfs test ---
+build/test/test_bsp_mock_tmpfs: \
+    test/unit/test_bsp_mock_tmpfs.c test/unit/harness.h \
+    platform/linux/bsp_mock_tmpfs.c platform/linux/bsp_mock_tmpfs.h \
+    platform/linux/runtime_cfg.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux \
+	    -o $@ test/unit/test_bsp_mock_tmpfs.c \
+	    platform/linux/bsp_mock_tmpfs.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
 # --- Core archive ---

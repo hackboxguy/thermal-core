@@ -25,6 +25,7 @@
  * snprintf'd into the caller's err_msg buffer if provided.
  */
 #include "config_jsmn.h"
+#include "runtime_cfg.h"
 
 /* Match jsmn.c's compile-time configuration so the jsmntok_t struct
  * layout (including the `parent` field) is the same in both TUs. */
@@ -269,30 +270,18 @@ static int enum_lookup(const parse_ctx_t *ctx, int t,
 }
 
 /* =============================================================== */
-/* Platform-only field allowlist                                    */
+/* Platform-only fields                                             */
 /* =============================================================== */
-
-/* Keys that the loader recognises but does NOT parse into CORE
- * structs.  Stage 9b absorbs these into a sibling runtime cfg
- * struct populated by the BSPs. */
-static int is_platform_only_key(const parse_ctx_t *ctx, int kt)
-{
-    static const char *const keys[] = {
-        "source",
-        "pwm",
-        "tach",
-        "pwm_freq_hz",
-        "tach_pulses_per_rev",
-        "transport",
-        "control",
-        "fail_safe_value",      /* per-context fail-safe constant; consumed by BSP */
-        NULL
-    };
-    for (int i = 0; keys[i]; i++) {
-        if (tok_str_eq(ctx, kt, keys[i])) return 1;
-    }
-    return 0;
-}
+/*
+ * Platform-only keys (PRD §5.1) are dispatched by name in each
+ * per-object parser below: "source" / "pwm" / "tach" /
+ * "pwm_freq_hz" / "tach_pulses_per_rev" / "fail_safe_value" inside
+ * sensors / actuators / contexts, "transport" inside telemetry,
+ * "control" at the top level.  When the caller passes a non-NULL
+ * thermalcored_runtime_cfg_t, those fields land in the matching
+ * runtime slot; otherwise they are silently skipped, preserving
+ * the 9a behaviour for tests that only care about the CORE half.
+ */
 
 /* =============================================================== */
 /* Pass A — sensors / context_signals / actuators                   */
@@ -301,6 +290,7 @@ static int is_platform_only_key(const parse_ctx_t *ctx, int kt)
 static thermal_status_t parse_sensor(parse_ctx_t *ctx,
                                      int obj_idx,
                                      thermal_sensor_cfg_t *out,
+                                     runtime_sensor_cfg_t *r_out,
                                      const char *path)
 {
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
@@ -348,8 +338,14 @@ static thermal_status_t parse_sensor(parse_ctx_t *ctx,
             }
             out->max_staleness_ms = (uint32_t)val;
             seen |= F_STALE;
-        } else if (is_platform_only_key(ctx, k)) {
-            /* skip */
+        } else if (tok_str_eq(ctx, k, "source")) {
+            /* platform-only: filesystem path for the sensor value */
+            if (r_out) {
+                if (tok_str_copy(ctx, v, r_out->source, sizeof(r_out->source)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "path too long or wrong type");
+                }
+            }
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -367,6 +363,7 @@ static thermal_status_t parse_sensor(parse_ctx_t *ctx,
 static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
                                              int obj_idx,
                                              thermal_context_cfg_t *out,
+                                             runtime_context_cfg_t *r_out,
                                              const char *path)
 {
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
@@ -428,8 +425,19 @@ static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
             }
             out->fail_safe = (uint8_t)val;
             seen |= F_FS;
-        } else if (is_platform_only_key(ctx, k)) {
-            /* skip */
+        } else if (tok_str_eq(ctx, k, "source")) {
+            if (r_out) {
+                if (tok_str_copy(ctx, v, r_out->source, sizeof(r_out->source)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "path too long or wrong type");
+                }
+            }
+        } else if (tok_str_eq(ctx, k, "fail_safe_value")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, INT32_MIN, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected integer");
+            }
+            if (r_out) r_out->fail_safe_value = (int32_t)val;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -447,6 +455,7 @@ static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
 static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                                        int obj_idx,
                                        thermal_actuator_cfg_t *out,
+                                       runtime_actuator_cfg_t *r_out,
                                        const char *path)
 {
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
@@ -532,8 +541,34 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                 sk = skip_token(ctx->toks, sk);
             }
             seen |= F_STATES;
-        } else if (is_platform_only_key(ctx, k)) {
-            /* skip */
+        } else if (tok_str_eq(ctx, k, "pwm")) {
+            if (r_out) {
+                if (tok_str_copy(ctx, v, r_out->pwm, sizeof(r_out->pwm)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "path too long or wrong type");
+                }
+            }
+        } else if (tok_str_eq(ctx, k, "tach")) {
+            if (r_out) {
+                if (tok_str_copy(ctx, v, r_out->tach, sizeof(r_out->tach)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "path too long or wrong type");
+                }
+            }
+        } else if (tok_str_eq(ctx, k, "pwm_freq_hz")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, UINT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected non-negative integer");
+            }
+            if (r_out) r_out->pwm_freq_hz = (uint32_t)val;
+        } else if (tok_str_eq(ctx, k, "tach_pulses_per_rev")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [0, 65535]");
+            }
+            if (r_out) r_out->tach_pulses_per_rev = (uint16_t)val;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -1361,6 +1396,7 @@ static thermal_status_t parse_telemetry_object(parse_ctx_t *ctx,
                                                int obj_idx,
                                                const thermal_config_t *cfg_view,
                                                thermal_telemetry_cfg_t *out,
+                                               runtime_global_cfg_t *r_glob,
                                                const char *path)
 {
     if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
@@ -1410,8 +1446,54 @@ static thermal_status_t parse_telemetry_object(parse_ctx_t *ctx,
                 if (r != THERMAL_OK) return r;
                 sk = skip_token(ctx->toks, sk);
             }
-        } else if (is_platform_only_key(ctx, k)) {
-            /* "transport" — Stage 9b consumes */
+        } else if (tok_str_eq(ctx, k, "transport")) {
+            if (r_glob) {
+                if (tok_str_copy(ctx, v, r_glob->telemetry_transport,
+                                 sizeof(r_glob->telemetry_transport)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "transport URI too long or wrong type");
+                }
+            }
+        } else {
+            return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                            "unknown key '%s'", key_str);
+        }
+        k = skip_token(ctx->toks, v);
+    }
+    return THERMAL_OK;
+}
+
+/* =============================================================== */
+/* Top-level control object (BSP-owned)                             */
+/* =============================================================== */
+
+static thermal_status_t parse_control_object(parse_ctx_t *ctx,
+                                              int obj_idx,
+                                              runtime_global_cfg_t *r_glob,
+                                              const char *path)
+{
+    if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
+    }
+    int n = ctx->toks[obj_idx].size;
+    int k = obj_idx + 1;
+    for (int i = 0; i < n; i++) {
+        int v = k + 1;
+        char sub_path[PATH_MAX_LEN];
+        char key_str[THERMAL_NAME_MAX];
+        if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
+        }
+        snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
+
+        if (tok_str_eq(ctx, k, "listen")) {
+            if (r_glob) {
+                if (tok_str_copy(ctx, v, r_glob->control_listen,
+                                 sizeof(r_glob->control_listen)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "listen spec too long or wrong type");
+                }
+            }
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -1426,9 +1508,10 @@ static thermal_status_t parse_telemetry_object(parse_ctx_t *ctx,
 /* =============================================================== */
 
 /* Pass A: scan top-level keys; parse sensors / context_signals /
- * actuators. Other keys are left for pass B. */
+ * actuators. Other keys are left for pass B.  runtime may be NULL. */
 static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
-                                         thermal_config_t *cfg)
+                                         thermal_config_t *cfg,
+                                         thermalcored_runtime_cfg_t *runtime)
 {
     if (ctx->toks[0].type != JSMN_OBJECT) {
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, "$", "expected root object");
@@ -1449,11 +1532,13 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
             for (int j = 0; j < an; j++) {
                 char elem_path[PATH_MAX_LEN + 32];
                 snprintf(elem_path, sizeof(elem_path), "sensors[%d]", j);
-                thermal_status_t s = parse_sensor(ctx, ak, &cfg->sensors[j], elem_path);
+                runtime_sensor_cfg_t *r = runtime ? &runtime->sensors[j] : NULL;
+                thermal_status_t s = parse_sensor(ctx, ak, &cfg->sensors[j], r, elem_path);
                 if (s != THERMAL_OK) return s;
                 ak = skip_token(ctx->toks, ak);
             }
             cfg->sensor_count = (uint8_t)an;
+            if (runtime) runtime->sensor_count = (uint8_t)an;
         } else if (tok_str_eq(ctx, k, "context_signals")) {
             if (ctx->toks[v].type != JSMN_ARRAY) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, "context_signals", "expected array");
@@ -1466,12 +1551,14 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
             for (int j = 0; j < an; j++) {
                 char elem_path[PATH_MAX_LEN + 32];
                 snprintf(elem_path, sizeof(elem_path), "context_signals[%d]", j);
+                runtime_context_cfg_t *r = runtime ? &runtime->contexts[j] : NULL;
                 thermal_status_t s = parse_context_signal(ctx, ak,
-                                                          &cfg->contexts[j], elem_path);
+                                                          &cfg->contexts[j], r, elem_path);
                 if (s != THERMAL_OK) return s;
                 ak = skip_token(ctx->toks, ak);
             }
             cfg->context_count = (uint8_t)an;
+            if (runtime) runtime->context_count = (uint8_t)an;
         } else if (tok_str_eq(ctx, k, "actuators")) {
             if (ctx->toks[v].type != JSMN_ARRAY) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, "actuators", "expected array");
@@ -1484,12 +1571,14 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
             for (int j = 0; j < an; j++) {
                 char elem_path[PATH_MAX_LEN + 32];
                 snprintf(elem_path, sizeof(elem_path), "actuators[%d]", j);
+                runtime_actuator_cfg_t *r = runtime ? &runtime->actuators[j] : NULL;
                 thermal_status_t s = parse_actuator(ctx, ak,
-                                                    &cfg->actuators[j], elem_path);
+                                                    &cfg->actuators[j], r, elem_path);
                 if (s != THERMAL_OK) return s;
                 ak = skip_token(ctx->toks, ak);
             }
             cfg->actuator_count = (uint8_t)an;
+            if (runtime) runtime->actuator_count = (uint8_t)an;
         }
         /* Other top-level keys handled in pass B. */
         k = skip_token(ctx->toks, v);
@@ -1498,9 +1587,11 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
 }
 
 /* Pass B: scan top-level keys; parse everything pass A didn't.
- * Also validates that there are no unknown top-level keys. */
+ * Also validates that there are no unknown top-level keys.
+ * runtime may be NULL. */
 static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
-                                         thermal_config_t *cfg)
+                                         thermal_config_t *cfg,
+                                         thermalcored_runtime_cfg_t *runtime)
 {
     int n = ctx->toks[0].size;
     int k = 1;
@@ -1574,11 +1665,15 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
             thermal_status_t s = parse_faults_object(ctx, v, cfg, &cfg->faults, "faults");
             if (s != THERMAL_OK) return s;
         } else if (tok_str_eq(ctx, k, "telemetry")) {
+            runtime_global_cfg_t *r_glob = runtime ? &runtime->global : NULL;
             thermal_status_t s = parse_telemetry_object(ctx, v, cfg,
-                                                        &cfg->telemetry, "telemetry");
+                                                        &cfg->telemetry,
+                                                        r_glob, "telemetry");
             if (s != THERMAL_OK) return s;
-        } else if (is_platform_only_key(ctx, k)) {
-            /* "control" — entire BSP-owned object. Stage 9b consumes. */
+        } else if (tok_str_eq(ctx, k, "control")) {
+            runtime_global_cfg_t *r_glob = runtime ? &runtime->global : NULL;
+            thermal_status_t s = parse_control_object(ctx, v, r_glob, "control");
+            if (s != THERMAL_OK) return s;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, "$",
                             "unknown top-level key '%s'", key_str);
@@ -1604,6 +1699,7 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
 thermal_status_t thermal_config_jsmn_parse(const char *json_text,
                                            size_t json_len,
                                            thermal_config_t *cfg,
+                                           thermalcored_runtime_cfg_t *runtime,
                                            char *err_msg,
                                            size_t err_msg_size)
 {
@@ -1612,6 +1708,7 @@ thermal_status_t thermal_config_jsmn_parse(const char *json_text,
 
     if (err_msg && err_msg_size > 0) err_msg[0] = '\0';
     memset(cfg, 0, sizeof(*cfg));
+    if (runtime) memset(runtime, 0, sizeof(*runtime));
 
     /* JSMN tokenisation on a stack-resident token array. */
     jsmntok_t tokens[JSMN_MAX_TOKENS];
@@ -1644,8 +1741,8 @@ thermal_status_t thermal_config_jsmn_parse(const char *json_text,
     ctx.n_toks = n_toks;
 
     thermal_status_t s;
-    if ((s = pass_a_top_level(&ctx, cfg)) != THERMAL_OK) return s;
-    if ((s = pass_b_top_level(&ctx, cfg)) != THERMAL_OK) return s;
+    if ((s = pass_a_top_level(&ctx, cfg, runtime)) != THERMAL_OK) return s;
+    if ((s = pass_b_top_level(&ctx, cfg, runtime)) != THERMAL_OK) return s;
 
     /* Final semantic gate — PRD §5.3 rules live in core/. */
     s = thermal_core_validate_config(cfg);

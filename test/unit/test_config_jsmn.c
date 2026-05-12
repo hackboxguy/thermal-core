@@ -66,7 +66,7 @@ TEST_CASE(config_jsmn) {
     {
         size_t n;
         char *json = read_file_or_die("configs/minimal-1zone-1fan.json", &n);
-        thermal_status_t s = thermal_config_jsmn_parse(json, n, &cfg,
+        thermal_status_t s = thermal_config_jsmn_parse(json, n, &cfg, NULL,
                                                        err, sizeof(err));
         if (s != THERMAL_OK) {
             fprintf(stderr, "scenario 1: status=%d err='%s'\n", (int)s, err);
@@ -121,7 +121,7 @@ TEST_CASE(config_jsmn) {
             "                 \"iir_alpha_q16\":16384,"
             "                 \"max_staleness_ms\":500}] }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 
@@ -131,7 +131,7 @@ TEST_CASE(config_jsmn) {
             "{ \"config_version\": 7,"
             "  \"control_period_ms\": 100 }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         /* validate_config rule 2 — wrong config_version */
         EXPECT_EQ(s, THERMAL_ERR_INVALID_CONFIG);
     }
@@ -142,7 +142,7 @@ TEST_CASE(config_jsmn) {
             "{ \"config_version\": 1,"
             "  \"control_period_ms\": \"100\" }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 
@@ -166,7 +166,7 @@ TEST_CASE(config_jsmn) {
             "                \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
             "                            \"severity\":\"warn\",\"cooling_state\":1}] }] }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 
@@ -190,7 +190,7 @@ TEST_CASE(config_jsmn) {
             "                \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
             "                            \"severity\":\"warn\",\"cooling_state\":1}] }] }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
         /* Error message should name the missing reference. */
         if (strstr(err, "nonexistent") == NULL) {
@@ -213,7 +213,7 @@ TEST_CASE(config_jsmn) {
                 (i == 0) ? "" : ",", i, i);
         }
         off += (size_t)snprintf(buf + off, sizeof(buf) - off, "] }");
-        thermal_status_t s = thermal_config_jsmn_parse(buf, off, &cfg,
+        thermal_status_t s = thermal_config_jsmn_parse(buf, off, &cfg, NULL,
                                                        err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_NO_SPACE);
     }
@@ -223,7 +223,7 @@ TEST_CASE(config_jsmn) {
         const char *json =
             "{ \"config_version\": 1, \"control_period_ms\": 100 ";  /* no '}' */
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 
@@ -236,7 +236,7 @@ TEST_CASE(config_jsmn) {
             "                 \"iir_alpha_q16\":16384,"
             "                 \"max_staleness_ms\":500}] }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 
@@ -250,7 +250,7 @@ TEST_CASE(config_jsmn) {
             "                 \"max_staleness_ms\":500,"
             "                 \"garbage\":1}] }";       /* unknown */
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
         if (strstr(err, "garbage") == NULL) {
             fprintf(stderr, "scenario 10: err did not name bad key: '%s'\n", err);
@@ -280,7 +280,7 @@ TEST_CASE(config_jsmn) {
             "  \"telemetry\":{ \"enable\":true, \"period_ticks\":10,"
             "                  \"signals\":[\"zone_temp_*\"] } }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         if (s != THERMAL_OK) {
             fprintf(stderr, "scenario 11: status=%d err='%s'\n", (int)s, err);
         }
@@ -299,7 +299,7 @@ TEST_CASE(config_jsmn) {
             "  \"telemetry\":{ \"enable\":true, \"period_ticks\":10,"
             "                  \"signals\":[\"actuator_rpm_*\"] } }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
-                                                       &cfg, err, sizeof(err));
+                                                       &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
     }
 }

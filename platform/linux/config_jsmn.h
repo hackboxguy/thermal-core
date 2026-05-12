@@ -26,20 +26,29 @@
 
 #include <stddef.h>
 #include "thermal_core.h"
+#include "runtime_cfg.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Parse a JSON text buffer into a thermal_config_t and validate.
+/* Parse a JSON text buffer into a thermal_config_t (+ optional
+ * thermalcored_runtime_cfg_t) and validate.
  *
  *   json_text / json_len  — caller-owned buffer. Not required to be
  *                           NUL-terminated; json_len is authoritative.
- *   cfg                   — output; the function zeroes it before use
- *                           and writes only the CORE-owned fields.
- *   err_msg / err_msg_size — optional caller-provided buffer to receive
- *                            a single-line human-readable error message
- *                            on failure. May be NULL / 0 to disable.
+ *   cfg                   — output for CORE-owned fields; zeroed before
+ *                           use.
+ *   runtime               — optional output for platform-only fields
+ *                           (sensor sources, hwmon paths, transports,
+ *                           control listen).  If NULL, those fields
+ *                           are silently skipped — the loader behaves
+ *                           exactly as in 9a.  If non-NULL, the struct
+ *                           is zeroed and populated slot-by-slot to
+ *                           mirror cfg's slot layout.
+ *   err_msg / err_msg_size — optional caller-provided buffer for a
+ *                            single-line human-readable error message
+ *                            on failure.  May be NULL / 0.
  *
  * Error message format on failure:  "<location>: <reason>"
  *   <location>  dotted/indexed path through the JSON document
@@ -61,6 +70,7 @@ extern "C" {
 thermal_status_t thermal_config_jsmn_parse(const char *json_text,
                                            size_t json_len,
                                            thermal_config_t *cfg,
+                                           thermalcored_runtime_cfg_t *runtime,
                                            char *err_msg,
                                            size_t err_msg_size);
 
