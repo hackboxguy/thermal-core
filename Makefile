@@ -23,6 +23,7 @@ WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc \
 REPLAY_BIN_DIR     = build/replay
 REPLAY_GOLDEN_DIR  = test/replay/golden
 CURVE_REPLAY       = $(REPLAY_BIN_DIR)/curve_replay
+FILTER_REPLAY      = $(REPLAY_BIN_DIR)/filter_replay
 
 .PHONY: all test build verify-portability replay regen-replay-goldens clean
 
@@ -77,7 +78,12 @@ $(CURVE_REPLAY): test/replay/curve_replay.c core/thermal_curve.h \
 	@mkdir -p $(REPLAY_BIN_DIR)
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
-replay: $(CURVE_REPLAY)
+$(FILTER_REPLAY): test/replay/filter_replay.c core/thermal_filter.h \
+                  $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+replay: $(CURVE_REPLAY) $(FILTER_REPLAY)
 	@echo "--- Replay: curve_sweep (C) ---"
 	@$(CURVE_REPLAY) > $(REPLAY_BIN_DIR)/curve_sweep.csv
 	@diff -u $(REPLAY_GOLDEN_DIR)/curve_sweep.csv \
@@ -90,12 +96,24 @@ replay: $(CURVE_REPLAY)
 	         $(REPLAY_BIN_DIR)/curve_sweep.py.csv \
 	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
 	@echo "PASS: Python ref == C"
+	@echo "--- Replay: filter_sweep (C) ---"
+	@$(FILTER_REPLAY) > $(REPLAY_BIN_DIR)/filter_sweep.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/filter_sweep.csv \
+	         $(REPLAY_BIN_DIR)/filter_sweep.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: filter_sweep (Python reference) ---"
+	@python3 test/reference/iir.py > $(REPLAY_BIN_DIR)/filter_sweep.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/filter_sweep.csv \
+	         $(REPLAY_BIN_DIR)/filter_sweep.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
 
-regen-replay-goldens: $(CURVE_REPLAY)
+regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY)
 	@mkdir -p $(REPLAY_GOLDEN_DIR)
 	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
-	@echo "Regenerated $(REPLAY_GOLDEN_DIR)/curve_sweep.csv"
-	@echo "Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
+	$(FILTER_REPLAY) > $(REPLAY_GOLDEN_DIR)/filter_sweep.csv
+	@echo "Regenerated goldens. Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
 
 # --- Build (delegates to platform/linux) ---
 build:
