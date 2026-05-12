@@ -69,6 +69,17 @@ jobs:
       - name: Run property tests
         run: make property
 
+  property-command:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run property-command tests
+        run: make property-command
+
   asan-ubsan:
     runs-on: ubuntu-latest
     steps:
@@ -84,3 +95,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
       - name: Run clang-tidy on core/
         run: make clang-tidy
+
+  cppcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Run cppcheck on core/
+        run: make cppcheck

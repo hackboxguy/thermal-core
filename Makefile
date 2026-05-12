@@ -34,11 +34,12 @@ FULL_STEP_REPLAY        = $(REPLAY_BIN_DIR)/full_step_replay
 
 # --- Property tests ---
 PROPERTY_BIN_DIR   = build/property
-PROPERTY_BIN       = $(PROPERTY_BIN_DIR)/property_config
+PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
+PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property asan clang-tidy clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck clean
 
-all: test build verify-portability replay property
+all: test build verify-portability replay property property-command
 
 # --- Unit tests ---
 test: $(TEST_BINS)
@@ -259,6 +260,15 @@ $(PROPERTY_BIN): test/property/property_config.c core/thermal_core.h \
 property: $(PROPERTY_BIN)
 	@python3 test/property/run_property.py
 
+# --- Property test: apply_command across random commands (Stage 8 8b) ---
+$(PROPERTY_COMMAND_BIN): test/property/property_command.c core/thermal_core.h \
+                         core/thermal_commands.h $(CORE_ARCHIVE)
+	@mkdir -p $(PROPERTY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
+property-command: $(PROPERTY_COMMAND_BIN)
+	@python3 test/property/run_property_command.py
+
 # --- ASan/UBSan unit-test build ---
 # Sanitizer-clean is a merge gate from Stage 6 onward (plan §3).
 # Skips verify-portability (-Wl,--wrap=malloc conflicts with ASan's
@@ -278,6 +288,24 @@ build:
 clang-tidy:
 	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
 	clang-tidy --quiet core/*.c -- $(CFLAGS_BASE)
+
+# --- cppcheck on core/ only (Stage 8 8b). ---
+# Suppressions in .cppcheck-suppressions (cppcheck's format doesn't
+# allow inline comments). Current suppressions:
+#   missingIncludeSystem -- cppcheck wants every <header> resolvable on
+#                           its own include path; that's the compiler's
+#                           job, not the analyzer's.
+#   shiftNegativeLHS     -- Q16.16 arithmetic shift on signed int is the
+#                           documented project convention (matches gcc/
+#                           clang behavior and the Python references).
+cppcheck:
+	@which cppcheck >/dev/null || { echo "cppcheck not installed"; exit 1; }
+	cppcheck --quiet --enable=warning,style,performance,portability \
+	    --error-exitcode=1 \
+	    --std=c99 \
+	    --suppressions-list=.cppcheck-suppressions \
+	    -I core \
+	    core/*.c
 
 clean:
 	rm -rf build
