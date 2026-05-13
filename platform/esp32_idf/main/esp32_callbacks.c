@@ -2,15 +2,46 @@
  *
  * thermal_core_callbacks_t wiring.  See esp32_callbacks.h for
  * the contract.
+ *
+ * Two emission styles selected at compile time:
+ *
+ *   STANDALONE (default):
+ *     - telemetry_emit_cb caches TSIG_ZONE_TEMP_<slot> +
+ *       TSIG_ACTUATOR_DUTY_<slot> into module-scoped arrays so
+ *       app_main can print one human-readable status line per
+ *       second.
+ *     - log_event_cb prints the event immediately.
+ *
+ *   REPLAY_STANDALONE (-DTHERMALCORE_MODE_REPLAY_STANDALONE):
+ *     - telemetry_emit_cb writes one byte-stable CSV row per
+ *       call, matching tools/thermalcore_probe.py:
+ *
+ *           ts_ms,sample,signal_id,value,,,,\n
+ *
+ *     - log_event_cb writes the matching event row.  The probe
+ *       duplicates the first event arg into the `value` column
+ *       (tools/thermalcore_probe.py:124, value=a1); we mirror
+ *       that or Stage 15's SHA gate fails:
+ *
+ *           ts_ms,event,code,a1,a1,a2,a3,a4\n
+ *
+ *     Decimal integers, no whitespace, '\n' (no '\r').
+ *
+ * The cache arrays + accessor functions stay defined in both
+ * modes (the accessors are public symbols; defining them
+ * unconditionally avoids fragile link-time surprises).  In
+ * REPLAY mode the arrays are simply never written to.
  */
 #include "esp32_callbacks.h"
 
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "thermal_signals.h"
 #include "thermal_events.h"
 
-/* === Cached telemetry values (read by app_main) =========== */
+/* === Cached telemetry values (read by app_main_standalone) === */
 
 #define ZONE_MAX     2   /* small upper bound; v1 ships 1 */
 #define ACTUATOR_MAX 2
@@ -31,6 +62,31 @@ int32_t esp32_callbacks_last_actuator_pwm(uint8_t slot)
 }
 
 /* === Callbacks ============================================ */
+
+#ifdef THERMALCORE_MODE_REPLAY_STANDALONE
+
+void esp32_telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
+                              int32_t value)
+{
+    /* Byte-stable CSV row matching tools/thermalcore_probe.py:62.
+     * Eight columns, last four empty, decimal integers, '\n'. */
+    printf("%" PRIu32 ",sample,%u,%" PRId32 ",,,,\n",
+           ts_ms, (unsigned)signal_id, value);
+}
+
+void esp32_log_event_cb(uint32_t ts_ms, uint16_t code,
+                        uint32_t a1, uint32_t a2,
+                        uint32_t a3, uint32_t a4)
+{
+    /* The probe stores value=a1 (tools/thermalcore_probe.py:124)
+     * so the CSV duplicates a1 into the `value` column.  Mirror
+     * that here -- Stage 15 SHA-256s the exact byte stream. */
+    printf("%" PRIu32 ",event,%u,%" PRIu32 ",%" PRIu32
+           ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "\n",
+           ts_ms, (unsigned)code, a1, a1, a2, a3, a4);
+}
+
+#else
 
 void esp32_telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
                               int32_t value)
@@ -73,3 +129,5 @@ void esp32_log_event_cb(uint32_t ts_ms, uint16_t code,
             (unsigned)a1, (unsigned)a2,
             (unsigned)a3, (unsigned)a4);
 }
+
+#endif /* THERMALCORE_MODE_REPLAY_STANDALONE */

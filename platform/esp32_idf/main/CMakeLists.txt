@@ -3,6 +3,19 @@
 # unchanged here.  protocol/ is needed because core/thermal_commands.h
 # has _Static_assert pins against protocol/thermal_wire_opcodes.h
 # (linker dead-strips unused encoders/decoders at runtime).
+#
+# Stage 13 13c -- adds the THERMALCORE_REPLAY_STANDALONE option
+# (default OFF).  Invoke as
+#   idf.py -DTHERMALCORE_REPLAY_STANDALONE=ON build
+# to compile the fixture-driven REPLAY firmware.  The option
+# defines THERMALCORE_MODE_REPLAY_STANDALONE on the component's
+# compile line; main.c + esp32_callbacks.c branch on it.  The
+# replay_fixture.c source is linked unconditionally; LTO dead-
+# strips it under STANDALONE since nothing references G_REPLAY_TICKS.
+
+option(THERMALCORE_REPLAY_STANDALONE
+       "Build firmware in REPLAY_STANDALONE mode (fixture-driven, no hardware)"
+       OFF)
 
 file(GLOB CORE_SRCS     "${PROJECT_DIR}/../../core/*.c")
 file(GLOB PROTOCOL_SRCS "${PROJECT_DIR}/../../protocol/*.c")
@@ -39,6 +52,7 @@ idf_component_register(
         "bsp_esp32_tach.c"
         "bsp_esp32_sensor.c"
         "esp32_callbacks.c"
+        "replay_fixture.c"
         ${CORE_SRCS}
         ${PROTOCOL_SRCS}
         "${GENERATED_CONFIG_C}"
@@ -48,3 +62,10 @@ idf_component_register(
         "${PROJECT_DIR}/../../protocol"
         "${GENERATED_DIR}"
 )
+
+# REPLAY-mode compile flag.  Component-scoped so it only
+# affects this firmware's sources (not the IDF runtime).
+if(THERMALCORE_REPLAY_STANDALONE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        THERMALCORE_MODE_REPLAY_STANDALONE)
+endif()
