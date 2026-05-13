@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -682,6 +682,35 @@ cppcheck:
 	        -I tools/thermalcore-scenario \
 	    core/*.c platform/linux/*.c support/*.c protocol/*.c \
 	    tools/thermalcore-scenario/*.c
+
+# --- ESP32 firmware build matrix (Stage 13 13d, local mirror of CI) ---
+# Builds the firmware in both modes (STANDALONE + REPLAY_STANDALONE)
+# and enforces the PRD section 9.2 size budget on the STANDALONE
+# image's core/+protocol/ contribution.  Not wired into `all`: it
+# requires a local ESP-IDF install; Linux-only devs skip it.
+#
+# Override the IDF location with ESP_IDF_PATH if your install lives
+# somewhere other than ~/esp/esp-idf.
+ESP_IDF_PATH ?= $(HOME)/esp/esp-idf
+build-esp32:
+	@if [ ! -f "$(ESP_IDF_PATH)/export.sh" ]; then \
+	    echo "SKIP: ESP-IDF not found at $(ESP_IDF_PATH); set ESP_IDF_PATH to override"; \
+	    exit 0; \
+	fi
+	@echo "--- build-esp32: STANDALONE ---"
+	@bash -c '. "$(ESP_IDF_PATH)/export.sh" && \
+	    cd platform/esp32_idf && \
+	    idf.py fullclean >/dev/null && \
+	    idf.py build && \
+	    idf.py size-files --format json \
+	        --output-file build/size-files.json'
+	python3 tools/check_esp32_size_budget.py \
+	    platform/esp32_idf/build/size-files.json
+	@echo "--- build-esp32: REPLAY_STANDALONE ---"
+	@bash -c '. "$(ESP_IDF_PATH)/export.sh" && \
+	    cd platform/esp32_idf && \
+	    idf.py fullclean >/dev/null && \
+	    idf.py -DTHERMALCORE_REPLAY_STANDALONE=ON build'
 
 clean:
 	rm -rf build

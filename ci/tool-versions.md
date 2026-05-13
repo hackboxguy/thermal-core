@@ -50,13 +50,13 @@ libFuzzer ships with clang. The fuzzer version is implicitly the clang version a
 
 ## Embedded toolchain
 
-Pinned by docker image tag, with SHA recorded once the Stage 13 job is testable end-to-end. The image is run in CI for the `build-esp32` job; locally, `idf.py` against a matching IDF install also works.
+Pinned by docker image tag. The image is run in CI for the `build-esp32` job (`.github/workflows/ci.yml`, Stage 13d) via `espressif/esp-idf-ci-action@v1`; locally, `idf.py` against a matching IDF install also works (see `make build-esp32`).
 
 | Tool | Intended pin | Consumed by |
 |---|---|---|
-| ESP-IDF | `espressif/idf:v5.4` (SHA pinned in Stage 13 commit) | Stage 13 |
+| ESP-IDF | `espressif/idf:v5.5.2` (SHA pin deferred until image drift causes CI flakes) | Stage 13 |
 
-The reference target is **ESP32-C6 (RISC-V)** per PRD §4.1 and implementation plan §5 Stage 13.
+The reference target is **ESP32-C3 (RISC-V)** — selected over the PRD §4.1 ESP32-C6 nomination during impl-plan-review-v3 because Albert's existing bench rig is C3-based. The canonical Kconfig pin lives in `platform/esp32_idf/sdkconfig.defaults` (`CONFIG_IDF_TARGET="esp32c3"`); the canonical daemon config consumed by CI is `platform/esp32_idf/configs/esp32-c3-standalone.json`. C6 remains a future-portability claim; the portable C99 `core/` is target-agnostic and a C6 matrix leg lands if/when the hardware does.
 
 ## Bump policy
 
