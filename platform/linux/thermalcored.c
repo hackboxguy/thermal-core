@@ -184,8 +184,12 @@ static int open_telemetry_socket(const char *transport_uri)
  * (PRD §7.5 line 962: "must not bind to a non-loopback address
  * unless a deliberate unsafe-development flag is set").
  *
- * Returns the socket fd on success, or -1 if disabled / invalid.
- * Invalid is non-fatal so the daemon still runs telemetry-only. */
+ * Returns:
+ *   >= 0  socket fd on success.
+ *   -1    `uri` is NULL / empty (listener intentionally disabled).
+ *   -2    `uri` is non-empty but invalid (bad URI / non-loopback /
+ *         bad port / bind failure).  The caller can promote this to
+ *         a startup error when control.enable=true. */
 static int open_control_socket(const char *uri)
 {
     if (!uri || uri[0] == '\0') {
@@ -195,20 +199,20 @@ static int open_control_socket(const char *uri)
     if (parse_udp_uri(uri, host, sizeof(host), port, sizeof(port)) != 0) {
         fprintf(stderr,
                 "thermalcored: invalid control listen URI '%s'\n", uri);
-        return -1;
+        return -2;
     }
     if (strcmp(host, "127.0.0.1") != 0) {
         fprintf(stderr,
                 "thermalcored: control.listen must be loopback (host=127.0.0.1); got '%s'\n",
                 host);
-        return -1;
+        return -2;
     }
 
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
         fprintf(stderr,
                 "thermalcored: control socket failed: %s\n", strerror(errno));
-        return -1;
+        return -2;
     }
     int one = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -221,7 +225,7 @@ static int open_control_socket(const char *uri)
     if (port_n <= 0 || port_n > 65535) {
         fprintf(stderr, "thermalcored: bad control port '%s'\n", port);
         close(fd);
-        return -1;
+        return -2;
     }
     addr.sin_port = htons((uint16_t)port_n);
 
@@ -230,7 +234,7 @@ static int open_control_socket(const char *uri)
                 "thermalcored: control bind('%s:%ld') failed: %s\n",
                 host, port_n, strerror(errno));
         close(fd);
-        return -1;
+        return -2;
     }
 
     fprintf(stderr,
@@ -261,9 +265,31 @@ static void send_acknack(thermal_wire_opcode_t opcode,
                  (const struct sockaddr *)dest, dest_len);
 }
 
+/* Read a little-endian u16 from `p`; used to recover `seq` from a
+ * frame that failed deeper decode but whose header (magic + version)
+ * already parsed cleanly.  Mirrors the helper in protocol/thermal_wire.c. */
+static uint16_t read_u16_le_at(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
 /* Drain pending CMD_REQUEST frames; apply each to the core and
  * send an ACK or NACK back to the sender.  Called as Step 1 of
- * every tick (PRD §5 Stage 9 control-loop order). */
+ * every tick (PRD §5 Stage 9 control-loop order).
+ *
+ * Transport-level reject taxonomy (PRD §7.2 line 937):
+ *
+ *   - BAD_OPCODE, OVER_CAP: outer header parsed; `seq` was extracted
+ *     before the failure, so we can NACK with the matching
+ *     THERMAL_WIRE_STATUS_* (≥ 0x8000) value.
+ *   - BAD_PAYLOAD (per-opcode payload decode): same — `fr.seq` is
+ *     already populated by thermal_wire_decode_frame().
+ *   - Unexpected opcode at the listener (TELEM_*, CMD_ACK, ...): the
+ *     decode succeeded but the frame isn't a CMD_REQUEST.  NACK with
+ *     BAD_OPCODE; seq is trustworthy.
+ *   - BAD_MAGIC, BAD_VERSION, BAD_CRC, TRUNCATED: the byte stream
+ *     either isn't ours or has been corrupted; `seq` cannot be
+ *     trusted.  Silent drop. */
 static void drain_commands(thermal_core_t *core, uint32_t now_ms)
 {
     if (g_control_fd < 0) return;
@@ -279,16 +305,37 @@ static void drain_commands(thermal_core_t *core, uint32_t now_ms)
         int dec = thermal_wire_decode_frame(buf, (size_t)n,
                                             THERMAL_WIRE_MAX_LINUX,
                                             DAEMON_CRC_ENABLED, &fr);
-        if (dec != THERMAL_WIRE_OK ||
-            fr.opcode != THERMAL_WIRE_OP_CMD_REQUEST) {
-            /* Transport-level reject: silently drop. */
+        if (dec != THERMAL_WIRE_OK) {
+            /* For BAD_OPCODE / OVER_CAP the magic + version were good
+             * and the header parsed enough to extract `seq` at offset
+             * 4.  We can NACK those.  Other failures (BAD_MAGIC,
+             * BAD_VERSION, BAD_CRC, TRUNCATED) leave `seq` untrusted;
+             * silently drop. */
+            if ((dec == THERMAL_WIRE_ERR_BAD_OPCODE ||
+                 dec == THERMAL_WIRE_ERR_OVER_CAP) &&
+                (size_t)n >= THERMAL_WIRE_HEADER_LEN) {
+                uint16_t seq = read_u16_le_at(buf + 4);
+                uint16_t st  = (dec == THERMAL_WIRE_ERR_BAD_OPCODE)
+                                 ? (uint16_t)THERMAL_WIRE_STATUS_BAD_OPCODE
+                                 : (uint16_t)THERMAL_WIRE_STATUS_OVER_CAP;
+                send_acknack(THERMAL_WIRE_OP_CMD_NACK, &sender, slen,
+                             seq, now_ms, st, 0u);
+            }
+            continue;
+        }
+        if (fr.opcode != THERMAL_WIRE_OP_CMD_REQUEST) {
+            /* A device-→-host opcode arriving on the listener is a
+             * misuse, but seq is trustworthy. */
+            send_acknack(THERMAL_WIRE_OP_CMD_NACK, &sender, slen,
+                         fr.seq, now_ms,
+                         (uint16_t)THERMAL_WIRE_STATUS_BAD_OPCODE, 0u);
             continue;
         }
         thermal_command_t cmd;
         if (thermal_wire_decode_cmd_request(&fr, &cmd) != THERMAL_WIRE_OK) {
             send_acknack(THERMAL_WIRE_OP_CMD_NACK, &sender, slen,
                          fr.seq, now_ms,
-                         (uint16_t)THERMAL_ERR_INVALID_ARG, 0);
+                         (uint16_t)THERMAL_WIRE_STATUS_BAD_PAYLOAD, 0u);
             continue;
         }
         thermal_command_result_t result;
@@ -672,7 +719,32 @@ int main(int argc, char **argv)
     /* === Syslog (always open) + UDP telemetry (best-effort) ===== */
     openlog("thermalcored", LOG_PID, LOG_DAEMON);
     g_telemetry_fd = open_telemetry_socket(runtime.global.telemetry_transport);
-    g_control_fd   = open_control_socket(runtime.global.control_listen);
+
+    /* Control plane: gated on PRD §7.3 line 945 `control.enable`.
+     * A misconfigured listener (enable=true with empty / invalid URI)
+     * is a startup error so the bench rig fails loudly rather than
+     * running telemetry-only without anyone noticing the missing
+     * command channel. */
+    g_control_fd = -1;
+    if (runtime.global.control_enable) {
+        int fd = open_control_socket(runtime.global.control_listen);
+        if (fd == -1) {
+            fprintf(stderr,
+                    "thermalcored: control.enable=true but control.listen "
+                    "is empty; aborting\n");
+            return 1;
+        }
+        if (fd == -2) {
+            fprintf(stderr,
+                    "thermalcored: control.enable=true but control.listen "
+                    "is invalid; aborting\n");
+            return 1;
+        }
+        g_control_fd = fd;
+    } else {
+        fprintf(stderr,
+                "thermalcored: control plane disabled (control.enable=false)\n");
+    }
 
     /* === Core init =============================================== */
     thermal_core_t              core;

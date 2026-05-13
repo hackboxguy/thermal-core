@@ -89,6 +89,7 @@
   },
 
   "control": {
-    "listen": "/run/thermal-core/ctl.sock"
+    "listen": "udp:127.0.0.1:9002",
+    "enable": false
   }
 }

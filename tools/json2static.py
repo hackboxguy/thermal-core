@@ -177,7 +177,7 @@ DETECTOR_ALLOWED = {
 
 TELEMETRY_ALLOWED = {"enable", "period_ticks", "signals", "transport"}
 
-CONTROL_ALLOWED = {"listen"}
+CONTROL_ALLOWED = {"listen", "enable"}
 
 
 def reject_unknown(obj, allowed, where):

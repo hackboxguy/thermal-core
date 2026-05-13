@@ -157,10 +157,17 @@ smoke: build test/smoke/test_thermalcored_smoke.py test/smoke/smoke-config.json
 
 # --- Integration: spawn thermalcored + drive tools/thermalcore-tune ---
 # Stage 10 10c: exercises all five command subcommands end-to-end.
+# Codex v7 carryover adds the PID-positive tuning script (set-pid
+# soc 0 0 0 -> ACK + integral reset + zero output).  Both scripts run
+# back-to-back; the second waits on a free 9012 control port so they
+# do not race.
 integration: build test/integration/test_thermalcore_tune.py \
+             test/integration/test_thermalcore_tune_pid.py \
+             test/integration/pid-config.json \
              tools/thermalcore-tune tools/thermalcore_wire.py \
              test/smoke/smoke-config.json
 	@python3 test/integration/test_thermalcore_tune.py
+	@python3 test/integration/test_thermalcore_tune_pid.py
 
 # --- Fuzz: libFuzzer over the JSON loader (needs clang) ---
 # Not part of `make all` -- it runs for 60 s.  CI runs it as a

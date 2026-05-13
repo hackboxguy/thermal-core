@@ -76,11 +76,15 @@ TEST_CASE(runtime_cfg_load) {
         EXPECT_EQ(strcmp(runtime.contexts[0].source,
                          "/tmp/thermal-core/contexts/vehicle_speed"), 0);
 
-        /* Global transport + control listen */
+        /* Global transport + control listen.  Reference config now
+         * uses the Stage 10 UDP URI per PRD §7.3 line 945; the
+         * codex-v7 carryover commit also added control.enable
+         * (off-by-default in the production-safe reference config). */
         EXPECT_EQ(strcmp(runtime.global.telemetry_transport,
                          "udp:127.0.0.1:9000"), 0);
         EXPECT_EQ(strcmp(runtime.global.control_listen,
-                         "/run/thermal-core/ctl.sock"), 0);
+                         "udp:127.0.0.1:9002"), 0);
+        EXPECT_EQ((int)runtime.global.control_enable, 0);
 
         free(json);
     }

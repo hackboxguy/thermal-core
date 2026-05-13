@@ -50,8 +50,9 @@ typedef struct {
 } runtime_context_cfg_t;
 
 typedef struct {
-    char telemetry_transport[THERMAL_PATH_MAX]; /* e.g. "udp:127.0.0.1:9000" */
-    char control_listen[THERMAL_PATH_MAX];      /* socket spec (Stage 10) */
+    char    telemetry_transport[THERMAL_PATH_MAX]; /* e.g. "udp:127.0.0.1:9000" */
+    char    control_listen[THERMAL_PATH_MAX];      /* socket spec (Stage 10) */
+    uint8_t control_enable;   /* PRD §7.3 line 945: listener off unless true */
 } runtime_global_cfg_t;
 
 typedef struct {

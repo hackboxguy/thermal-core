@@ -10,7 +10,7 @@ This module is intentionally a thin port — the C side is the
 authoritative implementation; the Python side mirrors it.  When
 something changes in `protocol/`, update here too.
 
-Frame layout (PRD section 7.2 lines 902-911):
+Frame layout (PRD section 7.2 lines 902-911 + 920-921):
 
     magic[2] = "TC"
     version  = 1                     (u8)
@@ -19,7 +19,12 @@ Frame layout (PRD section 7.2 lines 902-911):
     payload_len                      (u16 little-endian)
     ts_ms                            (u32 little-endian)
     payload[payload_len]
-    crc16                            (u16 little-endian, optional)
+    crc16                            (u16 little-endian; always present)
+
+The trailing `u16 crc16` field is **always** on the wire.  A
+`0x0000` value means "CRC disabled" only on transports that
+explicitly allow it (loopback UDP).  The `crc` argument on
+`encode_tc` / `decode_tc` controls *validation*, not *frame shape*.
 
 CRC: CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection,
 no final XOR), covering bytes from magic[0] through the last
@@ -27,7 +32,9 @@ payload byte.
 """
 from __future__ import annotations
 
+import json
 import struct
+from pathlib import Path
 
 # === Frame constants ====================================================
 
@@ -78,14 +85,17 @@ def crc16_ccitt_false(buf: bytes) -> int:
 
 def encode_tc(opcode: int, seq: int, ts_ms: int,
               payload: bytes, crc: bool = True) -> bytes:
-    """Build a complete TC frame: header + payload + optional CRC."""
+    """Build a complete TC frame: header + payload + trailing CRC field.
+
+    The trailing 2 CRC bytes are always emitted (PRD section 7.2 lines
+    910 + 920-921).  When `crc=False`, the field is written as 0x0000
+    instead of the computed CRC."""
     header = struct.pack("<2sBBHHI", WIRE_MAGIC, WIRE_VERSION,
                          opcode & 0xFF, seq & 0xFFFF,
                          len(payload), ts_ms & 0xFFFFFFFF)
     body = header + payload
-    if crc:
-        body += struct.pack("<H", crc16_ccitt_false(body))
-    return body
+    crc_val = crc16_ccitt_false(body) if crc else 0
+    return body + struct.pack("<H", crc_val)
 
 
 def decode_tc(buf: bytes, crc: bool = True):
@@ -93,6 +103,11 @@ def decode_tc(buf: bytes, crc: bool = True):
 
     Returns (opcode, seq, ts_ms, payload) on success, or None if
     the frame is malformed (bad magic / version / CRC / truncated).
+
+    The trailing 2 CRC bytes are always required to be present
+    on the wire; `crc=False` only suppresses *validation* of those
+    bytes (their value is informational on transports that allow
+    CRC-disabled frames).
     """
     if len(buf) < WIRE_HEADER_LEN:
         return None
@@ -102,7 +117,7 @@ def decode_tc(buf: bytes, crc: bool = True):
         return None
     opcode = buf[3]
     seq, payload_len, ts_ms = struct.unpack("<HHI", buf[4:12])
-    need = WIRE_HEADER_LEN + payload_len + (WIRE_CRC_LEN if crc else 0)
+    need = WIRE_HEADER_LEN + payload_len + WIRE_CRC_LEN
     if len(buf) < need:
         return None
     payload = buf[WIRE_HEADER_LEN:WIRE_HEADER_LEN + payload_len]
@@ -160,3 +175,45 @@ def decode_ack_or_nack(payload: bytes):
     if len(payload) != 8:
         return None
     return struct.unpack("<HHI", payload)
+
+
+# === Config-aware name resolution =======================================
+#
+# Used by tools/thermalcore-tune to map human zone / modifier /
+# actuator / sensor / context names to the slot indexes consumed by
+# the wire codec.
+
+class Config:
+    """Minimal view over a thermalcored JSON config: just the
+    (name → slot index) maps the CLI needs.  Slot indexes are the
+    position in the config's array, matching how config_jsmn.c
+    populates thermal_config_t."""
+    def __init__(self, raw: dict):
+        self.zones      = [z["name"] for z in raw.get("zones", [])]
+        self.modifiers  = [m["name"] for m in raw.get("policy_modifiers", [])]
+        self.actuators  = [a["name"] for a in raw.get("actuators", [])]
+        self.sensors    = [s["name"] for s in raw.get("sensors", [])]
+        self.contexts   = [c["name"] for c in raw.get("context_signals", [])]
+
+
+def load_config(path) -> Config:
+    """Read and parse a thermalcored JSON config into a Config view."""
+    with Path(path).open("r", encoding="utf-8") as f:
+        return Config(json.load(f))
+
+
+def resolve_name(name_or_int: str, table: list, kind: str) -> int:
+    """Return an integer slot index for the given string.
+
+    Integer strings ("0", "12") pass through unchanged; names look up
+    `table` by exact match.  Raises SystemExit on a name miss.
+    """
+    try:
+        return int(name_or_int)
+    except (ValueError, TypeError):
+        pass
+    if name_or_int in table:
+        return table.index(name_or_int)
+    raise SystemExit(
+        f"thermalcore-tune: unknown {kind} '{name_or_int}'; "
+        f"known: {table}")

@@ -16,6 +16,9 @@
  *   15. Reserved opcode -> ERR_BAD_OPCODE.
  *   16. Over-cap -> ERR_OVER_CAP.
  *   17. Buffer too small for encode -> ERR_BUF_TOO_SMALL.
+ *   18. u16 seq boundary (wraparound).
+ *   19. CRC-disabled decode tolerates non-zero CRC field.
+ *   20. Transport status code namespace (>= 0x8000).
  *
  * No socket I/O; everything runs against in-memory byte buffers.
  */
@@ -65,12 +68,18 @@ TEST_CASE(thermal_wire) {
     }
 
     /* === Scenario 3: TELEM_SAMPLE w/o CRC ============================ */
+    /* PRD section 7.2 lines 910 + 920-921: the trailing u16 crc16 field
+     * is always present on the wire; when CRC is disabled the bytes
+     * are 0x0000 (informational, not a shape change). */
     {
         uint8_t buf[64];
         int n = thermal_wire_encode_telem_sample(buf, sizeof(buf),
                                                  1, 100, 0x0200, 0, 80,
                                                  /*crc*/ 0);
-        EXPECT_EQ(n, (int)(THERMAL_WIRE_HEADER_LEN + 8));
+        EXPECT_EQ(n, (int)(THERMAL_WIRE_HEADER_LEN + 8 + THERMAL_WIRE_CRC_LEN));
+        /* The disabled CRC field must be 0x0000. */
+        EXPECT_EQ(buf[THERMAL_WIRE_HEADER_LEN + 8 + 0], 0u);
+        EXPECT_EQ(buf[THERMAL_WIRE_HEADER_LEN + 8 + 1], 0u);
         thermal_wire_frame_t fr;
         EXPECT_EQ(thermal_wire_decode_frame(buf, (size_t)n,
                                             THERMAL_WIRE_MAX_LINUX, 0, &fr),
@@ -352,5 +361,54 @@ TEST_CASE(thermal_wire) {
                                             THERMAL_WIRE_MAX_LINUX, 1, &fr),
                   THERMAL_WIRE_OK);
         EXPECT_EQ(fr.seq, 0u);
+    }
+
+    /* === Scenario 19: CRC-disabled decode tolerates non-zero CRC field
+     *
+     * The frame shape is fixed (PRD section 7.2 line 910): the trailing
+     * u16 crc16 is always on the wire.  When the decoder is configured
+     * with crc_enabled=0, the bytes are consumed but their value is
+     * informational — the decode succeeds even with arbitrary trailing
+     * bytes.  This is the contract that distinguishes "CRC disabled by
+     * transport configuration" from "CRC field absent". */
+    {
+        uint8_t buf[64];
+        int n = thermal_wire_encode_telem_sample(buf, sizeof(buf),
+                                                 1, 100, 0x0200, 0, 80,
+                                                 /*crc*/ 1);
+        EXPECT_EQ(n, (int)(THERMAL_WIRE_HEADER_LEN + 8 + THERMAL_WIRE_CRC_LEN));
+        /* Trash the trailing CRC bytes. */
+        buf[THERMAL_WIRE_HEADER_LEN + 8 + 0] = 0xDE;
+        buf[THERMAL_WIRE_HEADER_LEN + 8 + 1] = 0xAD;
+        thermal_wire_frame_t fr;
+        /* crc_enabled=1 → strict; this MUST fail. */
+        EXPECT_EQ(thermal_wire_decode_frame(buf, (size_t)n,
+                                            THERMAL_WIRE_MAX_LINUX, 1, &fr),
+                  THERMAL_WIRE_ERR_BAD_CRC);
+        /* crc_enabled=0 → permissive; same bytes decode cleanly. */
+        EXPECT_EQ(thermal_wire_decode_frame(buf, (size_t)n,
+                                            THERMAL_WIRE_MAX_LINUX, 0, &fr),
+                  THERMAL_WIRE_OK);
+        EXPECT_EQ(fr.payload_len, 8u);
+    }
+
+    /* === Scenario 20: transport status code namespace ================
+     *
+     * PRD section 7.2 line 937 requires transport-level CMD_NACK status
+     * codes to be allocated above 0x8000 so they cannot collide with
+     * the core thermal_status_t namespace.  Pin the exact numeric
+     * values; renaming or renumbering trips a build break. */
+    {
+        EXPECT_EQ(THERMAL_WIRE_STATUS_OK,          0x0000);
+        EXPECT_EQ(THERMAL_WIRE_STATUS_BAD_PAYLOAD, 0x8001);
+        EXPECT_EQ(THERMAL_WIRE_STATUS_BAD_OPCODE,  0x8002);
+        EXPECT_EQ(THERMAL_WIRE_STATUS_OVER_CAP,    0x8003);
+        EXPECT_EQ(THERMAL_WIRE_STATUS_BAD_VERSION, 0x8004);
+        /* Every transport-namespace status must have the high bit set
+         * so callers can use (status & 0x8000) as the discriminator. */
+        EXPECT_EQ((unsigned)THERMAL_WIRE_STATUS_BAD_PAYLOAD & 0x8000u, 0x8000u);
+        EXPECT_EQ((unsigned)THERMAL_WIRE_STATUS_BAD_OPCODE  & 0x8000u, 0x8000u);
+        EXPECT_EQ((unsigned)THERMAL_WIRE_STATUS_OVER_CAP    & 0x8000u, 0x8000u);
+        EXPECT_EQ((unsigned)THERMAL_WIRE_STATUS_BAD_VERSION & 0x8000u, 0x8000u);
     }
 }

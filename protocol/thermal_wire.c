@@ -85,37 +85,41 @@ static void write_header(uint8_t *buf,
     put_u32_le(buf + 8, ts_ms);
 }
 
-/* Finalise a frame: optionally append CRC.  Returns the total
- * byte count written (HEADER + payload + (crc_enabled ? 2 : 0)). */
+/* Finalise a frame: always write the trailing 2 CRC bytes.  When
+ * `crc_enabled = 0` the CRC field is 0x0000 (PRD §7.2 line 920:
+ * "zero CRC field means CRC disabled on transports that allow it").
+ * Returns the total written byte count (HEADER + payload + 2). */
 static int finalize_frame(uint8_t *buf, size_t buf_sz,
                           size_t payload_len, int crc_enabled)
 {
-    size_t total = (size_t)THERMAL_WIRE_HEADER_LEN + payload_len;
-    if (crc_enabled) total += THERMAL_WIRE_CRC_LEN;
+    size_t total = (size_t)THERMAL_WIRE_HEADER_LEN
+                 + payload_len + THERMAL_WIRE_CRC_LEN;
     if (total > buf_sz) return THERMAL_WIRE_ERR_BUF_TOO_SMALL;
-    if (crc_enabled) {
-        uint16_t crc = thermal_wire_crc16(
-            buf, (size_t)THERMAL_WIRE_HEADER_LEN + payload_len);
-        put_u16_le(buf + THERMAL_WIRE_HEADER_LEN + payload_len, crc);
-    }
+    uint16_t crc = crc_enabled
+        ? thermal_wire_crc16(buf,
+                             (size_t)THERMAL_WIRE_HEADER_LEN + payload_len)
+        : 0u;
+    put_u16_le(buf + THERMAL_WIRE_HEADER_LEN + payload_len, crc);
     return (int)total;
 }
 
 /* Encode a complete frame given a payload writer that knows the
  * fixed payload size + how to fill it.  Returns the total written
  * byte count or negative status.  Inline helper used by all five
- * encode entry points. */
+ * encode entry points.  The trailing 2 CRC bytes are always
+ * accounted for in the buffer-sizing check (PRD §7.2 line 910). */
 static int encode_frame(uint8_t *buf, size_t buf_sz,
                         thermal_wire_opcode_t opcode,
                         uint16_t seq, uint32_t ts_ms,
                         size_t payload_len,
                         int crc_enabled)
 {
+    (void)crc_enabled;
     if (payload_len > 0xFFFFu) {
         return THERMAL_WIRE_ERR_BAD_PAYLOAD;
     }
-    size_t need = (size_t)THERMAL_WIRE_HEADER_LEN + payload_len;
-    if (crc_enabled) need += THERMAL_WIRE_CRC_LEN;
+    size_t need = (size_t)THERMAL_WIRE_HEADER_LEN
+                + payload_len + THERMAL_WIRE_CRC_LEN;
     if (buf_sz < need) return THERMAL_WIRE_ERR_BUF_TOO_SMALL;
 
     write_header(buf, opcode, seq, (uint16_t)payload_len, ts_ms);
@@ -335,8 +339,11 @@ int thermal_wire_decode_frame(const uint8_t *buf, size_t buf_sz,
         return THERMAL_WIRE_ERR_OVER_CAP;
     }
 
-    size_t need = (size_t)THERMAL_WIRE_HEADER_LEN + payload_len;
-    if (crc_enabled) need += THERMAL_WIRE_CRC_LEN;
+    /* The trailing 2 CRC bytes are always present on the wire (PRD
+     * §7.2 lines 910 + 920-921); the `crc_enabled` flag only gates
+     * validation, not frame shape. */
+    size_t need = (size_t)THERMAL_WIRE_HEADER_LEN
+                + payload_len + THERMAL_WIRE_CRC_LEN;
     if (buf_sz < need) return THERMAL_WIRE_ERR_TRUNCATED;
 
     if (crc_enabled) {
@@ -347,6 +354,11 @@ int thermal_wire_decode_frame(const uint8_t *buf, size_t buf_sz,
             return THERMAL_WIRE_ERR_BAD_CRC;
         }
     }
+    /* When crc_enabled = 0, the trailing 2 bytes are still consumed
+     * by the `need` size check above but their value is informational
+     * (PRD §7.2 line 920: "zero CRC field means 'CRC disabled' only
+     * on transports that explicitly allow it" — the *configured*
+     * transport semantics, not the bytes themselves, decide). */
 
     out->seq         = seq;
     out->ts_ms       = ts_ms;

@@ -1675,6 +1675,15 @@ static thermal_status_t parse_control_object(parse_ctx_t *ctx,
                                    "listen spec too long or wrong type");
                 }
             }
+        } else if (tok_str_eq(ctx, k, "enable")) {
+            /* PRD §7.3 line 945: control plane listener defaults off;
+             * caller must opt in with `control.enable = true`. */
+            int val;
+            if (tok_parse_bool(ctx, v, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "control.enable must be true or false");
+            }
+            if (r_glob) r_glob->control_enable = (uint8_t)val;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);

@@ -364,9 +364,10 @@ The `protocol/` module is portable C99 with no heap and no platform deps. It lin
 
 **CI rigor added:** fuzz-wire (against `protocol/`, not `core/`).
 
-**Stage 10 actual deliverables vs deferrals (post 10d):**
+**Stage 10 actual deliverables vs deferrals (post 10d + v7 carryover):**
 
 - **Shipped 10a–10d:** `protocol/thermal_wire.{c,h}` + opcodes (10a); daemon hoist onto the canonical codec + UDP control listener (10b); `tools/thermalcore-tune` + Python wire module + 5-subcommand integration test (10c); libFuzzer harness over the decoder, u16-seq-boundary unit-test scenario, smoke-side timestamp-propagation assertion (10d).
+- **Shipped in the codex-v7 carryover commit:** PRD §7.2 frame shape (trailing `u16 crc16` always on the wire; `0x0000` for CRC-disabled) across C, Python, and the no-CRC unit test; transport status codes `≥ 0x8000` (`THERMAL_WIRE_STATUS_BAD_PAYLOAD` / `BAD_OPCODE` / `OVER_CAP` / `BAD_VERSION`) with daemon NACKs on ackable transport errors; `thermalcore-tune --config <path>` name resolution (zone / modifier / sensor / actuator / context); PID-positive tuning integration test (`set-pid soc 0 0 0` → ACK + integral reset + zero output); reference config switched to `udp:127.0.0.1:9002` + `control.enable` schema (default off; invalid non-empty URI is a startup error).
 - **Wire-codec u16 seq boundary** is covered by `test_thermal_wire` scenario 18 (round-trip at seq=65535 and seq=0 post-wrap).  The originally-planned **full async outstanding-window matching test** (65,537 commands, host-side ACK-pairing under wraparound) needs an asynchronous client that v1 doesn't have — `thermalcore-tune` is one-shot synchronous.  Lands when the Stage 12 scenario runner orchestrates timed commands.
 - **`thermalcore-probe`** (PRD §7.4) — deferred to Stage 11/12; smoke harness keeps decoding TC frames in-place until then.
 

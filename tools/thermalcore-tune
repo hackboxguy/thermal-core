@@ -20,6 +20,11 @@ Global options:
     --timeout SEC    Response timeout in seconds (default 2.0)
     --no-crc         Send / expect frames without CRC
     --seq N          Override the request seq (default: random)
+    --config PATH    Resolve zone / modifier / sensor / actuator /
+                     context names against the named JSON config
+                     (impl-plan section 5 Stage 10 example:
+                     `set-pid soc 5000 400 0`).  Without --config,
+                     name args must be integers.
 
 Exit codes:
     0  CMD_ACK received with status OK
@@ -57,31 +62,38 @@ def _build_cli() -> argparse.ArgumentParser:
                    help="Send and expect frames without CRC.")
     p.add_argument("--seq", type=int, default=None,
                    help="Override request seq (default: random uint16).")
+    p.add_argument("--config", default=None,
+                   help="JSON config used to resolve human names "
+                        "(zone / modifier / sensor / actuator / context) "
+                        "to slot indexes.  Without --config, name args "
+                        "must be integers.")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    # ID-like args use `type=str` so names pass through; the resolver in
+    # _build_payload converts to int (or errors on a name miss).
     sp = sub.add_parser("set-pid",
                         help="Set PID gains for a zone.")
-    sp.add_argument("zone",   type=int)
+    sp.add_argument("zone",   type=str)
     sp.add_argument("kp_q16", type=int)
     sp.add_argument("ki_q16", type=int)
     sp.add_argument("kd_q16", type=int)
 
     sp = sub.add_parser("set-setpoint",
                         help="Set the PID setpoint for a zone.")
-    sp.add_argument("zone",        type=int)
+    sp.add_argument("zone",        type=str)
     sp.add_argument("setpoint_mc", type=int)
 
     sp = sub.add_parser("set-trip",
                         help="Update a trip's temp_mc and hyst_mc.")
-    sp.add_argument("zone",     type=int)
+    sp.add_argument("zone",     type=str)
     sp.add_argument("trip_idx", type=int)
     sp.add_argument("temp_mc",  type=int)
     sp.add_argument("hyst_mc",  type=int)
 
     sp = sub.add_parser("set-curve-point",
                         help="Update a modifier's curve point.")
-    sp.add_argument("modifier",  type=int)
+    sp.add_argument("modifier",  type=str)
     sp.add_argument("point_idx", type=int)
     sp.add_argument("x",         type=int)
     sp.add_argument("value0",    type=int)
@@ -90,24 +102,53 @@ def _build_cli() -> argparse.ArgumentParser:
     sp = sub.add_parser("clear-fault",
                         help="Clear a latched fault.")
     sp.add_argument("fault_type", type=int)
-    sp.add_argument("target_id",  type=int)
+    sp.add_argument("target_id",  type=str)
     return p
 
 
-def _build_payload(args: argparse.Namespace) -> bytes:
+# fault_type -> (kind label, attribute on Config) for CMD_CLEAR_FAULT
+# target_id resolution.  Matches the wire enum in core/thermal_fault.h:
+# 1=STALL (actuator), 2=STUCK_SENSOR (sensor), 3=RUNAWAY (zone),
+# 4=STALE_CONTEXT (context).
+_FAULT_TARGET = {
+    1: ("actuator", "actuators"),
+    2: ("sensor",   "sensors"),
+    3: ("zone",     "zones"),
+    4: ("context",  "contexts"),
+}
+
+
+def _resolve(name_or_int: str, cfg, attr: str, kind: str) -> int:
+    """Integer pass-through; name lookup if cfg is loaded."""
+    table = getattr(cfg, attr) if cfg is not None else []
+    return w.resolve_name(name_or_int, table, kind)
+
+
+def _build_payload(args: argparse.Namespace, cfg) -> bytes:
     if args.cmd == "set-pid":
-        return w.encode_set_pid(args.zone,
+        z = _resolve(args.zone, cfg, "zones", "zone")
+        return w.encode_set_pid(z,
                                  args.kp_q16, args.ki_q16, args.kd_q16)
     if args.cmd == "set-setpoint":
-        return w.encode_set_setpoint(args.zone, args.setpoint_mc)
+        z = _resolve(args.zone, cfg, "zones", "zone")
+        return w.encode_set_setpoint(z, args.setpoint_mc)
     if args.cmd == "set-trip":
-        return w.encode_set_trip(args.zone, args.trip_idx,
+        z = _resolve(args.zone, cfg, "zones", "zone")
+        return w.encode_set_trip(z, args.trip_idx,
                                   args.temp_mc, args.hyst_mc)
     if args.cmd == "set-curve-point":
-        return w.encode_set_curve_point(args.modifier, args.point_idx,
+        m = _resolve(args.modifier, cfg, "modifiers", "modifier")
+        return w.encode_set_curve_point(m, args.point_idx,
                                          args.x, args.value0, args.value1)
     if args.cmd == "clear-fault":
-        return w.encode_clear_fault(args.fault_type, args.target_id)
+        kind_attr = _FAULT_TARGET.get(args.fault_type)
+        if kind_attr is None:
+            # Unknown fault_type: hand the target through as an int.
+            tid = w.resolve_name(args.target_id, [], "target")
+        else:
+            kind, attr = kind_attr
+            tid = _resolve(args.target_id, cfg, attr, kind)
+        return w.encode_clear_fault(args.fault_type, tid)
     raise SystemExit(3)
 
 
@@ -120,9 +161,22 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 3
 
+    cfg = None
+    if args.config:
+        try:
+            cfg = w.load_config(args.config)
+        except (OSError, ValueError) as ex:
+            print(f"thermalcore-tune: cannot load --config '{args.config}': "
+                  f"{ex}", file=sys.stderr)
+            return 3
+
     try:
-        payload = _build_payload(args)
+        payload = _build_payload(args, cfg)
     except SystemExit as e:
+        # Name-resolution misses surface here.
+        if isinstance(e.code, str):
+            print(e.code, file=sys.stderr)
+            return 3
         return int(e.code or 3)
     except Exception as ex:  # noqa: BLE001
         print(f"thermalcore-tune: encoding error: {ex}", file=sys.stderr)

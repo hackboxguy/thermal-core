@@ -11,7 +11,13 @@
  *   u16 payload_len   (little-endian)
  *   u32 ts_ms         (little-endian)
  *   u8  payload[payload_len]
- *   u16 crc16         (little-endian, optional per transport)
+ *   u16 crc16         (little-endian; always present on the wire)
+ *
+ * Per PRD §7.2 lines 910 + 920-921, the trailing `u16 crc16` field is
+ * **always** present on the wire.  A `0x0000` value means "CRC
+ * disabled" only on transports that explicitly allow it (loopback
+ * UDP); serial / CAN require a valid CRC.  The `crc_enabled` argument
+ * on the codec entry points controls *validation*, not *frame shape*.
  *
  * Same framing carries both telemetry (device → host) and
  * commands (host → device + ACK/NACK back); the opcode field
@@ -44,17 +50,20 @@ typedef struct {
     thermal_wire_opcode_t opcode;
     const uint8_t        *payload;
     size_t                payload_len;
-    int                   crc_enabled;   /* 1 if frame included CRC */
+    int                   crc_enabled;   /* 1 if decoder validated CRC */
 } thermal_wire_frame_t;
 
 /* === Encoders =====================================================
  * Each returns the total written byte count on success
- * (HEADER_LEN + payload_len + (crc_enabled ? CRC_LEN : 0)), or a
- * negative thermal_wire_status_t on too-small buffer / over-cap.
+ * (HEADER_LEN + payload_len + CRC_LEN — the trailing CRC field is
+ * always emitted), or a negative thermal_wire_status_t on too-small
+ * buffer / over-cap.
  *
- * `crc_enabled` controls whether the trailing CRC-16/CCITT-FALSE
- * is computed and appended (PRD §7.2 line 921: required on serial
- * / CAN, optional on loopback UDP).
+ * `crc_enabled` controls whether the trailing CRC-16/CCITT-FALSE is
+ * *computed* over the header + payload (PRD §7.2 line 921: required
+ * on serial / CAN, optional on loopback UDP).  When `crc_enabled = 0`,
+ * the 2 trailing bytes are still present on the wire but written as
+ * 0x0000.
  */
 
 int thermal_wire_encode_telem_sample(uint8_t *buf, size_t buf_sz,
@@ -95,9 +104,15 @@ int thermal_wire_encode_cmd_nack(uint8_t *buf, size_t buf_sz,
 
 /* === Outer-frame decoder =========================================
  * Reads the header, validates magic / version / payload_len <
- * receive_cap / opcode-in-range / (optional) CRC; populates
- * `out`.  Does NOT decode the per-opcode payload — call one of
- * the payload decoders below using the resulting frame view.
+ * receive_cap / opcode-in-range, and reads the 2 trailing CRC
+ * bytes (always present on the wire).  When `crc_enabled = 1`, the
+ * trailing 2 bytes must match the CRC-16/CCITT-FALSE over the
+ * header + payload; mismatch returns ERR_BAD_CRC.  When
+ * `crc_enabled = 0`, the trailing 2 bytes are read and skipped
+ * regardless of their value (they are informational on transports
+ * that allow CRC-disabled frames, per PRD §7.2 lines 920-921).
+ * Populates `out`.  Does NOT decode the per-opcode payload — call
+ * one of the payload decoders below using the resulting frame view.
  *
  * Returns THERMAL_WIRE_OK on success, otherwise a negative
  * thermal_wire_status_t.
