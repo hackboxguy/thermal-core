@@ -209,8 +209,10 @@ build/car-can-emulator/car-can-emulator: tools/car-can-emulator/CMakeLists.txt
 
 integration-can: build build/car-can-emulator/car-can-emulator \
                  test/integration/test_canbus_obd2.py \
+                 test/integration/test_canbus_busloss.py \
                  test/integration/canbus-config.json
 	@python3 test/integration/test_canbus_obd2.py
+	@python3 test/integration/test_canbus_busloss.py
 
 # --- Fuzz: libFuzzer over the JSON loader (needs clang) ---
 # Not part of `make all` -- it runs for 60 s.  CI runs it as a
