@@ -54,7 +54,9 @@ from scenario import parse_scenario, ZoneInit   # noqa: E402
 # === Tunables ========================================================
 
 DAEMON_PATH        = ROOT / "build" / "platform-linux" / "thermalcored"
+EMULATOR_PATH      = ROOT / "build" / "car-can-emulator" / "car-can-emulator"
 CLOCK_SOCKET_PATH  = "/tmp/thermalcored-scenario-clock.sock"
+EMULATOR_TCP_PORT  = 8080
 SETTLE_MS          = 20    # post-TICK wait for daemon's actuator write
 
 # Default fan curve installed on every zone unless a scenario
@@ -160,10 +162,32 @@ def init_plant_from_scenario(plant: Plant,
         plant.set_fan_curve(z, DEFAULT_FAN_CURVE)
 
 
+def _set_emulator_speed(kmh: int) -> None:
+    """Open a short-lived TCP connection to the emulator's control
+    port and send `speed N`.  Silently swallows ConnectionRefused
+    (e.g. after kill_emulator -- emulator is gone)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect(("127.0.0.1", EMULATOR_TCP_PORT))
+        s.sendall(f"speed {kmh}\n".encode())
+        try:
+            s.recv(256)
+        except socket.timeout:
+            pass
+        s.close()
+    except (ConnectionRefusedError, OSError):
+        pass
+
+
 def apply_commands(commands: list, now_ms: int, dt_ms: int,
-                    plant: Plant, overrides: Overrides) -> None:
+                    plant: Plant, overrides: Overrides,
+                    emulator_ref: dict) -> None:
     """Fire any scheduled commands whose timestamp falls in
-    [now_ms, now_ms + dt_ms)."""
+    [now_ms, now_ms + dt_ms).  `emulator_ref` is a single-entry
+    dict {'proc': subprocess.Popen|None} so the kill_emulator
+    handler can mutate it (otherwise the caller wouldn't see the
+    update)."""
     while commands and commands[0][0] < now_ms + dt_ms:
         ts, cmd, args = commands.pop(0)
         if cmd == "freeze_input":
@@ -178,6 +202,17 @@ def apply_commands(commands: list, now_ms: int, dt_ms: int,
             plant.set_load_w_q16(int(args[0]), int(args[1]))
         elif cmd == "set_plant_fan_max_q16":
             plant.set_fan_max_q16(int(args[0]), int(args[1]))
+        elif cmd == "set_emulator_speed":
+            _set_emulator_speed(int(args[0]))
+        elif cmd == "kill_emulator":
+            proc = emulator_ref.get("proc")
+            if proc is not None and proc.poll() is None:
+                proc.send_signal(pysignal.SIGTERM)
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                emulator_ref["proc"] = None
         # Unknown commands already rejected by the parser.
 
 
@@ -192,6 +227,21 @@ def resolve_paths(daemon_cfg: dict) -> tuple[list, list, list]:
         [Path(a.get("tach", "")) if a.get("tach") else None
          for a in actuators],
     )
+
+
+def detect_can_iface(daemon_cfg: dict) -> str | None:
+    """Return the kernel CAN iface name (e.g. 'vcan0') iff the
+    daemon config has a context source of the form 'canbus:<iface>'.
+    None otherwise."""
+    for c in daemon_cfg.get("context_signals", []):
+        src = str(c.get("source", ""))
+        if src.startswith("canbus:"):
+            return src.split(":", 1)[1]
+    return None
+
+
+def vcan_available(iface: str) -> bool:
+    return Path(f"/sys/class/net/{iface}").exists()
 
 
 def name_to_slot(daemon_cfg: dict, kind: str, name: str) -> int | None:
@@ -239,6 +289,23 @@ def main(argv=None) -> int:
     daemon_cfg = json.loads(cfg_path.read_text())
     control_period_ms = int(daemon_cfg.get("control_period_ms", 100))
 
+    # CAN dependency: if the daemon config sources vehicle_speed (or
+    # any context) from `canbus:<iface>`, this scenario needs vcan.
+    can_iface = detect_can_iface(daemon_cfg)
+    if can_iface is not None and not vcan_available(can_iface):
+        scn_name = Path(args.scenario).stem
+        print(f"scenario: SKIP {scn_name} (no {can_iface}; install with "
+              f"`sudo modprobe vcan && sudo ip link add dev {can_iface} "
+              f"type vcan && sudo ip link set up {can_iface}`)")
+        return 0
+    if can_iface is not None and not EMULATOR_PATH.exists():
+        sys.stderr.write(
+            f"scenario-runner: emulator binary missing at {EMULATOR_PATH}\n"
+            f"  run `cmake -S tools/car-can-emulator -B "
+            f"build/car-can-emulator && cmake --build "
+            f"build/car-can-emulator` first\n")
+        return 1
+
     duration_ms = scn.duration_ms
     zones = scn.zones[:scn.zone_count] or [ZoneInit()]
 
@@ -259,6 +326,26 @@ def main(argv=None) -> int:
 
     overrides = Overrides()
     pending_commands = sorted(scn.commands, key=lambda c: c[0])
+
+    # === Spawn car-can-emulator if this scenario needs CAN ===========
+    emulator_ref = {"proc": None}
+    emu_log = None
+    if can_iface is not None:
+        emu_log = Path(f"/tmp/car-can-emulator-scenario.log").open("w")
+        emulator_ref["proc"] = subprocess.Popen(
+            [str(EMULATOR_PATH),
+             f"--node={can_iface}",
+             f"--port={EMULATOR_TCP_PORT}"],
+            stdout=emu_log, stderr=emu_log)
+        # Let the emulator come up before the daemon tries to open
+        # its CAN socket.
+        time.sleep(0.5)
+        if emulator_ref["proc"].poll() is not None:
+            emu_log.close()
+            sys.stderr.write(
+                f"scenario-runner: emulator exited early "
+                f"(rc={emulator_ref['proc'].returncode})\n")
+            return 1
 
     # === Spawn daemon =================================================
     log_path = Path(f"/tmp/thermalcored-scenario.log")
@@ -291,7 +378,7 @@ def main(argv=None) -> int:
         while now_ms <= duration_ms:
             # 1. Apply any commands scheduled in [now_ms, now_ms+dt).
             apply_commands(pending_commands, now_ms, control_period_ms,
-                            plant, overrides)
+                            plant, overrides, emulator_ref)
 
             # 2. Read PWM(s) the daemon wrote at the end of its
             #    previous tick.  pwms[i] = actuator i's PWM (0..255).
@@ -336,6 +423,16 @@ def main(argv=None) -> int:
         except subprocess.TimeoutExpired:
             daemon.kill()
         log.close()
+        # Reap emulator if the scenario didn't already kill it.
+        emu_proc = emulator_ref.get("proc")
+        if emu_proc is not None and emu_proc.poll() is None:
+            emu_proc.send_signal(pysignal.SIGTERM)
+            try:
+                emu_proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                emu_proc.kill()
+        if emu_log is not None:
+            emu_log.close()
         try:
             os.unlink(CLOCK_SOCKET_PATH)
         except FileNotFoundError:

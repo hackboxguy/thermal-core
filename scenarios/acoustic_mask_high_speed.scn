@@ -1,0 +1,35 @@
+# scenarios/acoustic_mask_high_speed.scn
+#
+# PRD section 9.1 row 7: "Vehicle speed sweep 0 -> 130 km/h;
+# verify cap releases, trip offset applied."
+#
+# Plant heats into the critical band so the daemon WOULD command
+# state_pwm[3] = 220 absent the modifier.  Emulator sweeps speed:
+# 0 (cap=180) -> 50 (cap~218) -> 130 (cap=255, clamp).  After the
+# sweep, PWM should be allowed to reach the high-end value.
+
+config test/integration/scenario-config-canbus.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 92000
+plant duration_ms     30000
+
+# Initially: low speed -> low cap.
+0     set_emulator_speed 0
+
+# Mid-sweep at t=10 s -> higher cap.
+10000 set_emulator_speed 50
+
+# High-speed at t=20 s -> cap is now 255 (no clipping).
+20000 set_emulator_speed 130
+
+# Within the low-speed window the modifier caps PWM at the
+# low-end value (180).
+assert max actuator_pwm 0 <= 200 between 0 8000
+
+# Once speed reaches 130, the modifier's cap is 255 and the
+# daemon's critical trip can drive PWM up past 200.  Filter
+# time constant ~1.5 s; allow 7 s post-step to settle.
+assert eventually actuator_pwm 0 >= 220 within 30000
+
+assert no_faults

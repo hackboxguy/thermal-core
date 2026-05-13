@@ -155,6 +155,56 @@ jobs:
       - name: Run canonical scenarios
         run: make scenario
 
+  # Stage 12 12d: CAN-dependent canonical scenarios.  Provisions
+  # vcan0 + builds car-can-emulator (same shape as integration-can
+  # from Stage 11), then runs `make scenario` -- the CAN scenarios
+  # auto-detect the iface and run for real instead of SKIPping.
+  scenario-can-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Provision vcan0
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+          ip link show vcan0
+      - name: Build car-can-emulator
+        run: |
+          cmake -S tools/car-can-emulator -B build/car-can-emulator
+          cmake --build build/car-can-emulator
+      - name: Build daemon + libplant
+        run: make build
+      - name: Run all scenarios (CAN scenarios run for real here)
+        run: make scenario
+
+  # Stage 12 12d: determinism gate (v1 Linux release-gate).
+  # Mode A: same-build run-twice SHA-256.
+  # Mode B: gcc-vs-clang SHA-256.
+  # Q16.16 plant + --clock=scenario daemon + byte-stable CSV from
+  # the probe must produce identical CSV bytes across runs and
+  # across compilers.
+  determinism-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run determinism gate
+        run: make determinism
+
   integration-can:
     runs-on: ubuntu-latest
     steps:

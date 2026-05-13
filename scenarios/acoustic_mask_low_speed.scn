@@ -1,0 +1,30 @@
+# scenarios/acoustic_mask_low_speed.scn
+#
+# PRD section 9.1 row 6: "Vehicle speed = 0; verify PWM cap
+# applied; temperature trends with cap engaged."
+#
+# Plant heats into the warn band; emulator broadcasts speed = 0
+# the whole time; acoustic_mask modifier caps PWM at the curve's
+# (0, 180) endpoint.  Daemon's step_wise governor would normally
+# pick cooling_state 1 -> state_pwm[1] = 100, well below the
+# cap, so the cap is mostly informational here -- but if the
+# zone climbed into critical (state_pwm[3] = 220) the cap would
+# clip at 180.
+
+config test/integration/scenario-config-canbus.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 75000
+plant duration_ms     15000
+
+# Lock vehicle speed at 0 km/h from t=0.
+0 set_emulator_speed 0
+
+# Plant climbs into warn (>= 70000) almost immediately; eventually
+# state_pwm[1] = 100 is requested.
+assert eventually actuator_pwm 0 >= 100 within 5000
+
+# Whole scenario: PWM stays <= the modifier's low-speed cap of 180.
+assert max actuator_pwm 0 <= 200 between 0 15000
+
+assert no_faults

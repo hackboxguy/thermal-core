@@ -1,0 +1,36 @@
+# scenarios/can_bus_loss.scn
+#
+# PRD section 9.1 row 10: "Cut CAN; verify fail-safe to
+# assume_stationary after the configured context timeout_ms."
+#
+# 1. Plant heats into critical so the daemon wants high PWM.
+# 2. Emulator broadcasts speed=100 km/h, so the modifier's cap
+#    relaxes (curve(100)=255) and PWM can climb past 200.
+# 3. Kill the emulator at t=10 s.
+# 4. After timeout_ms (3 s), the context filter flips invalid,
+#    fail_safe=assume_stationary kicks in, modifier reverts to
+#    speed=0 -> cap=180.  PWM must drop to <= 200.
+
+config test/integration/scenario-config-canbus.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 92000
+plant duration_ms     20000
+
+# Speed = 100 km/h -> high-speed cap = 255 (no clipping).
+0     set_emulator_speed 100
+
+# Cut CAN at t=10 s.  emulator stops broadcasting; daemon's CAN
+# cache expires after timeout_ms (3 s); modifier sees stale
+# filter -> fail_safe -> effective_value = 0 -> cap = 180.
+10000 kill_emulator
+
+# Pre-loss: high speed is locked in by t=5 s and PWM rises to
+# >= 220 (critical state).
+assert eventually actuator_pwm 0 >= 220 within 8000
+
+# Post-loss + grace (timeout_ms 3 s + IIR + tick boundary):
+# PWM is clamped back at <= 200 from t=16 s onward.
+assert max actuator_pwm 0 <= 200 between 16000 20000
+
+assert no_faults

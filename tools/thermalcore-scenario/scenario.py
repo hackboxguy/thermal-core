@@ -103,7 +103,7 @@ _PER_ZONE_INT_FIELDS = {
 # 12b shorthand fields (apply to zone 0 implicitly).
 _PLANT_SHORTHAND_FIELDS = {"ambient_mc", "initial_temp_mc"}
 
-# 12c commands the runner knows how to apply.
+# 12c / 12d commands the runner knows how to apply.
 _KNOWN_COMMANDS = {
     "freeze_input",
     "unfreeze_input",
@@ -111,6 +111,9 @@ _KNOWN_COMMANDS = {
     "unfreeze_tach",
     "set_plant_load_w_q16",
     "set_plant_fan_max_q16",
+    # 12d: CAN-scenario commands.
+    "set_emulator_speed",
+    "kill_emulator",
 }
 
 
@@ -391,6 +394,15 @@ def _parse_command(scn: Scenario, tokens: list[str]) -> None:
                 f"`{cmd} <zone> <q16>` needs exactly 2 args")
         _to_int(args[0], f"{cmd} zone")
         _to_int(args[1], f"{cmd} q16")
+    elif cmd == "set_emulator_speed":
+        if len(args) != 1:
+            raise ScenarioParseError(
+                "`set_emulator_speed <kmh>` needs exactly 1 arg")
+        _to_int(args[0], "set_emulator_speed kmh")
+    elif cmd == "kill_emulator":
+        if len(args) != 0:
+            raise ScenarioParseError(
+                "`kill_emulator` takes no args")
     scn.commands.append((ts_ms, cmd, args))
 
 

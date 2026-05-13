@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario fuzz-json fuzz-wire coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -195,6 +195,18 @@ scenario: build build/tools/thermalcore-scenario/libplant.so \
 	    python3 tools/thermalcore-scenario/run.py $$s; \
 	done
 	@echo "scenario: ALL PASS"
+
+# --- Determinism gate (Stage 12 12d, v1 Linux release-gate) ---
+# Same-build run-twice + gcc-vs-clang SHA-256 over the captured
+# telemetry CSVs.  Q16.16 plant + --clock=scenario daemon +
+# byte-stable CSV from the probe (12b) together promise
+# byte-equal output across runs and across compilers.
+determinism: build build/tools/thermalcore-scenario/libplant.so \
+             tools/thermalcore-scenario/check_determinism.py \
+             tools/thermalcore-scenario/run.py \
+             $(SCENARIO_FILES)
+	@python3 tools/thermalcore-scenario/check_determinism.py --twice
+	@python3 tools/thermalcore-scenario/check_determinism.py --cross-compiler
 
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \
