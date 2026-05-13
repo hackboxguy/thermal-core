@@ -1,28 +1,32 @@
 /* platform/esp32_idf/main/main.c
  *
- * Stage 13 13a -- ESP32-C3 STANDALONE app_main scaffold.
+ * Stage 13 13b -- ESP32-C3 STANDALONE app_main with
+ * thermal_core_step().
  *
- * Reproduces the user's existing esp32-thermal-core firmware
- * behaviour (linear temp -> duty + 3% hysteresis) but in the
- * canonical project layout: three BSP wrappers + a thin
- * app_main.  13b will replace the inline policy block (marked
- * below) with `thermal_core_step()` against a static
- * thermal_config_t generated from configs/minimal-1zone-1fan.json
- * by tools/json2static.py.
+ * The same portable C99 core/ source that builds the Linux
+ * daemon is linked here unchanged.  The static thermal_config_t
+ * (G_THERMAL_CFG) is generated at build time by
+ * tools/json2static.py from configs/esp32-c3-standalone.json.
  *
- * All math is integer Q16.16 -- no float in app_main, no FPU
- * dependency.  The DS18B20 driver returns float internally;
- * `bsp_esp32_sensor_read_mc` is the only file that crosses that
- * boundary, converting float Celsius into int32 millicelsius.
- *
- * Hardware (matches the user's working board):
+ * Pin map (matches the user's working bench):
  *   GPIO 4 -- fan PWM out (25 kHz, 3.3 V)
  *   GPIO 5 -- fan tach in (10k pull-up to 3.3 V)
  *   GPIO 6 -- DS18B20 1-Wire data (4.7k pull-up to 3.3 V)
+ *
+ * Cadence:
+ *   - DS18B20 conversion takes <= 750 ms; we read the sensor
+ *     once per second.
+ *   - thermal_core_step() runs every control_period_ms (= 100
+ *     ms from G_THERMAL_CFG); the snapshot re-uses the most
+ *     recent valid sensor reading between conversions.
+ *   - The user-facing status line prints once per second.
+ *
+ * See PRD section 4.2 + 8.3 and impl-plan section 5 Stage 13.
  */
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,111 +36,130 @@
 #include "bsp_esp32_pwm.h"
 #include "bsp_esp32_tach.h"
 #include "bsp_esp32_sensor.h"
+#include "esp32_callbacks.h"
 
-#define PIN_FAN_PWM     4
-#define PIN_FAN_TACH    5
-#define PIN_ONEWIRE     6
+#include "thermal_core.h"
+#include "thermal_types.h"
+#include "thermal_signals.h"
+#include "thermal_config.h"
 
-#define PWM_FREQ_HZ     25000
+#define PIN_FAN_PWM      4
+#define PIN_FAN_TACH     5
+#define PIN_ONEWIRE      6
+#define PWM_FREQ_HZ      25000
 
-/* Q16.16 fixed-point constants -- no float in app_main. */
-#define Q16_ONE         65536
-#define DUTY_IDLE_Q16   ((Q16_ONE * 20) / 100)     /* 0.20 */
-#define DUTY_FULL_Q16   Q16_ONE                     /* 1.00 */
-#define DUTY_HYST_Q16   ((Q16_ONE * 3)  / 100)     /* 0.03 */
-
-#define TEMP_MIN_MC     30000   /* at/below -> idle duty */
-#define TEMP_MAX_MC     60000   /* at/above -> full duty */
-#define TEMP_BAD_MC     INT32_MIN
-
-#define LOOP_PERIOD_MS  1000
+extern const thermal_config_t G_THERMAL_CFG;
 
 static const char *TAG = "thermal";
 
-/* Linear temp_mc -> Q16.16 duty fraction, then to a 0..255
- * PWM register value.  Behaviour matches the user's existing
- * temp_to_duty(float) but with int64 intermediates so
- * overflow is impossible across the full temp range. */
-static uint8_t temp_to_pwm(int32_t temp_mc)
-{
-    int32_t duty_q16;
-    if (temp_mc == TEMP_BAD_MC || temp_mc >= TEMP_MAX_MC) {
-        duty_q16 = DUTY_FULL_Q16;
-    } else if (temp_mc <= TEMP_MIN_MC) {
-        duty_q16 = DUTY_IDLE_Q16;
-    } else {
-        int64_t k_q16 = ((int64_t)(temp_mc - TEMP_MIN_MC) * Q16_ONE) /
-                        (int64_t)(TEMP_MAX_MC - TEMP_MIN_MC);
-        duty_q16 = DUTY_IDLE_Q16 +
-                   (int32_t)((k_q16 * (DUTY_FULL_Q16 - DUTY_IDLE_Q16))
-                              / Q16_ONE);
-    }
-    int64_t pwm = ((int64_t)duty_q16 * 255) / Q16_ONE;
-    if (pwm < 0)   pwm = 0;
-    if (pwm > 255) pwm = 255;
-    return (uint8_t)pwm;
-}
-
 void app_main(void)
 {
-    ESP_LOGI(TAG, "thermal-core ESP32-C3 STANDALONE (Stage 13 13a)");
+    ESP_LOGI(TAG, "thermal-core ESP32-C3 STANDALONE (Stage 13 13b)");
 
     if (bsp_esp32_pwm_init(PIN_FAN_PWM, PWM_FREQ_HZ) != 0) return;
     if (bsp_esp32_tach_init(PIN_FAN_TACH)            != 0) return;
     int sensor_ok = (bsp_esp32_sensor_init(PIN_ONEWIRE) == 0);
 
-    /* Start at idle duty so the fan spins up cleanly. */
-    uint8_t pwm_applied = temp_to_pwm(TEMP_MIN_MC);
-    bsp_esp32_pwm_set_duty(pwm_applied);
+    thermal_core_t            core;
+    thermal_core_callbacks_t  cb = {
+        .log_event      = esp32_log_event_cb,
+        .telemetry_emit = esp32_telemetry_emit_cb,
+    };
+    thermal_status_t init_s = thermal_core_init(&core, &G_THERMAL_CFG, &cb);
+    if (init_s != THERMAL_OK) {
+        ESP_LOGE(TAG, "thermal_core_init failed: %d", (int)init_s);
+        return;
+    }
+
+    /* Cached sensor reading: refreshed once per second.  Between
+     * conversions every tick re-uses the last valid value. */
+    int32_t cached_temp_mc = INT32_MIN;
+    uint8_t cached_valid   = 0;
+
+    uint32_t now_ms        = 0;
+    int      ticks_since_read = 10;     /* force a read on tick 0 */
+    const uint16_t dt_ms   = G_THERMAL_CFG.control_period_ms;
 
     for (;;) {
-        int64_t t0 = esp_timer_get_time();
+        int64_t t0_us = esp_timer_get_time();
 
-        /* ---- Read sensors (BSP) ---- */
-        int32_t temp_mc = TEMP_BAD_MC;
-        if (sensor_ok) {
-            if (bsp_esp32_sensor_read_mc(&temp_mc) != 0) {
-                temp_mc = TEMP_BAD_MC;
+        /* === Step 1: refresh sensor at 1 Hz cadence ============= */
+        if (sensor_ok && ticks_since_read >= 10) {
+            int32_t temp_mc;
+            if (bsp_esp32_sensor_read_mc(&temp_mc) == 0) {
+                cached_temp_mc = temp_mc;
+                cached_valid   = 1;
+            } else {
+                cached_valid = 0;
             }
-        } else {
-            /* No sensor: pace the loop manually so the tach
-             * window stays ~1 s. */
-            vTaskDelay(pdMS_TO_TICKS(LOOP_PERIOD_MS - 200));
+            ticks_since_read = 0;
         }
+        ticks_since_read++;
 
-        /* ---- POLICY (13b will replace with thermal_core_step) ---- */
-        uint8_t pwm_target = temp_to_pwm(temp_mc);
-        int diff = (int)pwm_target - (int)pwm_applied;
-        if (diff < 0) diff = -diff;
-        int hyst_pwm = (DUTY_HYST_Q16 * 255) / Q16_ONE;   /* ~7 */
-        if (diff >= hyst_pwm) {
-            pwm_applied = pwm_target;
-            bsp_esp32_pwm_set_duty(pwm_applied);
-        }
-        /* ---- END policy ---- */
+        /* === Step 2: build input snapshot ====================== */
+        thermal_sample_t samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
+        uint8_t n = 0;
 
-        /* Pad to exactly LOOP_PERIOD_MS so the tach window is
-         * consistent. */
-        int64_t elapsed_us = esp_timer_get_time() - t0;
-        int64_t remaining_us = (int64_t)LOOP_PERIOD_MS * 1000 - elapsed_us;
-        if (remaining_us > 0) {
-            vTaskDelay(pdMS_TO_TICKS(remaining_us / 1000));
-        }
+        samples[n].id           = G_THERMAL_CFG.sensors[0].id;
+        samples[n].kind         = THERMAL_SAMPLE_TEMP_MC;
+        samples[n].sample_ts_ms = now_ms;
+        samples[n].value        = cached_temp_mc;
+        samples[n].valid        = cached_valid;
+        samples[n].quality      = 0;
+        n++;
 
         uint32_t ticks = bsp_esp32_tach_read_ticks_delta();
-        if (temp_mc == TEMP_BAD_MC) {
-            printf("T=  ERR    duty=%3u/255 (%3u%%)  tach=%4" PRIu32
-                   " ticks/s  (~%4" PRIu32 " RPM)\n",
-                   (unsigned)pwm_applied,
-                   (unsigned)((pwm_applied * 100u) / 255u),
-                   ticks, ticks * 30u);
-        } else {
-            printf("T=%6.2f C  duty=%3u/255 (%3u%%)  tach=%4" PRIu32
-                   " ticks/s  (~%4" PRIu32 " RPM)\n",
-                   (double)temp_mc / 1000.0,
-                   (unsigned)pwm_applied,
-                   (unsigned)((pwm_applied * 100u) / 255u),
-                   ticks, ticks * 30u);
+        samples[n].id           = G_THERMAL_CFG.actuators[0].id;
+        samples[n].kind         = THERMAL_SAMPLE_TACH_RPM;
+        samples[n].sample_ts_ms = now_ms;
+        samples[n].value        = (int32_t)(ticks * 30u);
+        samples[n].valid        = 1;
+        samples[n].quality      = 0;
+        n++;
+
+        thermal_input_snapshot_t snap = {
+            .now_ms       = now_ms,
+            .samples      = samples,
+            .sample_count = n,
+        };
+
+        /* === Step 3: tick the core ============================ */
+        thermal_output_frame_t out;
+        memset(&out, 0, sizeof(out));
+        (void)thermal_core_step(&core, &snap, &out);
+
+        /* === Step 4: apply actuator commands ================== */
+        for (uint8_t i = 0; i < out.actuator_cmd_count; i++) {
+            if (out.actuator_cmds[i].actuator_id ==
+                G_THERMAL_CFG.actuators[0].id) {
+                bsp_esp32_pwm_set_duty(out.actuator_cmds[i].duty_0_255);
+            }
+        }
+
+        /* === Step 5: once per second print the status line ==== */
+        if (ticks_since_read == 1) {     /* just refreshed */
+            int32_t temp_mc = esp32_callbacks_last_zone_temp_mc(0);
+            int32_t pwm_val = esp32_callbacks_last_actuator_pwm(0);
+            if (cached_valid) {
+                printf("T=%6.2f C  duty=%3" PRId32 "/255 (%3" PRId32
+                       "%%)  tach=%4" PRIu32 " ticks/s (~%4" PRIu32 " RPM)\n",
+                       (double)temp_mc / 1000.0,
+                       pwm_val, (pwm_val * 100) / 255,
+                       ticks, ticks * 30u);
+            } else {
+                printf("T=  ERR    duty=%3" PRId32 "/255 (%3" PRId32
+                       "%%)  tach=%4" PRIu32 " ticks/s (~%4" PRIu32 " RPM)\n",
+                       pwm_val, (pwm_val * 100) / 255,
+                       ticks, ticks * 30u);
+            }
+        }
+
+        /* Pace the next tick. */
+        now_ms += dt_ms;
+        int64_t elapsed_us = esp_timer_get_time() - t0_us;
+        int64_t remaining_us = (int64_t)dt_ms * 1000 - elapsed_us;
+        if (remaining_us > 0) {
+            vTaskDelay(pdMS_TO_TICKS(remaining_us / 1000));
         }
     }
 }
