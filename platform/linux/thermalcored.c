@@ -50,6 +50,8 @@
 #include "config_jsmn.h"
 #include "runtime_cfg.h"
 #include "bsp_mock_tmpfs.h"
+#include "bsp_socketcan.h"
+#include "obd2.h"
 #include "thermal_wire.h"
 #include "thermal_wire_opcodes.h"
 
@@ -68,6 +70,16 @@ static int                   g_telemetry_fd  = -1;
 static int                   g_control_fd    = -1;
 static uint16_t              g_out_seq       = 0;   /* wraps mod 65536 */
 static char                  g_scenario_path[THERMAL_PATH_MAX] = {0};
+
+/* SocketCAN BSP state (Stage 11 11b).  Inert (fd<0, slot<0) when
+ * the config has no `canbus:<iface>` context source.  When active,
+ * `g_canbus_context_slot` is the index into cfg.contexts[] / runtime.
+ * contexts[] that this BSP fulfils.  `g_canbus_next_request_ms`
+ * tracks the 1 Hz request cadence (PRD §6.2). */
+static int                     g_canbus_fd               = -1;
+static int                     g_canbus_context_slot     = -1;
+static uint32_t                g_canbus_next_request_ms  = 0;
+static bsp_socketcan_state_t   g_canbus_state;
 
 /* CRC on UDP loopback is on by default per PRD §7.2 line 921 (the
  * codec is exercised end-to-end and any single-bit corruption is
@@ -746,6 +758,36 @@ int main(int argc, char **argv)
                 "thermalcored: control plane disabled (control.enable=false)\n");
     }
 
+    /* SocketCAN BSP (Stage 11 11b): activate iff exactly one
+     * `runtime.contexts[i].source` begins with "canbus:".  The
+     * suffix is the kernel interface name (vcan0 / can0).  Multiple
+     * canbus: sources are rejected loudly; PRD §6 v1 covers a
+     * single OBD-II context. */
+    g_canbus_fd               = -1;
+    g_canbus_context_slot     = -1;
+    g_canbus_next_request_ms  = 0;
+    for (uint8_t i = 0; i < runtime.context_count; i++) {
+        const char *src = runtime.contexts[i].source;
+        if (strncmp(src, "canbus:", 7) != 0) continue;
+        if (g_canbus_context_slot >= 0) {
+            fprintf(stderr,
+                    "thermalcored: multiple canbus: context sources not supported in v1\n");
+            return 1;
+        }
+        const char *iface = src + 7;
+        int fd = bsp_socketcan_open(iface);
+        if (fd < 0) {
+            fprintf(stderr,
+                    "thermalcored: canbus source on '%s' failed to open\n", iface);
+            return 1;
+        }
+        g_canbus_fd           = fd;
+        g_canbus_context_slot = (int)i;
+        bsp_socketcan_state_init(&g_canbus_state,
+                                  cfg.contexts[i].timeout_ms,
+                                  OBD2_PID_VEHICLE_SPEED);
+    }
+
     /* === Core init =============================================== */
     thermal_core_t              core;
     thermal_core_callbacks_t    callbacks;
@@ -783,18 +825,70 @@ int main(int argc, char **argv)
         /* Step 1: drain queued commands (PRD §5 Stage 9). */
         drain_commands(&core, now_ms);
 
-        /* Step 2: build snapshot from current BSP state. */
+        /* Step 1.5: poll the SocketCAN BSP if a canbus: context is
+         * configured.  Sends the OBD-II request at 1 Hz (cadence
+         * tracked inside g_canbus_next_request_ms) and drains all
+         * pending response frames non-blockingly. */
+        if (g_canbus_fd >= 0) {
+            (void)bsp_socketcan_poll(&g_canbus_state, g_canbus_fd,
+                                      now_ms, &g_canbus_next_request_ms);
+        }
+
+        /* Step 2: build snapshot from current BSP state.  Sensor +
+         * tach reads always come from bsp_mock_tmpfs; context reads
+         * dispatch per slot based on the source prefix
+         * (canbus: -> bsp_socketcan, else -> bsp_mock_tmpfs). */
         thermal_sample_t          samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
         thermal_input_snapshot_t  snap;
-        if (bsp_mock_tmpfs_build_snapshot(&runtime, &cfg, now_ms,
-                                          samples,
-                                          (uint8_t)(sizeof(samples) /
-                                                    sizeof(samples[0])),
-                                          &snap) != 0) {
+        uint8_t samples_max = (uint8_t)(sizeof(samples) / sizeof(samples[0]));
+        uint8_t need = cfg.sensor_count + cfg.actuator_count + cfg.context_count;
+        if (need > samples_max) {
             fprintf(stderr,
                     "thermalcored: build_snapshot failed (samples budget too small?)\n");
             break;
         }
+        uint8_t n = 0;
+        int build_failed = 0;
+        for (uint8_t i = 0; i < cfg.sensor_count; i++) {
+            if (bsp_mock_tmpfs_read_sensor(&runtime, &cfg, i, now_ms,
+                                            &samples[n]) != 0) {
+                build_failed = 1; break;
+            }
+            n++;
+        }
+        if (!build_failed) {
+            for (uint8_t i = 0; i < cfg.actuator_count; i++) {
+                if (bsp_mock_tmpfs_read_tach(&runtime, &cfg, i, now_ms,
+                                              &samples[n]) != 0) {
+                    build_failed = 1; break;
+                }
+                n++;
+            }
+        }
+        if (!build_failed) {
+            for (uint8_t i = 0; i < cfg.context_count; i++) {
+                int rc2;
+                if ((int)i == g_canbus_context_slot) {
+                    rc2 = bsp_socketcan_read_into_sample(&g_canbus_state,
+                                                          cfg.contexts[i].id,
+                                                          now_ms,
+                                                          &samples[n]);
+                } else {
+                    rc2 = bsp_mock_tmpfs_read_context(&runtime, &cfg, i,
+                                                       now_ms, &samples[n]);
+                }
+                if (rc2 != 0) { build_failed = 1; break; }
+                n++;
+            }
+        }
+        if (build_failed) {
+            fprintf(stderr,
+                    "thermalcored: build_snapshot failed (samples budget too small?)\n");
+            break;
+        }
+        snap.now_ms       = now_ms;
+        snap.samples      = samples;
+        snap.sample_count = n;
 
         /* Step 3: core step (telemetry + log callbacks fire inside). */
         thermal_output_frame_t out;
@@ -820,6 +914,10 @@ int main(int argc, char **argv)
     if (g_control_fd >= 0) {
         close(g_control_fd);
         g_control_fd = -1;
+    }
+    if (g_canbus_fd >= 0) {
+        bsp_socketcan_close(g_canbus_fd);
+        g_canbus_fd = -1;
     }
     closelog();
     return 0;

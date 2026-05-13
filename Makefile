@@ -125,6 +125,21 @@ build/test/test_obd2: \
 	    -o $@ test/unit/test_obd2.c \
 	    protocol/obd2.c $(LDFLAGS_EXTRA)
 
+# --- Special: bsp_socketcan synthetic-frame BSP test (Stage 11 11b) ---
+# Links the Linux BSP module + the portable codec.  No socket I/O
+# in the unit test itself; bsp_socketcan_handle_frame is driven
+# directly with byte arrays.
+build/test/test_bsp_socketcan: \
+    test/unit/test_bsp_socketcan.c test/unit/harness.h \
+    platform/linux/bsp_socketcan.c platform/linux/bsp_socketcan.h \
+    protocol/obd2.c protocol/obd2.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux -I protocol \
+	    -o $@ test/unit/test_bsp_socketcan.c \
+	    platform/linux/bsp_socketcan.c \
+	    protocol/obd2.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \
     test/unit/test_config_hash.c test/unit/harness.h \

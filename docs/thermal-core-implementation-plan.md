@@ -391,6 +391,7 @@ The `protocol/` module is portable C99 with no heap and no platform deps. It lin
 **Stage 11 actual deliverables (in progress):**
 
 - **Shipped 11a:** `protocol/obd2.{c,h}` — portable C99 codec for OBD-II Service 01 single-byte PIDs.  Two entry points (`obd2_encode_request_byte`, `obd2_decode_response_byte`); 11 unit scenarios cover the request byte pattern, three response values (0 / 120 / 255 km/h), and five distinct failure modes (`BAD_SHAPE`, `WRONG_PCI_LEN`, `NEGATIVE_RESPONSE`, `WRONG_SERVICE`, `WRONG_PID`).  No socket I/O, no submodule — that lands in 11b / 11c.
+- **Shipped 11b:** `platform/linux/bsp_socketcan.{c,h}` — wraps the 11a codec around `AF_CAN/SOCK_RAW` plumbing on a configurable interface.  Daemon scans `runtime.contexts[]` at startup for a source beginning with `"canbus:"` and opens the matching SocketCAN socket; the tick loop polls at 1 Hz (PRD §6.2) and dispatches snapshot context reads per-slot (`canbus:` → bsp_socketcan, else → bsp_mock_tmpfs).  PRD §6.3 fail-safe falls out for free: stale CAN data flips the sample's `valid` bit to 0, which `acoustic_mask` consumes as `assume_stationary`.  7 unit scenarios drive the state-pure handler with synthetic frames (valid 120 km/h, wrong CAN ID, NRC, cold-start staleness, post-timeout staleness, wrong-PID, truncated frame).  No vcan0 integration test in CI yet — that lands in 11c with the `car-can-emulator` submodule.
 
 **Exit gate:** all previous + CAN integration test green.
 
