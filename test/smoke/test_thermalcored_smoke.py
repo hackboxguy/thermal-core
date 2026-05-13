@@ -39,7 +39,8 @@ UDP_HOST = "127.0.0.1"
 UDP_TELEM_PORT   = 9000
 UDP_CONTROL_PORT = 9002
 
-TSIG_ZONE_TEMP_0 = 0x0100
+TSIG_ZONE_TEMP_0          = 0x0100
+TEVENT_COMMAND_APPLIED    = 0x1200
 
 
 def fail(msg: str) -> None:
@@ -96,43 +97,45 @@ def main() -> int:
             fail(f"daemon never created clock socket {CLOCK_PATH}")
         time.sleep(0.05)
 
-    # Drive 5 ticks (smoke-config period_ticks=1 -> 3 signals per tick = 15 frames).
-    clk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    clk.connect(CLOCK_PATH)
-    clk.sendall(b"TICK 100\nTICK 200\nTICK 300\nTICK 400\nTICK 500\n")
-
-    # Collect telemetry frames.
-    frames = []
-    try:
-        while len(frames) < 15:
-            data, _ = udp.recvfrom(256)
-            frames.append(data)
-    except socket.timeout:
-        pass
-
-    # Send a CMD_SET_TRIP and wait for the ACK.  SET_TRIP works on
-    # any governor (the PID-only commands would NACK against the
+    # Send the CMD_REQUEST *before* the first TICK so the daemon
+    # drains it on TICK 100 and the resulting
+    # TEVENT_COMMAND_APPLIED carries ts_ms = 100 (timestamp-
+    # propagation assertion below).  SET_TRIP works on any
+    # governor (the PID-only commands would NACK against the
     # smoke config's step_wise zone).
     REQUEST_SEQ = 7
+    EXPECTED_CMD_TS = 100
     payload = w.encode_set_trip(zone_id=0, trip_idx=0,
                                 temp_mc=72000, hyst_mc=2000)
     cmd_frame = w.encode_tc(w.OP_CMD_REQUEST, REQUEST_SEQ, ts_ms=999,
                             payload=payload, crc=True)
     cmd_sock.sendto(cmd_frame, (UDP_HOST, UDP_CONTROL_PORT))
+    # Tiny pause so the kernel UDP buffer holds the datagram by
+    # the time the daemon's drain_commands recvfrom runs.
+    time.sleep(0.05)
 
+    # Drive 5 ticks (period_ticks=1 -> 3 signals per tick + 1
+    # event frame on TICK 100 when the CMD is applied = 16 frames).
+    clk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    clk.connect(CLOCK_PATH)
+    clk.sendall(b"TICK 100\nTICK 200\nTICK 300\nTICK 400\nTICK 500\n")
+
+    # Collect telemetry frames; stay up to 16 (15 SAMPLEs + 1 EVENT).
+    frames = []
+    try:
+        while len(frames) < 16:
+            data, _ = udp.recvfrom(256)
+            frames.append(data)
+    except socket.timeout:
+        pass
+
+    # Read the ACK that the daemon sent back on the control port
+    # after applying the queued CMD on TICK 100.
     ack_decoded = None
     try:
-        # The daemon drains commands at each tick; one more TICK
-        # makes the queued CMD_REQUEST get serviced.
-        clk.sendall(b"TICK 600\n")
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            data, _ = cmd_sock.recvfrom(256)
-            dec = w.decode_tc(data, crc=True)
-            if dec is None:
-                continue
-            ack_decoded = dec
-            break
+        cmd_sock.settimeout(1.0)
+        data, _ = cmd_sock.recvfrom(256)
+        ack_decoded = w.decode_tc(data, crc=True)
     except socket.timeout:
         pass
 
@@ -193,6 +196,30 @@ def main() -> int:
         fail(f"CMD_ACK echoed request_seq={request_seq}, expected {REQUEST_SEQ}")
     if status != 0:
         fail(f"CMD_ACK status={status}, expected 0 (THERMAL_OK)")
+
+    # Timestamp-propagation assertion (Stage 10 10d): the daemon
+    # services the queued CMD_REQUEST on TICK 100 and the resulting
+    # TEVENT_COMMAND_APPLIED's ts_ms must equal that tick's
+    # now_ms (impl-plan section 5 Stage 10 + PRD section 4.4).
+    saw_event = False
+    for raw in frames:
+        dec = w.decode_tc(raw, crc=True)
+        if dec is None:
+            continue
+        opc, _seq, ts_ms, ev_payload = dec
+        if opc != w.OP_TELEM_EVENT or len(ev_payload) != 18:
+            continue
+        code = struct.unpack("<H", ev_payload[0:2])[0]
+        if code != TEVENT_COMMAND_APPLIED:
+            continue
+        saw_event = True
+        if ts_ms != EXPECTED_CMD_TS:
+            fail(f"TEVENT_COMMAND_APPLIED ts_ms={ts_ms}, "
+                 f"expected {EXPECTED_CMD_TS} (timestamp propagation)")
+        break
+    if not saw_event:
+        fail(f"no TEVENT_COMMAND_APPLIED (code 0x{TEVENT_COMMAND_APPLIED:04x}) "
+             f"in the captured telemetry stream")
 
     print("smoke: PASS")
     return 0

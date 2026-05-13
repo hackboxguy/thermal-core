@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration fuzz-json coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration fuzz-json fuzz-wire coverage clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -213,6 +213,45 @@ build/fuzz/fuzz_jsmn: \
 	    -o $@ test/fuzz/fuzz_jsmn.c \
 	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
 	    $(FUZZ_CORE_ARCHIVE)
+
+# --- Fuzz-wire: libFuzzer over protocol/thermal_wire.c (Stage 10 10d) ----
+# Same shape as fuzz-json: protocol/ is compiled with $(FUZZ_CC)
+# -fsanitize=fuzzer-no-link,address,undefined into a per-fuzz archive
+# so SanitizerCoverage + ASan / UBSan apply to the decoder.  The final
+# fuzz_wire link adds -fsanitize=fuzzer for libFuzzer's main.
+FUZZ_PROTO_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic \
+                    -I core -I protocol \
+                    -O1 -g -fno-omit-frame-pointer \
+                    -fsanitize=fuzzer-no-link,address,undefined
+FUZZ_PROTO_OBJS    = build/fuzz/protocol/thermal_wire.o
+FUZZ_PROTO_ARCHIVE = build/fuzz/protocol/libthermal_protocol.a
+
+build/fuzz/protocol/%.o: protocol/%.c protocol/thermal_wire.h \
+                         protocol/thermal_wire_opcodes.h \
+                         core/thermal_commands.h
+	@mkdir -p build/fuzz/protocol
+	$(FUZZ_CC) $(FUZZ_PROTO_CFLAGS) -c -o $@ $<
+
+$(FUZZ_PROTO_ARCHIVE): $(FUZZ_PROTO_OBJS)
+	@mkdir -p build/fuzz/protocol
+	ar rcs $@ $^
+
+fuzz-wire: build/fuzz/fuzz_wire
+	@mkdir -p build/fuzz/wire-corpus build/fuzz/wire-artifacts
+	@build/fuzz/fuzz_wire -max_total_time=60 \
+	    -artifact_prefix=build/fuzz/wire-artifacts/ \
+	    build/fuzz/wire-corpus/ test/fuzz/wire-seeds/
+
+build/fuzz/fuzz_wire: \
+    test/fuzz/fuzz_wire.c \
+    protocol/thermal_wire.h protocol/thermal_wire_opcodes.h \
+    core/thermal_commands.h $(FUZZ_PROTO_ARCHIVE)
+	@mkdir -p build/fuzz
+	$(FUZZ_CC) -std=c99 -O1 -g \
+	    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+	    -I core -I protocol \
+	    -o $@ test/fuzz/fuzz_wire.c \
+	    $(FUZZ_PROTO_ARCHIVE)
 
 # --- Core archive ---
 build/core/%.o: core/%.c core/thermal_config.h

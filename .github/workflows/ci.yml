@@ -140,6 +140,15 @@ jobs:
       - name: Run libFuzzer over the JSON loader (60 s)
         run: make fuzz-json FUZZ_CC=clang
 
+  fuzz-wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Run libFuzzer over the wire decoder (60 s)
+        run: make fuzz-wire FUZZ_CC=clang
+
   coverage:
     runs-on: ubuntu-latest
     # impl-plan section 3 row 9 / section 5 Stage 9: visibility only,

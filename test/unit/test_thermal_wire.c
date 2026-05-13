@@ -327,4 +327,30 @@ TEST_CASE(thermal_wire) {
                                                  1, 0, 0, 0, 0, 0);
         EXPECT_EQ(n, THERMAL_WIRE_ERR_BUF_TOO_SMALL);
     }
+
+    /* === Scenario 18: u16 seq boundary (wraparound) =============== */
+    /* PRD section 7.2 line 937: seq wraps modulo 65536.  This
+     * scenario covers the wire-codec boundary: encode/decode at
+     * seq=65535 and seq=0 (post-wrap) must both round-trip cleanly.
+     * The host-side outstanding-window matching test (impl-plan
+     * section 5 Stage 10) requires an async client and lands when
+     * the Stage 12 scenario runner ships. */
+    {
+        uint8_t buf[64];
+        thermal_wire_frame_t fr;
+
+        int n = thermal_wire_encode_telem_sample(buf, sizeof(buf),
+                                                 0xFFFFu, 0, 0, 0, 0, 1);
+        EXPECT_EQ(thermal_wire_decode_frame(buf, (size_t)n,
+                                            THERMAL_WIRE_MAX_LINUX, 1, &fr),
+                  THERMAL_WIRE_OK);
+        EXPECT_EQ(fr.seq, 0xFFFFu);
+
+        n = thermal_wire_encode_telem_sample(buf, sizeof(buf),
+                                             0u, 0, 0, 0, 0, 1);
+        EXPECT_EQ(thermal_wire_decode_frame(buf, (size_t)n,
+                                            THERMAL_WIRE_MAX_LINUX, 1, &fr),
+                  THERMAL_WIRE_OK);
+        EXPECT_EQ(fr.seq, 0u);
+    }
 }
