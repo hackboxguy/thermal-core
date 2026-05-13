@@ -140,6 +140,30 @@ build/test/test_bsp_socketcan: \
 	    protocol/obd2.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Special: thermal-plant simulator unit test (Stage 12 12a) ---
+# Plant lives at tools/thermalcore-scenario/plant.{c,h}; depends on
+# core/thermal_curve.c (via thermal_curve_eval_y0) which is already
+# in the core archive.  Plant object is built with -fPIC so 12b's
+# Python runner can link it into a shared library for ctypes.
+build/tools/thermalcore-scenario/plant.o: \
+    tools/thermalcore-scenario/plant.c \
+    tools/thermalcore-scenario/plant.h \
+    core/thermal_curve.h core/thermal_types.h
+	@mkdir -p build/tools/thermalcore-scenario
+	$(CC) $(CFLAGS_BASE) -I tools/thermalcore-scenario -fPIC \
+	    -c -o $@ tools/thermalcore-scenario/plant.c
+
+build/test/test_plant: \
+    test/unit/test_plant.c test/unit/harness.h \
+    tools/thermalcore-scenario/plant.c \
+    tools/thermalcore-scenario/plant.h \
+    core/thermal_curve.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I tools/thermalcore-scenario \
+	    -o $@ test/unit/test_plant.c \
+	    tools/thermalcore-scenario/plant.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \
     test/unit/test_config_hash.c test/unit/harness.h \
@@ -591,7 +615,8 @@ build: $(CORE_ARCHIVE)
 # itself with a citation back to the upstream commit.
 clang-tidy:
 	@which clang-tidy >/dev/null || { echo "clang-tidy not installed"; exit 1; }
-	clang-tidy --quiet core/*.c platform/linux/*.c support/*.c protocol/*.c -- \
+	clang-tidy --quiet core/*.c platform/linux/*.c support/*.c protocol/*.c \
+	    tools/thermalcore-scenario/*.c -- \
 	    $(CFLAGS_BASE) -I platform/linux -I support -I protocol
 
 # --- cppcheck on core/ + platform/linux/ (Stage 9 9c scope extension).
@@ -610,7 +635,9 @@ cppcheck:
 	    --std=c99 \
 	    --suppressions-list=.cppcheck-suppressions \
 	    -I core -I platform/linux -I support -I protocol \
-	    core/*.c platform/linux/*.c support/*.c protocol/*.c
+	        -I tools/thermalcore-scenario \
+	    core/*.c platform/linux/*.c support/*.c protocol/*.c \
+	    tools/thermalcore-scenario/*.c
 
 clean:
 	rm -rf build

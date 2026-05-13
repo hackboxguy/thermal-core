@@ -423,6 +423,10 @@ All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PR
 
 **CI rigor added:** scenario, determinism.
 
+**Stage 12 actual deliverables (in progress):**
+
+- **Shipped 12a:** `tools/thermalcore-scenario/plant.{c,h}` — deterministic first-order thermal-plant simulator (PRD §9.3).  Q16.16 throughout (no float / no `<math.h>`); per-zone state (temp, ambient, load, heat capacity, ambient drift, fan curve, fan max, neighbor coupling) plus a 32-bit LCG PRNG and optional noise amplitude.  `plant_step` advances every zone using a pre-tick neighbor-temperature snapshot so multi-zone coupling is order-independent.  Re-uses `thermal_curve_eval_y0` from `core/thermal_curve.c` for the fan curve (no duplicated interpolation logic).  10 unit scenarios cover the documented invariants — init/read, no-load ambient pull, load-only rise, load + max-fan suppression, fan-curve x=0 endpoint clamp, coupling, order-independence, PRNG determinism without and with noise, PRNG separation across seeds.  Object built with `-fPIC` so 12b's Python runner can link it into a shared library for `ctypes.CDLL`.  No Python runner, no scenario parser, no canonical scenarios yet — those land in 12b/12c.
+
 **Exit gate:** all previous + scenario + determinism green. **This is the v1 Linux release-gate.**
 
 ---
