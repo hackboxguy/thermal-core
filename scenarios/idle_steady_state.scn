@@ -1,0 +1,19 @@
+# scenarios/idle_steady_state.scn
+#
+# PRD section 9.1 row 1: "All zones at ambient; verify no fan
+# activity, no false faults over 5 min."
+#
+# v1 12b runs a 10 s variant -- the 5-min benchmark form is
+# captured offline for the white paper, not in PR-gating CI.
+
+plant ambient_mc      50000
+plant initial_temp_mc 50000
+plant duration_ms     10000
+
+# No timestamped commands -- baseline test.
+
+# Daemon's step_wise zone trips at 70000 (warn) and 90000
+# (critical); at 50000 mc the fan must stay at PWM 0 over the
+# entire window.
+assert max actuator_pwm 0 <= 0 between 0 10000
+assert no_faults

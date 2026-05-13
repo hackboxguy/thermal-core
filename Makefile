@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can fuzz-json fuzz-wire coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario fuzz-json fuzz-wire coverage clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -163,6 +163,33 @@ build/test/test_plant: \
 	    -o $@ test/unit/test_plant.c \
 	    tools/thermalcore-scenario/plant.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- libplant.so for ctypes consumption (Stage 12 12b) ----
+# Shared library version of the plant; loaded by
+# tools/thermalcore-scenario/plant_ffi.py.  Reuses the -fPIC
+# plant.o that the test_plant rule already builds, plus the
+# core archive for thermal_curve_eval_y0.
+build/tools/thermalcore-scenario/libplant.so: \
+    build/tools/thermalcore-scenario/plant.o $(CORE_ARCHIVE)
+	@mkdir -p build/tools/thermalcore-scenario
+	$(CC) -shared -o $@ \
+	    build/tools/thermalcore-scenario/plant.o \
+	    $(CORE_ARCHIVE)
+
+# --- Scenario runner: drives the daemon under --clock=scenario
+# against the deterministic plant (Stage 12 12b).
+# Not folded into `make all` -- it spawns subprocesses + sockets.
+# 12c adds the CI job that runs it.
+scenario: build build/tools/thermalcore-scenario/libplant.so \
+          tools/thermalcore-scenario/run.py \
+          tools/thermalcore-scenario/plant_ffi.py \
+          tools/thermalcore-scenario/scenario.py \
+          tools/thermalcore-probe \
+          scenarios/idle_steady_state.scn \
+          test/integration/scenario-config.json
+	@python3 tools/thermalcore-scenario/run.py \
+	    scenarios/idle_steady_state.scn \
+	    test/integration/scenario-config.json
 
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \

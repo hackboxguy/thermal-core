@@ -1,0 +1,64 @@
+{
+  "config_version": 1,
+  "control_period_ms": 100,
+
+  "sensors": [
+    {
+      "id": 0,
+      "name": "soc",
+      "iir_alpha_q16": 16384,
+      "max_staleness_ms": 500,
+      "source": "/tmp/thermal-core-scenario/sensors/soc"
+    }
+  ],
+
+  "context_signals": [],
+
+  "actuators": [
+    {
+      "id": 0,
+      "name": "main_fan",
+      "pwm_min": 0,
+      "pwm_max": 255,
+      "slew_per_tick": 64,
+      "spinup_pwm": 0,
+      "spinup_ms": 0,
+      "state_pwm": [0, 100, 160, 220, 255],
+      "pwm": "/tmp/thermal-core-scenario/pwm1",
+      "tach": "/tmp/thermal-core-scenario/fan1_input",
+      "pwm_freq_hz": 25000,
+      "tach_pulses_per_rev": 2
+    }
+  ],
+
+  "zones": [
+    {
+      "name": "soc_zone",
+      "sensors": ["soc"],
+      "aggregation": "max",
+      "fallback_temp_mc": 85000,
+      "governor": "step_wise",
+      "actuators": ["main_fan"],
+      "trips": [
+        { "temp_mc": 70000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 1 },
+        { "temp_mc": 90000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 }
+      ]
+    }
+  ],
+
+  "policy_modifiers": [],
+
+  "fault_detection": {},
+
+  "telemetry": {
+    "enable": true,
+    "period_ticks": 1,
+    "signals": ["zone_temp_*", "actuator_pwm_*"],
+    "transport": "udp:127.0.0.1:9030"
+  },
+
+  "control": {
+    "listen": "",
+    "enable": false
+  }
+}

@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""tools/thermalcore-probe — CLI wrapper around thermalcore_probe.
+
+The actual implementation (ProbeRecorder, CSV writer, main entry)
+lives in `tools/thermalcore_probe.py` so it's importable as a
+module by the scenario runner.  This file is the executable shim
+documented in PRD section 7.4 (`thermalcore-probe --log out.csv`).
+"""
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import thermalcore_probe  # noqa: E402
+
+
+if __name__ == "__main__":
+    sys.exit(thermalcore_probe.main())
