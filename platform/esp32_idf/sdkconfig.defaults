@@ -1,0 +1,16 @@
+# Stage 13 13a: ESP32-C3 SuperMini target.
+#
+# Per impl-plan section 5 Stage 13 v1 ships C3.  C6 is a future
+# target should CAN/TWAI move back into the ESP32; flipping
+# CONFIG_IDF_TARGET below is the only required change.
+
+CONFIG_IDF_TARGET="esp32c3"
+
+# Route printf / ESP_LOG to the built-in USB-Serial-JTAG (the USB-C
+# port on the SuperMini board).  PRD section 8.3: telemetry over
+# USB-CDC.  13b will add TC binary frames on the same channel
+# alongside the human-readable log line.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# SuperMini board has 4 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
