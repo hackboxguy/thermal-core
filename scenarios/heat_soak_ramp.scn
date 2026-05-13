@@ -1,0 +1,39 @@
+# scenarios/heat_soak_ramp.scn
+#
+# PRD section 9.1 row 2: "SoC temperature ramps from 45 C to 90 C
+# over 60 s; capture fan response, settling time, overshoot."
+#
+# v1 12c approximates the ramp with 7 stepped freeze_input levels
+# over 30 s.  The daemon's step_wise governor must turn on the
+# fan once the warn trip (70000 mc) is crossed.
+
+config test/integration/scenario-config.json
+
+plant ambient_mc      45000
+plant initial_temp_mc 45000
+plant duration_ms     35000
+
+# Step the sensor through the ramp.  At each step the daemon's IIR
+# filter (alpha=0.25) tracks within ~1 s.
+0     freeze_input soc 45000
+5000  freeze_input soc 55000
+10000 freeze_input soc 65000
+15000 freeze_input soc 75000
+20000 freeze_input soc 82000
+25000 freeze_input soc 88000
+28000 freeze_input soc 92000
+
+# Once above the warn trip the fan must move off 0.  cooling_state
+# at warn = 1 -> state_pwm[1] = 100.
+assert eventually actuator_pwm 0 >= 100 within 20000
+
+# Once above the critical trip (90000) we should hit cooling_state
+# 3 -> state_pwm[3] = 220.
+assert eventually actuator_pwm 0 >= 220 within 32000
+
+# The sensor reached the high end of the ramp.
+assert eventually zone_temp 0 >= 88000 within 32000
+
+# No fault events should have fired (sensor moves smoothly enough,
+# fan is healthy).
+assert no_faults

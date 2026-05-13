@@ -136,6 +136,25 @@ jobs:
   # port, asserts the daemon's filtered speed telemetry converges.
   # Per impl-plan section 5 Stage 11 a SKIP on the canonical repo
   # blocks the Stage 11 exit gate -- no continue-on-error.
+  # Stage 12 12c: run every canonical .scn under scenarios/ on
+  # ubuntu-latest.  Each scenario drives the C plant + daemon under
+  # --clock=scenario and evaluates assertions against the captured
+  # telemetry CSV.  Non-CAN scenarios only; the CAN-dependent
+  # acoustic_mask + can_bus_loss scenarios land in 12d alongside
+  # the determinism gate.
+  scenario-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build daemon + libplant
+        run: make build
+      - name: Run canonical scenarios
+        run: make scenario
+
   integration-can:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,44 @@
+# scenarios/multi_zone_coupling.scn
+#
+# PRD section 9.1 row 7: "Amp and tuner zones heat simultaneously,
+# shared fan; verify max-wins arbitration."
+#
+# Two-zone plant: zones 0 (amp) and 1 (tuner) both receive heat
+# loads.  A small zone-to-zone coupling adds physical realism but
+# isn't load-bearing for the assertion -- the main check is that
+# the shared fan reaches cooling state 1 once either zone's
+# filtered sensor crosses the warn trip.
+
+config test/integration/scenario-config-multizone.json
+
+plant duration_ms     20000
+plant zone_count      2
+
+# Zone 0 (amp): start at 50 C with a moderate load; heat_capacity
+# tuned for ~2200 mc/s rise (warn trip at 70000 reached in ~9 s).
+plant zone 0 initial_temp_mc   50000
+plant zone 0 ambient_mc        50000
+plant zone 0 load_w_q16        6553600     # 100 W (Q16.16)
+plant zone 0 heat_capacity_q16 3000
+plant zone 0 ambient_drift_q16 1000
+plant zone 0 fan_max_q16       2000
+plant zone 0 coupling          1 1000      # bleed heat to zone 1
+
+# Zone 1 (tuner): symmetric -- same load, same plant params.
+plant zone 1 initial_temp_mc   50000
+plant zone 1 ambient_mc        50000
+plant zone 1 load_w_q16        6553600
+plant zone 1 heat_capacity_q16 3000
+plant zone 1 ambient_drift_q16 1000
+plant zone 1 fan_max_q16       2000
+plant zone 1 coupling          0 1000
+
+# Both zones reach warn (70000) within 15 s.
+assert eventually zone_temp 0 >= 70000 within 15000
+assert eventually zone_temp 1 >= 70000 within 15000
+
+# Shared fan reaches at least cooling state 1 (state_pwm[1] = 100)
+# thanks to max-wins arbitration (either zone is enough).
+assert eventually actuator_pwm 0 >= 100 within 15000
+
+assert no_faults

@@ -6,6 +6,8 @@
 # v1 12b runs a 10 s variant -- the 5-min benchmark form is
 # captured offline for the white paper, not in PR-gating CI.
 
+config test/integration/scenario-config.json
+
 plant ambient_mc      50000
 plant initial_temp_mc 50000
 plant duration_ms     10000

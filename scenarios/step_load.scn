@@ -1,0 +1,32 @@
+# scenarios/step_load.scn
+#
+# PRD section 9.1 row 3: "SoC temperature steps from 50 C to 85 C;
+# capture step response, used for PID tuning."
+#
+# v1 12c uses freeze_input to model the step.  The PID tuning
+# white-paper figure runs the same shape against a PID-governed
+# zone offline.
+
+config test/integration/scenario-config.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 50000
+plant duration_ms     20000
+
+# Hold sensor at 50000 mc (well below warn=70000) for 5 s.
+0     freeze_input soc 50000
+
+# Step to 85000 mc at t=5 s.  Daemon should react within IIR lag
+# (~1 s) and command cooling_state >= 1 (state_pwm[1] = 100).
+5000  freeze_input soc 85000
+
+# Within IIR settle + step_wise dispatch, fan PWM reaches >= 100.
+assert eventually actuator_pwm 0 >= 100 within 10000
+
+# After the step, fan stays at >= 100 (sensor at 85000 > warn).
+assert min actuator_pwm 0 >= 100 between 10000 20000
+
+# Step at t=5 s is observable in telemetry.
+assert eventually zone_temp 0 >= 80000 within 10000
+
+assert no_faults

@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """tools/thermalcore-scenario/run.py — scenario runner orchestrator.
 
-Stage 12 12b main entry point.  Drives one .scn file end-to-end:
+Stage 12 main entry point.  Drives one .scn file end-to-end:
 
-  1. Parse .scn (scenario.py) + load daemon config (JSON).
-  2. Set up /tmp/thermal-core-scenario tmpfs (sensors / pwm).
-  3. Init the C plant via ctypes (plant_ffi.py).
-  4. Spawn thermalcored under --clock=scenario with the daemon
-     config; connect to its AF_UNIX TICK socket.
+  1. Parse .scn (scenario.py) + load daemon config (JSON; from the
+     scenario's `config <path>` directive, or from the CLI fallback).
+  2. Set up tmpfs (sensors / pwm / tach) under the daemon-config
+     paths.
+  3. Init the C plant via ctypes (plant_ffi.py) using per-zone
+     settings from the scenario.
+  4. Spawn thermalcored under --clock=scenario; connect to the
+     AF_UNIX TICK socket.
   5. Listen on UDP for telemetry via ProbeRecorder.
-  6. Tick loop: read PWM -> plant.step -> write sensor -> TICK ->
-     drain telemetry.
-  7. Write the captured CSV.
+  6. Tick loop: apply scheduled commands -> read PWM(s) ->
+     plant.step -> write sensor(s) (honouring frozen overrides) ->
+     write tach(s) -> TICK -> drain telemetry.
+  7. Write the captured CSV (named after the scenario stem).
   8. Evaluate every assertion against the captured records.
   9. Print scenario: PASS / FAIL <reason>; exit 0 / 1.
 
-Locally `make scenario` invokes this:
+CLI (12c):
 
-    python3 tools/thermalcore-scenario/run.py \
-        scenarios/idle_steady_state.scn \
-        test/integration/scenario-config.json
+    python3 run.py <scenario.scn>
+        # config path read from `config <path>` directive in the .scn
+
+    python3 run.py <scenario.scn> <daemon_config.json>
+        # 12b fallback: explicit daemon config arg
 """
 from __future__ import annotations
 
@@ -31,6 +37,7 @@ import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -41,38 +48,38 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import thermalcore_probe as probe   # noqa: E402
 from plant_ffi import Plant         # noqa: E402
-from scenario import parse_scenario # noqa: E402
+from scenario import parse_scenario, ZoneInit   # noqa: E402
 
 
 # === Tunables ========================================================
 
 DAEMON_PATH        = ROOT / "build" / "platform-linux" / "thermalcored"
 CLOCK_SOCKET_PATH  = "/tmp/thermalcored-scenario-clock.sock"
-TMPFS_DIR          = Path("/tmp/thermal-core-scenario")
-CSV_OUT_PATH       = Path("/tmp/scenario-idle.csv")
 SETTLE_MS          = 20    # post-TICK wait for daemon's actuator write
+
+# Default fan curve installed on every zone unless a scenario
+# overrides it (no override grammar in 12c).  Linear from
+# (0, 0) -> (255, Q16_ONE) so PWM=0 means no cooling and PWM=255
+# means full-strength cooling.
+Q16_ONE = 1 << 16
+DEFAULT_FAN_CURVE = [(0, 0, 0), (255, Q16_ONE, 0)]
+
+
+# === Override plumbing ===============================================
+
+@dataclass
+class Overrides:
+    """Frozen sensor / tach values; runner writes these to tmpfs
+    instead of the plant temp / tach."""
+    sensors: dict = None    # name -> mc
+    tachs:   dict = None    # name -> rpm
+
+    def __post_init__(self):
+        self.sensors = self.sensors or {}
+        self.tachs = self.tachs or {}
 
 
 # === Helpers =========================================================
-
-def setup_tmpfs(daemon_cfg: dict, initial_temp_mc: int) -> None:
-    """Create the sensor + actuator tmpfs tree the daemon expects."""
-    sensors = daemon_cfg.get("sensors", [])
-    actuators = daemon_cfg.get("actuators", [])
-    for s in sensors:
-        Path(s["source"]).parent.mkdir(parents=True, exist_ok=True)
-        Path(s["source"]).write_text(f"{initial_temp_mc}\n")
-    for a in actuators:
-        Path(a["pwm"]).parent.mkdir(parents=True, exist_ok=True)
-        Path(a["pwm"]).write_text("0\n")
-        if a.get("tach"):
-            Path(a["tach"]).parent.mkdir(parents=True, exist_ok=True)
-            Path(a["tach"]).write_text("1500\n")
-    try:
-        os.unlink(CLOCK_SOCKET_PATH)
-    except FileNotFoundError:
-        pass
-
 
 def parse_telemetry_uri(uri: str) -> tuple[str, int]:
     if not uri.startswith("udp:"):
@@ -91,8 +98,110 @@ def read_pwm(actuator_path: Path) -> int:
         return 0
 
 
-def write_sensor(sensor_path: Path, mc: int) -> None:
-    sensor_path.write_text(f"{mc}\n")
+def write_int_file(path: Path, value: int) -> None:
+    path.write_text(f"{value}\n")
+
+
+def setup_tmpfs(daemon_cfg: dict, zones: list[ZoneInit]) -> None:
+    """Create sensor / pwm / tach files at the paths the daemon
+    will read.  Initial sensor values come from the per-zone plant
+    init (in declaration order; zone 0 -> sensors[0], etc.)."""
+    sensors   = daemon_cfg.get("sensors", [])
+    actuators = daemon_cfg.get("actuators", [])
+    for i, s in enumerate(sensors):
+        Path(s["source"]).parent.mkdir(parents=True, exist_ok=True)
+        zone = zones[i] if i < len(zones) else ZoneInit()
+        initial_mc = (zone.initial_temp_mc
+                      if zone.initial_temp_mc is not None
+                      else (zone.ambient_mc
+                            if zone.ambient_mc is not None
+                            else 50000))
+        Path(s["source"]).write_text(f"{initial_mc}\n")
+    for a in actuators:
+        Path(a["pwm"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(a["pwm"]).write_text("0\n")
+        if a.get("tach"):
+            Path(a["tach"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(a["tach"]).write_text("1500\n")
+    # Context signal source files (e.g. vehicle_speed used by the
+    # stuck_sensor detector's correlated_context).  v1: seed with 0;
+    # the scenario can override via freeze_input if it cares.
+    for c in daemon_cfg.get("context_signals", []):
+        Path(c["source"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(c["source"]).write_text("0\n")
+    try:
+        os.unlink(CLOCK_SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def init_plant_from_scenario(plant: Plant,
+                              zones: list[ZoneInit]) -> None:
+    """Apply per-zone init from the scenario to the C plant."""
+    plant.set_zone_count(max(1, len(zones)))
+    for z, zinit in enumerate(zones):
+        if zinit.initial_temp_mc is not None:
+            plant.set_temperature(z, zinit.initial_temp_mc)
+        if zinit.ambient_mc is not None:
+            plant.set_ambient(z, zinit.ambient_mc)
+        if zinit.load_w_q16 is not None:
+            plant.set_load_w_q16(z, zinit.load_w_q16)
+        if zinit.heat_capacity_q16 is not None:
+            plant.set_heat_capacity_q16(z, zinit.heat_capacity_q16)
+        if zinit.ambient_drift_q16 is not None:
+            plant.set_ambient_drift_q16(z, zinit.ambient_drift_q16)
+        if zinit.fan_max_q16 is not None:
+            plant.set_fan_max_q16(z, zinit.fan_max_q16)
+        if (zinit.coupling_neighbor is not None
+                and zinit.coupling_q16 is not None):
+            plant.set_coupling(z, zinit.coupling_neighbor,
+                               zinit.coupling_q16)
+        # Every zone gets a default linear fan curve.
+        plant.set_fan_curve(z, DEFAULT_FAN_CURVE)
+
+
+def apply_commands(commands: list, now_ms: int, dt_ms: int,
+                    plant: Plant, overrides: Overrides) -> None:
+    """Fire any scheduled commands whose timestamp falls in
+    [now_ms, now_ms + dt_ms)."""
+    while commands and commands[0][0] < now_ms + dt_ms:
+        ts, cmd, args = commands.pop(0)
+        if cmd == "freeze_input":
+            overrides.sensors[args[0]] = int(args[1])
+        elif cmd == "unfreeze_input":
+            overrides.sensors.pop(args[0], None)
+        elif cmd == "freeze_tach":
+            overrides.tachs[args[0]] = int(args[1])
+        elif cmd == "unfreeze_tach":
+            overrides.tachs.pop(args[0], None)
+        elif cmd == "set_plant_load_w_q16":
+            plant.set_load_w_q16(int(args[0]), int(args[1]))
+        elif cmd == "set_plant_fan_max_q16":
+            plant.set_fan_max_q16(int(args[0]), int(args[1]))
+        # Unknown commands already rejected by the parser.
+
+
+def resolve_paths(daemon_cfg: dict) -> tuple[list, list, list]:
+    """Return (sensor_paths, actuator_pwm_paths, actuator_tach_paths)
+    aligned with the daemon's slot order."""
+    sensors = daemon_cfg.get("sensors", [])
+    actuators = daemon_cfg.get("actuators", [])
+    return (
+        [Path(s["source"]) for s in sensors],
+        [Path(a["pwm"]) for a in actuators],
+        [Path(a.get("tach", "")) if a.get("tach") else None
+         for a in actuators],
+    )
+
+
+def name_to_slot(daemon_cfg: dict, kind: str, name: str) -> int | None:
+    """Map a sensor or actuator name to its slot index for override
+    plumbing.  Returns None on miss."""
+    arr = daemon_cfg.get(kind, [])
+    for i, obj in enumerate(arr):
+        if obj.get("name") == name:
+            return i
+    return None
 
 
 # === Main ============================================================
@@ -100,10 +209,12 @@ def write_sensor(sensor_path: Path, mc: int) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="thermalcore-scenario-run")
     parser.add_argument("scenario", help="path to .scn file")
-    parser.add_argument("config",   help="path to daemon JSON config")
-    parser.add_argument("--csv-out", default=str(CSV_OUT_PATH),
-                        help=f"telemetry CSV output path "
-                             f"(default: {CSV_OUT_PATH})")
+    parser.add_argument("config",   nargs="?", default=None,
+                        help="(optional) daemon JSON config; overridden "
+                             "by the .scn's `config` directive")
+    parser.add_argument("--csv-out", default=None,
+                        help="telemetry CSV output path; defaults to "
+                             "/tmp/scenario-<stem>.csv")
     args = parser.parse_args(argv)
 
     if not DAEMON_PATH.exists():
@@ -113,48 +224,52 @@ def main(argv=None) -> int:
         return 1
 
     scn = parse_scenario(args.scenario)
-    daemon_cfg = json.loads(Path(args.config).read_text())
+
+    # Resolve daemon config path: scenario `config` directive wins;
+    # fall back to CLI arg; error if neither.
+    cfg_path = scn.config_path or args.config
+    if cfg_path is None:
+        sys.stderr.write(
+            f"scenario-runner: {args.scenario} has no `config <path>` "
+            f"directive and no CLI config arg was supplied\n")
+        return 1
+    cfg_path = Path(cfg_path)
+    if not cfg_path.is_absolute():
+        cfg_path = (ROOT / cfg_path).resolve()
+    daemon_cfg = json.loads(cfg_path.read_text())
     control_period_ms = int(daemon_cfg.get("control_period_ms", 100))
 
-    ambient_mc      = int(scn.plant_config.get("ambient_mc",
-                                                 50000))
-    initial_temp_mc = int(scn.plant_config.get("initial_temp_mc",
-                                                 ambient_mc))
-    duration_ms     = scn.duration_ms
+    duration_ms = scn.duration_ms
+    zones = scn.zones[:scn.zone_count] or [ZoneInit()]
 
     # === Setup =========================================================
-    setup_tmpfs(daemon_cfg, initial_temp_mc)
+    setup_tmpfs(daemon_cfg, zones)
 
-    # Telemetry UDP listener.
+    sensor_paths, pwm_paths, tach_paths = resolve_paths(daemon_cfg)
+
     telem_uri = daemon_cfg["telemetry"]["transport"]
     udp_host, udp_port = parse_telemetry_uri(telem_uri)
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     udp.bind((udp_host, udp_port))
-
     recorder = probe.ProbeRecorder(udp)
 
-    # Init plant.
     plant = Plant(seed=42)
-    plant.set_zone_count(1)
-    plant.set_temperature(0, initial_temp_mc)
-    plant.set_ambient(0, ambient_mc)
-    # No load, no fan curve in 12b's idle scenario.  12c adds
-    # plant_load_w_q16 / plant_fan_max / plant_fan_curve plant
-    # directives.
+    init_plant_from_scenario(plant, zones)
+
+    overrides = Overrides()
+    pending_commands = sorted(scn.commands, key=lambda c: c[0])
 
     # === Spawn daemon =================================================
-    log_path = Path("/tmp/thermalcored-scenario.log")
+    log_path = Path(f"/tmp/thermalcored-scenario.log")
     log = log_path.open("w")
     daemon = subprocess.Popen(
         [str(DAEMON_PATH),
-         f"--config={args.config}",
+         f"--config={cfg_path}",
          "--clock=scenario",
          f"--scenario-clock-uri=unix:{CLOCK_SOCKET_PATH}"],
         stdout=log, stderr=log)
 
-    # Wait for the daemon to create + bind the scenario clock
-    # socket; then connect.
     deadline = time.time() + 2.0
     while not Path(CLOCK_SOCKET_PATH).exists():
         if time.time() > deadline or daemon.poll() is not None:
@@ -170,36 +285,47 @@ def main(argv=None) -> int:
     clk.connect(CLOCK_SOCKET_PATH)
 
     # === Tick loop ====================================================
-    actuator_path = Path(daemon_cfg["actuators"][0]["pwm"])
-    sensor_path   = Path(daemon_cfg["sensors"][0]["source"])
-
     rc = 0
     try:
         now_ms = 0
         while now_ms <= duration_ms:
-            # Read PWM the daemon wrote at the end of its previous
-            # tick.  On the first tick this is the bootstrap 0
-            # that setup_tmpfs() wrote.
-            pwm = read_pwm(actuator_path)
+            # 1. Apply any commands scheduled in [now_ms, now_ms+dt).
+            apply_commands(pending_commands, now_ms, control_period_ms,
+                            plant, overrides)
 
-            # Advance plant.  dt_ms = control_period_ms.  The
-            # first plant.step at now_ms=0 effectively advances
-            # "from t=-dt to t=0" -- harmless under steady state.
-            plant.step([pwm], control_period_ms)
+            # 2. Read PWM(s) the daemon wrote at the end of its
+            #    previous tick.  pwms[i] = actuator i's PWM (0..255).
+            pwms = [read_pwm(p) for p in pwm_paths]
 
-            # Write the new plant temp into the sensor file.
-            write_sensor(sensor_path, plant.zone_temp_mc(0))
+            # 3. Plant step.  PWM array padded for plant_inputs_t.
+            plant.step(pwms, control_period_ms)
 
-            # Send TICK; let the daemon do one control-loop pass.
+            # 4. Write per-zone sensor files (or frozen overrides).
+            sensors = daemon_cfg.get("sensors", [])
+            for i, s in enumerate(sensors):
+                if s["name"] in overrides.sensors:
+                    write_int_file(sensor_paths[i],
+                                    overrides.sensors[s["name"]])
+                else:
+                    write_int_file(sensor_paths[i],
+                                    plant.zone_temp_mc(i))
+
+            # 5. Tach overrides (no plant model for tach in v1; default
+            #    is 1500 from setup_tmpfs; override if frozen).
+            actuators = daemon_cfg.get("actuators", [])
+            for i, a in enumerate(actuators):
+                if a["name"] in overrides.tachs and tach_paths[i]:
+                    write_int_file(tach_paths[i],
+                                    overrides.tachs[a["name"]])
+
+            # 6. TICK; settle.
             clk.sendall(f"TICK {now_ms}\n".encode("ascii"))
             time.sleep(SETTLE_MS / 1000.0)
 
-            # Drain any telemetry the daemon emitted this tick.
+            # 7. Drain.
             recorder.drain()
-
             now_ms += control_period_ms
 
-        # Final drain: catch any trailing frames the kernel queued.
         recorder.drain()
 
     finally:
@@ -217,7 +343,11 @@ def main(argv=None) -> int:
         udp.close()
 
     # === Persist CSV + evaluate assertions ============================
-    csv_path = Path(args.csv_out)
+    if args.csv_out is None:
+        scn_stem = Path(args.scenario).stem
+        csv_path = Path(f"/tmp/scenario-{scn_stem}.csv")
+    else:
+        csv_path = Path(args.csv_out)
     recorder.write_csv(csv_path)
     print(f"scenario-runner: wrote {len(recorder.records)} records "
           f"to {csv_path}")

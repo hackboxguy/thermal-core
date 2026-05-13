@@ -1,0 +1,38 @@
+# scenarios/runaway.scn
+#
+# PRD section 9.1 row 9: "PWM forced to 0 (actuator failure),
+# temperature rising; verify runaway fault."
+#
+# Modelled here as `fan_max_q16 = 0` -- the plant ignores the
+# daemon's PWM (no cooling).  The daemon's runaway detector fires
+# when (rise_mc >= rise_mc_threshold) AND (cmd_pwm >=
+# cooling_pwm_threshold) for persist_ticks.
+
+config test/integration/scenario-config-runaway.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 88000
+plant duration_ms     15000
+
+# Plant runs at 88000 (in warn band).  Strong load + zero fan
+# effectiveness means the actual zone keeps heating no matter
+# what PWM the daemon commands.
+plant zone 0 load_w_q16        13107200    # 200 W
+plant zone 0 heat_capacity_q16 1000        # very low -> high dT/dt
+plant zone 0 ambient_drift_q16 100
+plant zone 0 fan_max_q16       0           # actuator broken
+
+# Daemon's step_wise will cross critical (90000) almost
+# immediately and command state_pwm[3] = 220 (above
+# cooling_pwm_threshold = 200).  Then rise_mc_threshold=3000 must
+# accumulate while PWM stays at 220 -- happens within a few ticks
+# given the heavy load.
+
+# Runaway must fire within 10 s.
+assert within 10000 fault_active runaway 0
+
+# Fan was commanded high (at least 200).
+assert eventually actuator_pwm 0 >= 200 within 5000
+
+# Runaway is the only fault expected.
+assert no_faults except runaway

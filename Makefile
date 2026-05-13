@@ -180,16 +180,21 @@ build/tools/thermalcore-scenario/libplant.so: \
 # against the deterministic plant (Stage 12 12b).
 # Not folded into `make all` -- it spawns subprocesses + sockets.
 # 12c adds the CI job that runs it.
+SCENARIO_FILES = $(wildcard scenarios/*.scn)
+
+# Stage 12 12c: iterate all canonical scenarios (each carries its
+# own `config <path>` directive so no manifest is needed).
 scenario: build build/tools/thermalcore-scenario/libplant.so \
           tools/thermalcore-scenario/run.py \
           tools/thermalcore-scenario/plant_ffi.py \
           tools/thermalcore-scenario/scenario.py \
           tools/thermalcore-probe \
-          scenarios/idle_steady_state.scn \
-          test/integration/scenario-config.json
-	@python3 tools/thermalcore-scenario/run.py \
-	    scenarios/idle_steady_state.scn \
-	    test/integration/scenario-config.json
+          $(SCENARIO_FILES)
+	@set -e; for s in $(SCENARIO_FILES); do \
+	    echo "=== $$s ==="; \
+	    python3 tools/thermalcore-scenario/run.py $$s; \
+	done
+	@echo "scenario: ALL PASS"
 
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \

@@ -1,0 +1,36 @@
+# scenarios/fan_stall_recovery.scn
+#
+# PRD section 9.1 row 4: "Force fan tach to 0 while PWM > 0;
+# verify stall fault raised within configured persist_ticks,
+# recover when tach restored."
+
+config test/integration/scenario-config-stall.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 85000
+plant duration_ms     15000
+
+# Hold sensor at 85000 mc (in warn band) so the daemon commands
+# cooling_state 1 -> state_pwm[1] = 100, above stall_pwm_threshold
+# (80).  Stall conditions (PWM >= 80 AND tach < stall_rpm=200) are
+# then met whenever the tach is below 200.
+0    freeze_input soc 85000
+
+# At t=2 s, freeze the tach at 0.  After persist_ticks=5 (500 ms)
+# the stall detector should fire -- TEVENT_FAULT_ENTER for
+# (STALL=1, target=actuator slot 0).
+2000 freeze_tach main_fan 0
+
+# At t=8 s, restore a healthy tach (above stall_rpm=200).  After
+# recovery_ticks=10 (1000 ms) the fault should clear.
+8000 freeze_tach main_fan 1500
+
+# Stall must fire by 4000 ms (2000 ms hold + 500 ms persist + slack).
+assert within 4000 fault_active stall 0
+
+# Fan was commanded throughout the run (>= 100 from warn trip, then
+# 255 during force_pwm_max_until_recovered).
+assert max actuator_pwm 0 >= 100 between 0 15000
+
+# Stall is the only fault we expect.
+assert no_faults except stall
