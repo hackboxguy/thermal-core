@@ -388,6 +388,10 @@ The `protocol/` module is portable C99 with no heap and no platform deps. It lin
 - **Integration:** CI starts `car-can-emulator` on `vcan0`, starts `thermalcored`, sets speed via the emulator's TCP control port at `t=0, 5, 10, 15 s`, asserts the daemon's telemetry stream shows the expected speed values within the configured filter time constant.
 - **Module golden:** a CAN bus-loss scenario (emulator killed mid-run) producing `assume_stationary` fallback.
 
+**Stage 11 actual deliverables (in progress):**
+
+- **Shipped 11a:** `protocol/obd2.{c,h}` — portable C99 codec for OBD-II Service 01 single-byte PIDs.  Two entry points (`obd2_encode_request_byte`, `obd2_decode_response_byte`); 11 unit scenarios cover the request byte pattern, three response values (0 / 120 / 255 km/h), and five distinct failure modes (`BAD_SHAPE`, `WRONG_PCI_LEN`, `NEGATIVE_RESPONSE`, `WRONG_SERVICE`, `WRONG_PID`).  No socket I/O, no submodule — that lands in 11b / 11c.
+
 **Exit gate:** all previous + CAN integration test green.
 
 ---

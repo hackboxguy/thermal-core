@@ -116,6 +116,15 @@ build/test/test_thermal_wire: \
 	    protocol/thermal_wire.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Special: protocol/obd2 OBD-II PID 0x0D encode/decode test (Stage 11 11a) ---
+build/test/test_obd2: \
+    test/unit/test_obd2.c test/unit/harness.h \
+    protocol/obd2.c protocol/obd2.h
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I protocol \
+	    -o $@ test/unit/test_obd2.c \
+	    protocol/obd2.c $(LDFLAGS_EXTRA)
+
 # --- Special: canonical config hash test (sha256 + encoder + padding poison) ---
 build/test/test_config_hash: \
     test/unit/test_config_hash.c test/unit/harness.h \
@@ -233,8 +242,7 @@ FUZZ_PROTO_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic \
 FUZZ_PROTO_OBJS    = build/fuzz/protocol/thermal_wire.o
 FUZZ_PROTO_ARCHIVE = build/fuzz/protocol/libthermal_protocol.a
 
-build/fuzz/protocol/%.o: protocol/%.c protocol/thermal_wire.h \
-                         protocol/thermal_wire_opcodes.h \
+build/fuzz/protocol/%.o: protocol/%.c $(wildcard protocol/*.h) \
                          core/thermal_commands.h
 	@mkdir -p build/fuzz/protocol
 	$(FUZZ_CC) $(FUZZ_PROTO_CFLAGS) -c -o $@ $<
@@ -269,9 +277,8 @@ $(CORE_ARCHIVE): $(CORE_OBJS)
 	@mkdir -p build/core
 	ar rcs $@ $^
 
-# --- Protocol archive (Stage 10 10a) ---
-build/protocol/%.o: protocol/%.c protocol/thermal_wire.h \
-                    protocol/thermal_wire_opcodes.h \
+# --- Protocol archive (Stage 10 10a; protocol/*.h wildcarded in 11a) ---
+build/protocol/%.o: protocol/%.c $(wildcard protocol/*.h) \
                     core/thermal_commands.h
 	@mkdir -p build/protocol
 	$(CC) $(CFLAGS_BASE) -I protocol -c -o $@ $<
