@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration fuzz-json fuzz-wire coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can fuzz-json fuzz-wire coverage clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -192,6 +192,25 @@ integration: build test/integration/test_thermalcore_tune.py \
              test/smoke/smoke-config.json
 	@python3 test/integration/test_thermalcore_tune.py
 	@python3 test/integration/test_thermalcore_tune_pid.py
+
+# --- Integration-can: vcan0 + car-can-emulator hardware loop -------
+# Stage 11 11c: spawns car-can-emulator on vcan0, drives speed via
+# TCP, asserts the daemon's TSIG_CONTEXT_VALUE_0 telemetry converges.
+# The Python harness skips cleanly when vcan0 is unavailable so
+# `make integration-can` is a no-op on dev machines without vcan.
+# On the canonical CI (ubuntu-latest with CAP_NET_ADMIN), the
+# harness runs for real -- a SKIP there blocks the Stage 11 exit
+# gate per impl-plan section 5.
+
+build/car-can-emulator/car-can-emulator: tools/car-can-emulator/CMakeLists.txt
+	@mkdir -p build/car-can-emulator
+	cmake -S tools/car-can-emulator -B build/car-can-emulator
+	cmake --build build/car-can-emulator
+
+integration-can: build build/car-can-emulator/car-can-emulator \
+                 test/integration/test_canbus_obd2.py \
+                 test/integration/canbus-config.json
+	@python3 test/integration/test_canbus_obd2.py
 
 # --- Fuzz: libFuzzer over the JSON loader (needs clang) ---
 # Not part of `make all` -- it runs for 60 s.  CI runs it as a

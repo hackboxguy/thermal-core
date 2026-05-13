@@ -131,6 +131,38 @@ jobs:
       - name: Run thermalcore-tune integration test
         run: make integration
 
+  # Stage 11 11c: hardware-loop CAN integration.  Provisions vcan0,
+  # builds the car-can-emulator submodule, drives speed via its TCP
+  # port, asserts the daemon's filtered speed telemetry converges.
+  # Per impl-plan section 5 Stage 11 a SKIP on the canonical repo
+  # blocks the Stage 11 exit gate -- no continue-on-error.
+  integration-can:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Provision vcan0
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+          ip link show vcan0
+      - name: Build car-can-emulator
+        run: |
+          cmake -S tools/car-can-emulator -B build/car-can-emulator
+          cmake --build build/car-can-emulator
+      - name: Build daemon
+        run: make build
+      - name: Run integration-can
+        run: make integration-can
+
   fuzz-json:
     runs-on: ubuntu-latest
     steps:
