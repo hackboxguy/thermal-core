@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""tools/thermalcore-tune — issue a runtime command to a running thermalcored.
+
+Encodes a CMD_REQUEST per PRD section 7.5, sends it to the daemon's
+control listener over UDP, prints the matching CMD_ACK or CMD_NACK.
+
+Usage:
+    thermalcore-tune [GLOBAL OPTS] SUBCOMMAND [ARGS]
+
+Subcommands:
+    set-pid          ZONE KP_Q16 KI_Q16 KD_Q16
+    set-setpoint     ZONE SETPOINT_MC
+    set-trip         ZONE TRIP_IDX TEMP_MC HYST_MC
+    set-curve-point  MOD POINT X VALUE0 VALUE1
+    clear-fault      FAULT_TYPE TARGET_ID
+
+Global options:
+    --host HOST      Daemon host (default 127.0.0.1)
+    --port PORT      Daemon control port (default 9002)
+    --timeout SEC    Response timeout in seconds (default 2.0)
+    --no-crc         Send / expect frames without CRC
+    --seq N          Override the request seq (default: random)
+
+Exit codes:
+    0  CMD_ACK received with status OK
+    1  CMD_NACK received OR ACK with non-zero status
+    2  No response within timeout / malformed response
+    3  Argument / encoding error
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import random
+import socket
+import sys
+from pathlib import Path
+
+# Make the shared wire module importable when running this script
+# directly (`python3 tools/thermalcore-tune ...`) or as a one-off
+# from outside the repo.
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import thermalcore_wire as w   # noqa: E402
+
+
+def _build_cli() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="thermalcore-tune",
+        description="Send a runtime command to thermalcored over UDP.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=9002)
+    p.add_argument("--timeout", type=float, default=2.0)
+    p.add_argument("--no-crc", action="store_true",
+                   help="Send and expect frames without CRC.")
+    p.add_argument("--seq", type=int, default=None,
+                   help="Override request seq (default: random uint16).")
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("set-pid",
+                        help="Set PID gains for a zone.")
+    sp.add_argument("zone",   type=int)
+    sp.add_argument("kp_q16", type=int)
+    sp.add_argument("ki_q16", type=int)
+    sp.add_argument("kd_q16", type=int)
+
+    sp = sub.add_parser("set-setpoint",
+                        help="Set the PID setpoint for a zone.")
+    sp.add_argument("zone",        type=int)
+    sp.add_argument("setpoint_mc", type=int)
+
+    sp = sub.add_parser("set-trip",
+                        help="Update a trip's temp_mc and hyst_mc.")
+    sp.add_argument("zone",     type=int)
+    sp.add_argument("trip_idx", type=int)
+    sp.add_argument("temp_mc",  type=int)
+    sp.add_argument("hyst_mc",  type=int)
+
+    sp = sub.add_parser("set-curve-point",
+                        help="Update a modifier's curve point.")
+    sp.add_argument("modifier",  type=int)
+    sp.add_argument("point_idx", type=int)
+    sp.add_argument("x",         type=int)
+    sp.add_argument("value0",    type=int)
+    sp.add_argument("value1",    type=int)
+
+    sp = sub.add_parser("clear-fault",
+                        help="Clear a latched fault.")
+    sp.add_argument("fault_type", type=int)
+    sp.add_argument("target_id",  type=int)
+    return p
+
+
+def _build_payload(args: argparse.Namespace) -> bytes:
+    if args.cmd == "set-pid":
+        return w.encode_set_pid(args.zone,
+                                 args.kp_q16, args.ki_q16, args.kd_q16)
+    if args.cmd == "set-setpoint":
+        return w.encode_set_setpoint(args.zone, args.setpoint_mc)
+    if args.cmd == "set-trip":
+        return w.encode_set_trip(args.zone, args.trip_idx,
+                                  args.temp_mc, args.hyst_mc)
+    if args.cmd == "set-curve-point":
+        return w.encode_set_curve_point(args.modifier, args.point_idx,
+                                         args.x, args.value0, args.value1)
+    if args.cmd == "clear-fault":
+        return w.encode_clear_fault(args.fault_type, args.target_id)
+    raise SystemExit(3)
+
+
+def main(argv=None) -> int:
+    args = _build_cli().parse_args(argv)
+    crc = not args.no_crc
+    seq = args.seq if args.seq is not None else random.randint(0, 0xFFFF)
+    if not (0 <= seq <= 0xFFFF):
+        print(f"thermalcore-tune: --seq must fit in u16, got {seq}",
+              file=sys.stderr)
+        return 3
+
+    try:
+        payload = _build_payload(args)
+    except SystemExit as e:
+        return int(e.code or 3)
+    except Exception as ex:  # noqa: BLE001
+        print(f"thermalcore-tune: encoding error: {ex}", file=sys.stderr)
+        return 3
+
+    frame = w.encode_tc(w.OP_CMD_REQUEST, seq, ts_ms=0,
+                        payload=payload, crc=crc)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((args.host, 0))            # ephemeral source port
+    sock.settimeout(args.timeout)
+    try:
+        sock.sendto(frame, (args.host, args.port))
+    except OSError as ex:
+        print(f"thermalcore-tune: sendto failed: {ex}", file=sys.stderr)
+        return 3
+
+    try:
+        data, _ = sock.recvfrom(2 * w.WIRE_MAX_LINUX)
+    except socket.timeout:
+        print(f"thermalcore-tune: timed out after {args.timeout}s",
+              file=sys.stderr)
+        return 2
+    finally:
+        sock.close()
+
+    dec = w.decode_tc(data, crc=crc)
+    if dec is None:
+        print("thermalcore-tune: response not a valid TC frame",
+              file=sys.stderr)
+        return 2
+    opcode, resp_seq, _ts_ms, resp_payload = dec
+    parsed = w.decode_ack_or_nack(resp_payload)
+    if parsed is None:
+        print("thermalcore-tune: response payload not ACK/NACK shape",
+              file=sys.stderr)
+        return 2
+    request_seq, status, detail = parsed
+
+    if request_seq != seq:
+        print(f"thermalcore-tune: request_seq mismatch "
+              f"(expected {seq}, got {request_seq})",
+              file=sys.stderr)
+        return 2
+
+    if opcode == w.OP_CMD_ACK and status == 0:
+        print(f"OK seq={request_seq} status={status} detail={detail}")
+        return 0
+    if opcode == w.OP_CMD_ACK:
+        print(f"OK-WITH-STATUS seq={request_seq} status={status} detail={detail}")
+        return 1
+    if opcode == w.OP_CMD_NACK:
+        print(f"NACK seq={request_seq} status={status} detail={detail}")
+        return 1
+
+    print(f"thermalcore-tune: unexpected response opcode 0x{opcode:02x}",
+          file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

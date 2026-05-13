@@ -45,9 +45,9 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke fuzz-json coverage clean
+.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration fuzz-json coverage clean
 
-all: test build verify-portability replay property property-command smoke
+all: test build verify-portability replay property property-command smoke integration
 
 # --- Unit tests ---
 test: $(TEST_BINS)
@@ -154,6 +154,13 @@ build/test/test_json2static_roundtrip: \
 # --- Smoke: spawn thermalcored + drive ticks + verify telemetry ---
 smoke: build test/smoke/test_thermalcored_smoke.py test/smoke/smoke-config.json
 	@python3 test/smoke/test_thermalcored_smoke.py
+
+# --- Integration: spawn thermalcored + drive tools/thermalcore-tune ---
+# Stage 10 10c: exercises all five command subcommands end-to-end.
+integration: build test/integration/test_thermalcore_tune.py \
+             tools/thermalcore-tune tools/thermalcore_wire.py \
+             test/smoke/smoke-config.json
+	@python3 test/integration/test_thermalcore_tune.py
 
 # --- Fuzz: libFuzzer over the JSON loader (needs clang) ---
 # Not part of `make all` -- it runs for 60 s.  CI runs it as a

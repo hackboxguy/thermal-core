@@ -1,3 +1,4 @@
 tmp*/
 docs/latex-artifacts/
 build/
+__pycache__/
