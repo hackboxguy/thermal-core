@@ -17,6 +17,18 @@ option(THERMALCORE_REPLAY_STANDALONE
        "Build firmware in REPLAY_STANDALONE mode (fixture-driven, no hardware)"
        OFF)
 
+# Stage 14 14a -- HIL_PERIPHERAL build mode (ESP32 concentrates
+# peripherals; Linux daemon runs thermal_core_step()).  Mutually
+# exclusive with REPLAY_STANDALONE.
+option(THERMALCORE_HIL_PERIPHERAL
+       "Build firmware in HIL_PERIPHERAL mode (TC frames over USB-CDC; daemon owns core)"
+       OFF)
+if(THERMALCORE_REPLAY_STANDALONE AND THERMALCORE_HIL_PERIPHERAL)
+    message(FATAL_ERROR
+        "THERMALCORE_REPLAY_STANDALONE and THERMALCORE_HIL_PERIPHERAL "
+        "are mutually exclusive build modes.")
+endif()
+
 file(GLOB CORE_SRCS     "${PROJECT_DIR}/../../core/*.c")
 file(GLOB PROTOCOL_SRCS "${PROJECT_DIR}/../../protocol/*.c")
 
@@ -53,6 +65,7 @@ idf_component_register(
         "bsp_esp32_sensor.c"
         "esp32_callbacks.c"
         "replay_fixture.c"
+        "esp32_usb_cdc.c"
         ${CORE_SRCS}
         ${PROTOCOL_SRCS}
         "${GENERATED_CONFIG_C}"
@@ -63,9 +76,14 @@ idf_component_register(
         "${GENERATED_DIR}"
 )
 
-# REPLAY-mode compile flag.  Component-scoped so it only
-# affects this firmware's sources (not the IDF runtime).
+# Mode compile flags.  Component-scoped so they only affect
+# this firmware's sources (not the IDF runtime).  Mutual
+# exclusion is enforced above (CMake FATAL_ERROR).
 if(THERMALCORE_REPLAY_STANDALONE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         THERMALCORE_MODE_REPLAY_STANDALONE)
+endif()
+if(THERMALCORE_HIL_PERIPHERAL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        THERMALCORE_MODE_HIL_PERIPHERAL)
 endif()
