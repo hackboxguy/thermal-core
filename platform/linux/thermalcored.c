@@ -581,6 +581,28 @@ static int scenario_clock_next(uint32_t *now_ms_out)
     return 0;
 }
 
+/* Write "DONE\n" on the scenario clock socket to signal that the
+ * just-completed tick has been fully applied (thermal_core_step
+ * returned, telemetry callbacks flushed their UDP sends, actuator
+ * files written).  The scenario runner reads this handshake
+ * before draining UDP telemetry, replacing the wall-clock
+ * SETTLE_MS sleep that races under CI runner load.
+ *
+ * Best-effort: a write failure means the runner died and we'll
+ * find out on the next scenario_read_line.  Total bytes: 5 per
+ * tick -- ~1.7 KB over a 350-tick scenario, well under the
+ * AF_UNIX SOCK_STREAM kernel buffer (~200 KB).  Existing readers
+ * that don't consume DONE (smoke + integration tests' short
+ * scenarios) leave the bytes in the buffer; the socket is closed
+ * shortly thereafter and the bytes are discarded harmlessly. */
+static void scenario_clock_signal_done(void)
+{
+    if (g_scenario_conn_fd < 0) return;
+    static const char msg[] = "DONE\n";
+    ssize_t w = write(g_scenario_conn_fd, msg, sizeof(msg) - 1);
+    (void)w;
+}
+
 static void scenario_clock_close(void)
 {
     if (g_scenario_conn_fd >= 0) {
@@ -960,6 +982,14 @@ int main(int argc, char **argv)
             }
         } else {
             (void)bsp_mock_tmpfs_write_frame(&runtime, &cfg, &out);
+        }
+
+        /* Scenario clock handshake: tick fully applied (core step
+         * returned, telemetry UDP sends flushed, actuator files
+         * written).  Runner reads DONE before draining telemetry,
+         * removing the wall-clock SETTLE_MS race under CI load. */
+        if (opts.clock_mode == CLOCK_MODE_SCENARIO) {
+            scenario_clock_signal_done();
         }
     }
 

@@ -57,7 +57,7 @@ DAEMON_PATH        = ROOT / "build" / "platform-linux" / "thermalcored"
 EMULATOR_PATH      = ROOT / "build" / "car-can-emulator" / "car-can-emulator"
 CLOCK_SOCKET_PATH  = "/tmp/thermalcored-scenario-clock.sock"
 EMULATOR_TCP_PORT  = 8080
-SETTLE_MS          = 20    # post-TICK wait for daemon's actuator write
+DONE_TIMEOUT_S     = 5.0   # max wait for daemon DONE handshake after TICK
 
 # Default fan curve installed on every zone unless a scenario
 # overrides it (no override grammar in 12c).  Linear from
@@ -244,6 +244,29 @@ def vcan_available(iface: str) -> bool:
     return Path(f"/sys/class/net/{iface}").exists()
 
 
+def recv_done(clk: socket.socket) -> None:
+    """Block until the daemon writes 'DONE\\n' on the scenario
+    clock socket.  Replaces the prior wall-clock SETTLE_MS sleep:
+    once DONE arrives, the daemon has finished thermal_core_step
+    (telemetry UDP sends already enqueued on the loopback) and
+    has written its actuator files, so the runner can drain
+    telemetry deterministically and advance to the next tick.
+
+    Raises RuntimeError on EOF (daemon died) or socket timeout
+    (DONE_TIMEOUT_S expired -- daemon is hung)."""
+    clk.settimeout(DONE_TIMEOUT_S)
+    buf = b""
+    while b"\n" not in buf:
+        chunk = clk.recv(64)
+        if not chunk:
+            raise RuntimeError("scenario clock socket EOF "
+                               "(daemon died before DONE)")
+        buf += chunk
+    line = buf.split(b"\n", 1)[0]
+    if line != b"DONE":
+        raise RuntimeError(f"scenario clock: expected 'DONE', got {line!r}")
+
+
 def name_to_slot(daemon_cfg: dict, kind: str, name: str) -> int | None:
     """Map a sensor or actuator name to its slot index for override
     plumbing.  Returns None on miss."""
@@ -405,9 +428,12 @@ def main(argv=None) -> int:
                     write_int_file(tach_paths[i],
                                     overrides.tachs[a["name"]])
 
-            # 6. TICK; settle.
+            # 6. TICK; wait for daemon DONE handshake.  Explicit
+            #    handshake replaces the prior SETTLE_MS wall-clock
+            #    sleep that raced under CI runner load (see
+            #    recv_done docstring).
             clk.sendall(f"TICK {now_ms}\n".encode("ascii"))
-            time.sleep(SETTLE_MS / 1000.0)
+            recv_done(clk)
 
             # 7. Drain.
             recorder.drain()

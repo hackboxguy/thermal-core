@@ -173,6 +173,11 @@ jobs:
           python-version: '3.12'
       - name: Provision vcan0
         run: |
+          # mid-2025 ubuntu-latest switched to an Azure-flavoured
+          # kernel that ships without the vcan module in the base
+          # image.  linux-modules-extra-<uname -r> carries it.
+          sudo apt-get update
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe vcan
           sudo ip link add dev vcan0 type vcan
           sudo ip link set up vcan0
@@ -219,6 +224,11 @@ jobs:
           python-version: '3.12'
       - name: Provision vcan0
         run: |
+          # mid-2025 ubuntu-latest switched to an Azure-flavoured
+          # kernel that ships without the vcan module in the base
+          # image.  linux-modules-extra-<uname -r> carries it.
+          sudo apt-get update
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe vcan
           sudo ip link add dev vcan0 type vcan
           sudo ip link set up vcan0
