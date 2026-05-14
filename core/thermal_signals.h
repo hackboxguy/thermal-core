@@ -51,6 +51,7 @@ typedef uint16_t thermal_telemetry_signal_t;
 #define TSIG_CONTEXT_BASE    0x0400u
 #define TSIG_MODIFIER_BASE   0x0500u
 #define TSIG_FAULT_BASE      0x0600u
+#define TSIG_HIL_BASE        0x0700u
 
 /* === Sub-signal strides within each range === */
 #define TSIG_RANGE_SIZE      0x0100u
@@ -132,6 +133,31 @@ typedef uint16_t thermal_telemetry_signal_t;
     ((uint16_t)(TSIG_FAULT_BASE + TSIG_FAULT_SUB_RUNAWAY_STATE + (zone_slot)))
 #define TSIG_FAULT_STALE_CONTEXT_STATE(context_slot) \
     ((uint16_t)(TSIG_FAULT_BASE + TSIG_FAULT_SUB_STALE_CONTEXT_STATE + (context_slot)))
+
+/* === HIL ingress sub-signals (Stage 14) ===
+ * Used only when the firmware is built in HIL_PERIPHERAL mode
+ * (PRD §8.3): the ESP32 owns the sensors, emits TELEM_SAMPLE
+ * frames over USB-CDC with these IDs, and the Linux daemon
+ * ingests them into the next thermal_input_snapshot_t.
+ *
+ * SENSOR_TEMP carries the DS18B20 (or equivalent) temperature
+ * in millidegrees Celsius -- daemon maps slot N to its
+ * cfg->sensors[N] entry.
+ * TACH_RPM carries the fan tach reading in RPM -- daemon maps
+ * slot N to its cfg->actuators[N] entry.
+ *
+ * Promoted from provisional file-local #defines in Stage 14a/b's
+ * platform/esp32_idf/main/main.c.  Slot-0 numeric values changed
+ * (0x0701/0x0702 -> 0x0700/0x0710) when promoted; both firmware
+ * and daemon must speak the canonical IDs.
+ */
+#define TSIG_HIL_SUB_SENSOR_TEMP     0x00u
+#define TSIG_HIL_SUB_TACH_RPM        0x10u
+
+#define TSIG_HIL_SENSOR_TEMP(slot) \
+    ((uint16_t)(TSIG_HIL_BASE + TSIG_HIL_SUB_SENSOR_TEMP + (slot)))
+#define TSIG_HIL_TACH_RPM(slot) \
+    ((uint16_t)(TSIG_HIL_BASE + TSIG_HIL_SUB_TACH_RPM + (slot)))
 
 /* === Backward-compatibility aliases for PRD §7.1 example named
  * constants. Defined in terms of slot 0/1 of their respective ranges;

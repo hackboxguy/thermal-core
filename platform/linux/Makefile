@@ -13,6 +13,7 @@ CORE_ARCH  = ../../build/core/libthermal_core.a
 LOCAL_SRCS = thermalcored.c \
              bsp_mock_tmpfs.c \
              bsp_socketcan.c \
+             bsp_hil_serial.c \
              config_jsmn.c \
              jsmn.c
 LOCAL_OBJS = $(LOCAL_SRCS:%.c=$(BUILD_DIR)/%.o)

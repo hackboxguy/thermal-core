@@ -51,6 +51,7 @@
 #include "runtime_cfg.h"
 #include "bsp_mock_tmpfs.h"
 #include "bsp_socketcan.h"
+#include "bsp_hil_serial.h"
 #include "obd2.h"
 #include "thermal_wire.h"
 #include "thermal_wire_opcodes.h"
@@ -80,6 +81,16 @@ static int                     g_canbus_fd               = -1;
 static int                     g_canbus_context_slot     = -1;
 static uint32_t                g_canbus_next_request_ms  = 0;
 static bsp_socketcan_state_t   g_canbus_state;
+
+/* Stage 14 14c: HIL_PERIPHERAL serial transport.  Activated when
+ * runtime.global.hil_transport is non-empty.  In HIL mode the
+ * ESP32 firmware owns the BSPs (sensor, tach, PWM); the daemon
+ * exchanges TC binary frames with it over a single serial device
+ * (TELEM_SAMPLE in, CMD_REQUEST out).  Cross-cuts with the tmpfs
+ * BSP at three call sites: per-tick drain (Step 1.6), snapshot
+ * sensor+tach reads (Step 2), and actuator apply (Step 4). */
+static int  g_hil_serial_fd = -1;
+static int  g_hil_active    = 0;
 
 /* CRC on UDP loopback is on by default per PRD §7.2 line 921 (the
  * codec is exercised end-to-end and any single-bit corruption is
@@ -788,6 +799,24 @@ int main(int argc, char **argv)
                                   OBD2_PID_VEHICLE_SPEED);
     }
 
+    /* HIL_PERIPHERAL BSP (Stage 14 14c): activated when
+     * runtime.global.hil_transport is non-empty (e.g.
+     * "serial:/dev/ttyACM0").  Replaces bsp_mock_tmpfs for
+     * sensor / tach reads and actuator writes; UDP telemetry
+     * + control listener paths stay unchanged. */
+    g_hil_serial_fd = -1;
+    g_hil_active    = 0;
+    if (runtime.global.hil_transport[0] != '\0') {
+        g_hil_serial_fd = bsp_hil_serial_open(runtime.global.hil_transport);
+        if (g_hil_serial_fd < 0) {
+            fprintf(stderr,
+                    "thermalcored: hil transport '%s' failed to open\n",
+                    runtime.global.hil_transport);
+            return 1;
+        }
+        g_hil_active = 1;
+    }
+
     /* === Core init =============================================== */
     thermal_core_t              core;
     thermal_core_callbacks_t    callbacks;
@@ -834,10 +863,18 @@ int main(int argc, char **argv)
                                       now_ms, &g_canbus_next_request_ms);
         }
 
+        /* Step 1.6: drain inbound HIL_PERIPHERAL TC frames if
+         * the serial transport is active.  Updates the per-signal
+         * sample cache that Step 2's snapshot build reads from. */
+        if (g_hil_active) {
+            bsp_hil_serial_drain(g_hil_serial_fd, now_ms);
+        }
+
         /* Step 2: build snapshot from current BSP state.  Sensor +
-         * tach reads always come from bsp_mock_tmpfs; context reads
-         * dispatch per slot based on the source prefix
-         * (canbus: -> bsp_socketcan, else -> bsp_mock_tmpfs). */
+         * tach reads either dispatch to bsp_hil_serial (HIL mode)
+         * or bsp_mock_tmpfs (default); context reads dispatch per
+         * slot based on the source prefix (canbus: ->
+         * bsp_socketcan, else -> bsp_mock_tmpfs). */
         thermal_sample_t          samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
         thermal_input_snapshot_t  snap;
         uint8_t samples_max = (uint8_t)(sizeof(samples) / sizeof(samples[0]));
@@ -850,16 +887,22 @@ int main(int argc, char **argv)
         uint8_t n = 0;
         int build_failed = 0;
         for (uint8_t i = 0; i < cfg.sensor_count; i++) {
-            if (bsp_mock_tmpfs_read_sensor(&runtime, &cfg, i, now_ms,
-                                            &samples[n]) != 0) {
+            int rc_s = g_hil_active
+                ? bsp_hil_serial_read_sensor(&cfg, i, now_ms, &samples[n])
+                : bsp_mock_tmpfs_read_sensor(&runtime, &cfg, i, now_ms,
+                                              &samples[n]);
+            if (rc_s != 0) {
                 build_failed = 1; break;
             }
             n++;
         }
         if (!build_failed) {
             for (uint8_t i = 0; i < cfg.actuator_count; i++) {
-                if (bsp_mock_tmpfs_read_tach(&runtime, &cfg, i, now_ms,
-                                              &samples[n]) != 0) {
+                int rc_t = g_hil_active
+                    ? bsp_hil_serial_read_tach(&cfg, i, now_ms, &samples[n])
+                    : bsp_mock_tmpfs_read_tach(&runtime, &cfg, i, now_ms,
+                                                &samples[n]);
+                if (rc_t != 0) {
                     build_failed = 1; break;
                 }
                 n++;
@@ -899,8 +942,25 @@ int main(int argc, char **argv)
                     "thermalcored: thermal_core_step status=%d\n", (int)ss);
         }
 
-        /* Step 4: push actuator commands to sysfs/tmpfs. */
-        (void)bsp_mock_tmpfs_write_frame(&runtime, &cfg, &out);
+        /* Step 4: push actuator commands.  HIL mode emits a
+         * CMD_REQUEST(HIL_CMD_SET_PWM_DUTY=0x8001) TC frame per
+         * actuator over the serial device; default mode writes
+         * the duty into the tmpfs/sysfs path. */
+        if (g_hil_active) {
+            for (uint8_t i = 0; i < out.actuator_cmd_count; i++) {
+                uint16_t actuator_id = out.actuator_cmds[i].actuator_id;
+                for (uint8_t s = 0; s < cfg.actuator_count; s++) {
+                    if (cfg.actuators[s].id == actuator_id) {
+                        (void)bsp_hil_serial_write_actuator(
+                            g_hil_serial_fd, now_ms, s,
+                            out.actuator_cmds[i].duty_0_255);
+                        break;
+                    }
+                }
+            }
+        } else {
+            (void)bsp_mock_tmpfs_write_frame(&runtime, &cfg, &out);
+        }
     }
 
     /* === Cleanup ================================================= */
@@ -918,6 +978,11 @@ int main(int argc, char **argv)
     if (g_canbus_fd >= 0) {
         bsp_socketcan_close(g_canbus_fd);
         g_canbus_fd = -1;
+    }
+    if (g_hil_serial_fd >= 0) {
+        bsp_hil_serial_close(g_hil_serial_fd);
+        g_hil_serial_fd = -1;
+        g_hil_active    = 0;
     }
     closelog();
     return 0;

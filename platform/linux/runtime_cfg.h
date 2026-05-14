@@ -53,6 +53,13 @@ typedef struct {
     char    telemetry_transport[THERMAL_PATH_MAX]; /* e.g. "udp:127.0.0.1:9000" */
     char    control_listen[THERMAL_PATH_MAX];      /* socket spec (Stage 10) */
     uint8_t control_enable;   /* PRD §7.3 line 945: listener off unless true */
+    /* Stage 14: peripheral concentrator transport.  When set
+     * (e.g. "serial:/dev/ttyACM0"), the daemon opens the device
+     * and runs in HIL_PERIPHERAL mode -- sensor + tach samples
+     * arrive as TELEM_SAMPLE frames, actuator writes go out as
+     * CMD_REQUEST frames carrying platform-private command IDs.
+     * Empty string = HIL disabled (use bsp_mock_tmpfs). */
+    char    hil_transport[THERMAL_PATH_MAX];
 } runtime_global_cfg_t;
 
 typedef struct {

@@ -77,13 +77,10 @@ static const char *TAG = "thermal";
 
 #if defined(THERMALCORE_MODE_HIL_PERIPHERAL)
 
-/* Provisional HIL ingress signal IDs.  Sit in the 0x0700+ gap
- * above the existing TSIG_* ranges (zone/actuator/PID/context/
- * modifier/fault all live in 0x0100..0x06FF).  14c will promote
- * these into core/thermal_signals.h once the daemon-side
- * dispatcher lands. */
-#define HIL_SIG_SENSOR_TEMP_0  0x0701u
-#define HIL_SIG_TACH_RPM_0     0x0702u
+/* HIL ingress signal IDs: canonical from core/thermal_signals.h
+ * since Stage 14c (was file-local 0x0701/0x0702 in 14a/b).
+ * Slot-0 expansion: TSIG_HIL_SENSOR_TEMP(0)=0x0700,
+ * TSIG_HIL_TACH_RPM(0)=0x0710 -- WIRE FORMAT CHANGE from 14a/b. */
 
 /* Platform-private command IDs (PRD section 8.3 -- 0x8000..0xFFFF
  * range).  14c expands this set; 14b ships only SET_PWM_DUTY. */
@@ -248,7 +245,7 @@ static void app_main_hil_peripheral(void)
         if (cached_valid) {
             int n = thermal_wire_encode_telem_sample(
                 frame, sizeof(frame), seq++, now_ms,
-                HIL_SIG_SENSOR_TEMP_0, /*flags=*/0,
+                TSIG_HIL_SENSOR_TEMP(0), /*flags=*/0,
                 cached_temp_mc, /*crc_enabled=*/1);
             if (n > 0) esp32_usb_cdc_write(frame, (size_t)n);
         }
@@ -258,7 +255,7 @@ static void app_main_hil_peripheral(void)
         {
             int n = thermal_wire_encode_telem_sample(
                 frame, sizeof(frame), seq++, now_ms,
-                HIL_SIG_TACH_RPM_0, /*flags=*/0,
+                TSIG_HIL_TACH_RPM(0), /*flags=*/0,
                 rpm_q, /*crc_enabled=*/1);
             if (n > 0) esp32_usb_cdc_write(frame, (size_t)n);
         }

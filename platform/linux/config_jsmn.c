@@ -1694,6 +1694,53 @@ static thermal_status_t parse_control_object(parse_ctx_t *ctx,
 }
 
 /* =============================================================== */
+/* Top-level HIL object (Stage 14, BSP-owned)                       */
+/* =============================================================== */
+/* {
+ *   "hil": { "transport": "serial:/dev/ttyACM0" }
+ * }
+ *
+ * Sibling to "telemetry" and "control".  When set, the daemon runs
+ * in HIL_PERIPHERAL mode and opens the named device for binary TC
+ * frames in both directions (PRD §8.3). */
+
+static thermal_status_t parse_hil_object(parse_ctx_t *ctx,
+                                          int obj_idx,
+                                          runtime_global_cfg_t *r_glob,
+                                          const char *path)
+{
+    if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
+    }
+    int n = ctx->toks[obj_idx].size;
+    int k = obj_idx + 1;
+    for (int i = 0; i < n; i++) {
+        int v = k + 1;
+        char sub_path[PATH_MAX_LEN];
+        char key_str[THERMAL_NAME_MAX];
+        if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
+        }
+        snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
+
+        if (tok_str_eq(ctx, k, "transport")) {
+            if (r_glob) {
+                if (tok_str_copy(ctx, v, r_glob->hil_transport,
+                                 sizeof(r_glob->hil_transport)) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                                   "hil.transport URI too long or wrong type");
+                }
+            }
+        } else {
+            return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                            "unknown key '%s'", key_str);
+        }
+        k = skip_token(ctx->toks, v);
+    }
+    return THERMAL_OK;
+}
+
+/* =============================================================== */
 /* Top-level passes                                                 */
 /* =============================================================== */
 
@@ -1864,6 +1911,10 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
         } else if (tok_str_eq(ctx, k, "control")) {
             runtime_global_cfg_t *r_glob = runtime ? &runtime->global : NULL;
             thermal_status_t s = parse_control_object(ctx, v, r_glob, "control");
+            if (s != THERMAL_OK) return s;
+        } else if (tok_str_eq(ctx, k, "hil")) {
+            runtime_global_cfg_t *r_glob = runtime ? &runtime->global : NULL;
+            thermal_status_t s = parse_hil_object(ctx, v, r_glob, "hil");
             if (s != THERMAL_OK) return s;
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, "$",
