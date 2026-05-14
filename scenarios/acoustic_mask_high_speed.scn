@@ -3,10 +3,17 @@
 # PRD section 9.1 row 7: "Vehicle speed sweep 0 -> 130 km/h;
 # verify cap releases, trip offset applied."
 #
-# Plant heats into the critical band so the daemon WOULD command
-# state_pwm[3] = 220 absent the modifier.  Emulator sweeps speed:
-# 0 (cap=180) -> 50 (cap~218) -> 130 (cap=255, clamp).  After the
-# sweep, PWM should be allowed to reach the high-end value.
+# Plant runs in the critical band (above 90000 mc).  At critical
+# severity the acoustic_mask cap is **intentionally bypassed**
+# per PRD section 4.6 lines 598, 625, 654 ("Affected actuators
+# bypass acoustic caps").  So PWM reaches state_pwm[3] = 220
+# regardless of speed.  This scenario exercises the speed-sweep
+# code path + verifies the critical-state target is reached;
+# the cap-release-with-speed behaviour itself can't be
+# uniquely-tested at the current trip schedule (state_pwm[1]=100
+# is below cap=180, so the cap is informational below critical,
+# and bypassed above).  See acoustic_mask_low_speed.scn for the
+# low-speed-cap-informational case.
 
 config test/integration/scenario-config-canbus.json
 
@@ -14,22 +21,14 @@ plant ambient_mc      50000
 plant initial_temp_mc 92000
 plant duration_ms     30000
 
-# Initially: low speed -> low cap.
+# Speed sweep -- modifier curve evaluation runs, just doesn't
+# clip PWM since the zone is critical the whole time.
 0     set_emulator_speed 0
-
-# Mid-sweep at t=10 s -> higher cap.
 10000 set_emulator_speed 50
-
-# High-speed at t=20 s -> cap is now 255 (no clipping).
 20000 set_emulator_speed 130
 
-# Within the low-speed window the modifier caps PWM at the
-# low-end value (180).
-assert max actuator_pwm 0 <= 200 between 0 8000
-
-# Once speed reaches 130, the modifier's cap is 255 and the
-# daemon's critical trip can drive PWM up past 200.  Filter
-# time constant ~1.5 s; allow 7 s post-step to settle.
+# Critical trip drives PWM up to state_pwm[3] = 220.  Filter
+# time constant ~1.5 s; allow generous settle window.
 assert eventually actuator_pwm 0 >= 220 within 30000
 
 assert no_faults

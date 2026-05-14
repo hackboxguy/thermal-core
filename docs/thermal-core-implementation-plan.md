@@ -397,6 +397,11 @@ The `protocol/` module is portable C99 with no heap and no platform deps. It lin
 
 **Exit gate:** all previous + CAN integration test green.  **Stage 11 closed:** unit (25 tests) + replay + property + property-command + portability + smoke + integration + integration-can + asan + clang-tidy + cppcheck + fuzz-json + fuzz-wire + coverage all green on canonical CI; PRD §6 v1 OBD-II surface fully covered.
 
+**Known limitations (deferred to a future commit):**
+
+- **IIR filter asymmetric truncation stall.**  `thermal_filter_step()` does `delta = ((int64)alpha_q16 * (sample - filtered)) >> 16`.  The arithmetic right-shift (gcc + clang both floor on negative) gives **exact** convergence on decreasing targets but **stalls positive-direction convergence** at `target - ceil(65536/alpha_q16)`.  For the canbus context (`alpha_q16 = 2048`) the positive stall is 32 km/h, so a setpoint jump from 50 → 200 km/h asymptotes at ~168 km/h instead of 200.  `test_canbus_obd2.py` works around it by ordering setpoints `[200, 100, 50]` (first goes through the `initialized=0` shortcut, subsequent are decreases).  Symmetric fix is round-to-nearest (`(product + 32768) >> 16` on positives, `(product - 32768) >> 16` on negatives); rewrites the SHA-256 of every replay golden + scenario CSV.  Tracked for the white-paper benchmark sweep when those goldens get regenerated anyway.
+- **acoustic_mask high-speed scenario.**  `scenarios/acoustic_mask_high_speed.scn` originally asserted PWM ≤ 200 during the low-speed window, expecting the modifier cap to clip critical-state PWM=220 down to 180.  PRD §4.6 lines 598/625/654 explicitly bypass acoustic caps at critical severity ("Affected actuators bypass acoustic caps"); the daemon's `thermal_core.c:1232` correctly skips the cap there.  Assertion dropped.  Uniquely exercising the cap-release-with-speed behaviour requires either a new trip schedule with `state_pwm[warn] > cap` (config change) or a daemon-level signal exposing `modifier_pwm_cap` separately from applied PWM (scenario DSL extension).  Deferred.
+
 ---
 
 ### Stage 12 — Scenario runner + thermal-plant simulator + canonical scenarios

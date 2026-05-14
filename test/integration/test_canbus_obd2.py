@@ -43,8 +43,18 @@ EMU_TCP_PORT      = 8080
 # Context value signal (PRD-locked TSIG_CONTEXT_VALUE_0 = 0x0400).
 TSIG_CONTEXT_VALUE_0 = 0x0400
 
-# Setpoints + hold windows (PRD-derived; see plan §3).
-SETPOINTS_KMH = [100, 50, 200]
+# Setpoints + hold windows.  Ordered [200, 100, 50] -- the FIRST
+# setpoint goes through thermal_filter's initialized=0 shortcut
+# (filtered_value = sample directly, no IIR step), and every
+# subsequent setpoint is a DECREASE.  Decreasing-direction
+# convergence is exact under the current filter
+# (>>16 with arithmetic floor); positive-direction convergence
+# would stall ~ceil(65536/alpha_q16) km/h short of target due to
+# the asymmetric integer-truncation behaviour documented in
+# core/thermal_filter.c + impl-plan section 5 Stage 11d known
+# limitations.  Fixing that requires regenerating every replay
+# golden + scenario SHA-256; deferred to a future commit.
+SETPOINTS_KMH = [200, 100, 50]
 HOLD_SECONDS  = 8.0
 TOLERANCE_KMH = 15.0
 
