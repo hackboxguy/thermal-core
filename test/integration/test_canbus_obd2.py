@@ -43,17 +43,21 @@ EMU_TCP_PORT      = 8080
 # Context value signal (PRD-locked TSIG_CONTEXT_VALUE_0 = 0x0400).
 TSIG_CONTEXT_VALUE_0 = 0x0400
 
-# Setpoints + hold windows.  Ordered [200, 100, 50] -- the FIRST
-# setpoint goes through thermal_filter's initialized=0 shortcut
-# (filtered_value = sample directly, no IIR step), and every
-# subsequent setpoint is a DECREASE.  Decreasing-direction
-# convergence is exact under the current filter
-# (>>16 with arithmetic floor); positive-direction convergence
-# would stall ~ceil(65536/alpha_q16) km/h short of target due to
-# the asymmetric integer-truncation behaviour documented in
-# core/thermal_filter.c + impl-plan section 5 Stage 11d known
-# limitations.  Fixing that requires regenerating every replay
-# golden + scenario SHA-256; deferred to a future commit.
+# Setpoints + hold windows.  All DECREASES from a high baseline
+# (the test pre-sets the emulator to PREINIT_KMH = 250 below
+# BEFORE the daemon starts, so the daemon's filter init-shortcut
+# at `initialized=0` captures 250 directly).  Decreasing-direction
+# convergence in thermal_filter is exact (>>16 arithmetic floor
+# on negatives); positive-direction convergence would stall
+# ~ceil(65536/alpha_q16) km/h short of target due to the
+# asymmetric integer-truncation behaviour documented in
+# core/thermal_filter.c + impl-plan section 5 Stage 11 known
+# limitations.  Setting the emulator to PREINIT_KMH before
+# daemon start is the only way to bracket all subsequent
+# setpoints as decreases (the emulator's compile-time default
+# speed is 88 km/h, so without pre-init the daemon's filter
+# starts at 88 and any positive setpoint > 88+15 fails).
+PREINIT_KMH   = 250
 SETPOINTS_KMH = [200, 100, 50]
 HOLD_SECONDS  = 8.0
 TOLERANCE_KMH = 15.0
@@ -168,6 +172,15 @@ def main() -> int:
         if emu.poll() is not None:
             fail(f"emulator exited early (rc={emu.returncode}); "
                  f"see /tmp/car-can-emulator.log")
+
+        # Pre-set the emulator to PREINIT_KMH BEFORE the daemon
+        # starts.  The daemon's first OBD-II response carries
+        # this value; thermal_filter's `initialized=0` path takes
+        # it directly (no IIR step), so all subsequent setpoints
+        # can be decreases.  See PREINIT_KMH docstring above for
+        # why this matters.
+        set_emulator_speed(PREINIT_KMH)
+        time.sleep(0.2)
 
         daemon = subprocess.Popen(
             [str(DAEMON), f"--config={CONFIG}", "--clock=wall"],

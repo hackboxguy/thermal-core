@@ -3,13 +3,23 @@
 # PRD section 9.1 row 10: "Cut CAN; verify fail-safe to
 # assume_stationary after the configured context timeout_ms."
 #
-# 1. Plant heats into critical so the daemon wants high PWM.
-# 2. Emulator broadcasts speed=100 km/h, so the modifier's cap
-#    relaxes (curve(100)=255) and PWM can climb past 200.
-# 3. Kill the emulator at t=10 s.
-# 4. After timeout_ms (3 s), the context filter flips invalid,
-#    fail_safe=assume_stationary kicks in, modifier reverts to
-#    speed=0 -> cap=180.  PWM must drop to <= 200.
+# Plant runs in critical for the duration.  The bus-loss
+# fail_safe correctly flips the modifier's effective speed to 0
+# after timeout_ms (cap = curve(0) = 180), BUT the cap is then
+# bypassed because zone severity is critical (PRD section 4.6
+# lines 598/625/654 -- "Affected actuators bypass acoustic
+# caps").  So PWM stays at state_pwm[3] = 220 throughout, and
+# the post-loss "PWM clamped to <= 200" check that earlier
+# revisions encoded can't be satisfied at this trip schedule.
+#
+# What this scenario still exercises:
+#   - emulator startup + speed broadcast on vcan0
+#   - daemon's CAN BSP timeout cascade after kill_emulator
+#   - critical-state PWM target (>= 220) before and during loss
+# Bus-loss fail_safe behaviour at non-critical severity is
+# tested in test/integration/test_canbus_busloss.py against the
+# TSIG_CONTEXT_VALUE_0 telemetry signal directly (where the cap
+# bypass doesn't apply because there's no thermal trip in play).
 
 config test/integration/scenario-config-canbus.json
 
@@ -20,17 +30,13 @@ plant duration_ms     20000
 # Speed = 100 km/h -> high-speed cap = 255 (no clipping).
 0     set_emulator_speed 100
 
-# Cut CAN at t=10 s.  emulator stops broadcasting; daemon's CAN
-# cache expires after timeout_ms (3 s); modifier sees stale
-# filter -> fail_safe -> effective_value = 0 -> cap = 180.
+# Cut CAN at t=10 s -- triggers the BSP timeout cascade, but
+# the critical-state PWM target stays unchanged because critical
+# bypasses caps.
 10000 kill_emulator
 
-# Pre-loss: high speed is locked in by t=5 s and PWM rises to
-# >= 220 (critical state).
+# PWM rises to >= 220 (critical state) well within the pre-loss
+# window and stays there.
 assert eventually actuator_pwm 0 >= 220 within 8000
-
-# Post-loss + grace (timeout_ms 3 s + IIR + tick boundary):
-# PWM is clamped back at <= 200 from t=16 s onward.
-assert max actuator_pwm 0 <= 200 between 16000 20000
 
 assert no_faults
