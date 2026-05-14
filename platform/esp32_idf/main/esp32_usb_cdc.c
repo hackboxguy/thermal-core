@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "esp_log.h"
+#include "driver/usb_serial_jtag.h"
 
 void esp32_usb_cdc_init(void)
 {
@@ -33,4 +34,17 @@ void esp32_usb_cdc_write(const uint8_t *buf, size_t len)
     if (len == 0) return;
     (void)fwrite(buf, 1, len, stdout);
     (void)fflush(stdout);
+}
+
+size_t esp32_usb_cdc_read(uint8_t *buf, size_t cap)
+{
+    if (cap == 0) return 0;
+    /* 0-tick wait: return immediately with whatever bytes the
+     * USB-Serial-JTAG driver already has buffered.  The driver
+     * is auto-installed by ESP-IDF when
+     * CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y (sdkconfig.defaults,
+     * Stage 13a), so we don't call usb_serial_jtag_driver_install
+     * ourselves. */
+    int n = usb_serial_jtag_read_bytes(buf, cap, 0);
+    return (n < 0) ? 0 : (size_t)n;
 }

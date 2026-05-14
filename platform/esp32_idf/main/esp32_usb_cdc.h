@@ -44,6 +44,15 @@ void esp32_usb_cdc_init(void);
  * perspective (stdio is flushed at the end of the call). */
 void esp32_usb_cdc_write(const uint8_t *buf, size_t len);
 
+/* Pull up to `cap` bytes off the USB-Serial-JTAG receive
+ * queue into `buf`.  Returns the byte count actually read
+ * (0 if nothing pending; never negative).  Non-blocking:
+ * `usb_serial_jtag_read_bytes(..., 0 ticks)` returns
+ * immediately with whatever the driver's internal ring
+ * buffer already holds.  14b uses this to drive the inbound
+ * TC frame accumulator in app_main_hil_peripheral. */
+size_t esp32_usb_cdc_read(uint8_t *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

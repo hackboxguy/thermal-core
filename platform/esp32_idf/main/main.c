@@ -85,6 +85,116 @@ static const char *TAG = "thermal";
 #define HIL_SIG_SENSOR_TEMP_0  0x0701u
 #define HIL_SIG_TACH_RPM_0     0x0702u
 
+/* Platform-private command IDs (PRD section 8.3 -- 0x8000..0xFFFF
+ * range).  14c expands this set; 14b ships only SET_PWM_DUTY. */
+#define HIL_CMD_SET_PWM_DUTY   0x8001u
+
+/* Sized for a worst-case inbound frame plus enough headroom that
+ * the sliding-window scanner doesn't constantly memmove. */
+#define HIL_RX_BUF_SIZE (THERMAL_WIRE_MAX_MCU \
+                         + THERMAL_WIRE_HEADER_LEN \
+                         + THERMAL_WIRE_CRC_LEN)
+
+/* === HIL inbound dispatch ================================ */
+
+static void hil_dispatch_frame(const thermal_wire_frame_t *fr,
+                                uint32_t now_ms, uint16_t *out_seq)
+{
+    /* ACK / NACK fit easily in this stack buffer (HEADER + 8-byte
+     * ack/nack payload + CRC = 22 bytes). */
+    uint8_t reply[THERMAL_WIRE_HEADER_LEN + 8u + THERMAL_WIRE_CRC_LEN];
+
+    if (fr->opcode != THERMAL_WIRE_OP_CMD_REQUEST) {
+        int n = thermal_wire_encode_cmd_nack(
+            reply, sizeof(reply), (*out_seq)++, now_ms,
+            fr->seq, THERMAL_WIRE_STATUS_BAD_OPCODE,
+            /*detail=*/0, /*crc_enabled=*/1);
+        if (n > 0) esp32_usb_cdc_write(reply, (size_t)n);
+        return;
+    }
+
+    /* Payload must have at least the 2-byte command_id header
+     * (PRD section 7.5 lines 968-972). */
+    uint16_t command_id = 0;
+    if (fr->payload_len >= 2u) {
+        command_id = (uint16_t)fr->payload[0]
+                   | ((uint16_t)fr->payload[1] << 8);
+    }
+
+    if (command_id == HIL_CMD_SET_PWM_DUTY && fr->payload_len == 3u) {
+        uint8_t duty = fr->payload[2];
+        bsp_esp32_pwm_set_duty(duty);
+        int n = thermal_wire_encode_cmd_ack(
+            reply, sizeof(reply), (*out_seq)++, now_ms,
+            fr->seq, /*status=*/0u,
+            /*detail=*/(uint32_t)duty, /*crc_enabled=*/1);
+        if (n > 0) esp32_usb_cdc_write(reply, (size_t)n);
+        return;
+    }
+
+    /* Anything else (unknown command_id, length mismatch, or
+     * payload too short) -> NACK with BAD_PAYLOAD.  detail carries
+     * the offending command_id so the host can correlate. */
+    {
+        int n = thermal_wire_encode_cmd_nack(
+            reply, sizeof(reply), (*out_seq)++, now_ms,
+            fr->seq, THERMAL_WIRE_STATUS_BAD_PAYLOAD,
+            /*detail=*/(uint32_t)command_id, /*crc_enabled=*/1);
+        if (n > 0) esp32_usb_cdc_write(reply, (size_t)n);
+    }
+}
+
+/* Sliding-window frame accumulator.  Pulls bytes off the
+ * USB-Serial-JTAG rx queue, attempts to decode frames starting
+ * at offset 0, dispatches OK frames, drops 1 byte on
+ * unrecoverable decoder errors (BAD_MAGIC / BAD_CRC / ...)
+ * to keep the stream self-healing. */
+static uint8_t s_hil_rx_buf[HIL_RX_BUF_SIZE];
+static size_t  s_hil_rx_pos = 0;
+
+static void hil_drain_commands(uint32_t now_ms, uint16_t *out_seq)
+{
+    /* 1. Pull whatever the driver has into the tail of the buffer. */
+    size_t free_cap = sizeof(s_hil_rx_buf) - s_hil_rx_pos;
+    if (free_cap > 0) {
+        size_t got = esp32_usb_cdc_read(s_hil_rx_buf + s_hil_rx_pos,
+                                         free_cap);
+        s_hil_rx_pos += got;
+    } else {
+        /* Pathological: buffer full with no decodable frame at the
+         * head.  Drop the oldest byte and try again next tick. */
+        memmove(s_hil_rx_buf, s_hil_rx_buf + 1, s_hil_rx_pos - 1);
+        s_hil_rx_pos--;
+    }
+
+    /* 2. Try to decode at offset 0 repeatedly until short or no
+     *    progress.  Multiple frames per call is expected. */
+    while (s_hil_rx_pos >= THERMAL_WIRE_HEADER_LEN) {
+        thermal_wire_frame_t fr;
+        int dec = thermal_wire_decode_frame(s_hil_rx_buf, s_hil_rx_pos,
+                                            THERMAL_WIRE_MAX_MCU,
+                                            /*crc_enabled=*/1, &fr);
+        if (dec == THERMAL_WIRE_OK) {
+            hil_dispatch_frame(&fr, now_ms, out_seq);
+            size_t consumed = (size_t)THERMAL_WIRE_HEADER_LEN
+                            + fr.payload_len
+                            + (size_t)THERMAL_WIRE_CRC_LEN;
+            memmove(s_hil_rx_buf, s_hil_rx_buf + consumed,
+                    s_hil_rx_pos - consumed);
+            s_hil_rx_pos -= consumed;
+        } else if (dec == THERMAL_WIRE_ERR_TRUNCATED) {
+            return;   /* wait for more bytes */
+        } else {
+            /* BAD_MAGIC / BAD_CRC / BAD_VERSION / BAD_OPCODE /
+             * BAD_PAYLOAD / OVER_CAP: drop 1 byte and resync.
+             * Self-healing -- eventually the scanner finds a real
+             * "TC" magic. */
+            memmove(s_hil_rx_buf, s_hil_rx_buf + 1, s_hil_rx_pos - 1);
+            s_hil_rx_pos--;
+        }
+    }
+}
+
 /* === HIL_PERIPHERAL app_main ============================== */
 
 static void app_main_hil_peripheral(void)
@@ -111,6 +221,11 @@ static void app_main_hil_peripheral(void)
 
     for (;;) {
         int64_t t0_us = esp_timer_get_time();
+
+        /* Drain inbound CMD_REQUEST frames first so a duty set
+         * received this tick takes effect before the next
+         * outbound emission. */
+        hil_drain_commands(now_ms, &seq);
 
         /* 1 Hz sensor refresh, same cadence as STANDALONE. */
         if (sensor_ok && ticks_since_read >= 10) {
