@@ -121,12 +121,14 @@ Heat the sensor; `/tmp/pi4-telemetry.csv` records the fan ramp.
 Full walkthrough including the DT overlay snippet:
 [`docs/getting-started/linux-pi4.md`](docs/getting-started/linux-pi4.md).
 
-## Quick start: HIL_PERIPHERAL (experimental)
+## Quick start: HIL_PERIPHERAL
 
-> ⚠️ **Experimental.**  Stage 14d (CI HIL leg + PTY integration
-> test) is not yet merged; HIL is bench-tested only.  Wire-format
-> stability is good (TC binary frames + canonical TSIG_HIL_*
-> signal IDs) but expect rough edges.
+Stage 14 closed.  HIL is now PR-gated in CI: the firmware build
+runs in the `build-esp32` matrix with the size budget, and the
+daemon's `bsp_hil_serial` is exercised by a PTY-driven
+integration test on every push (`test/integration/test_hil_serial.py`).
+Bench integration (real ESP32 + DS18B20 + fan on USB-CDC)
+remains a manual / nightly procedure per impl-plan §5.
 
 ESP32-C3 owns the hardware (DS18B20 + fan); the Linux daemon
 runs the core over USB-CDC.  Two builds + one cable.
@@ -187,8 +189,12 @@ Recent stages:
 - **Stage 13** — ESP32-C3 STANDALONE + REPLAY_STANDALONE
   builds.  `build-esp32` CI gate active; size budget
   (.text ≤ 64 KB / .bss ≤ 16 KB for core/+protocol/) enforced.
-- **Stage 14** — HIL_PERIPHERAL build (14a/b/c shipped; 14d
-  CI HIL leg + bench-integration scaffold pending).
+- **Stage 14** — HIL_PERIPHERAL build closed.  All three
+  ESP32 build modes (STANDALONE / REPLAY_STANDALONE /
+  HIL_PERIPHERAL) gated on every PR via `build-esp32` matrix
+  with size budgets.  PTY-driven integration test
+  (`test_hil_serial.py`) closes the daemon-side BSP coverage
+  gap.  Bench integration documented as manual / nightly.
 - **Stage 15** — host-vs-target byte-for-byte SHA-256
   parity gate (pending).
 

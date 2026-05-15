@@ -1,12 +1,12 @@
 # HIL_PERIPHERAL deployment
 
-> ⚠️ **Experimental.**  Stage 14d (CI HIL leg + PTY integration
-> test scaffold) is not yet merged at the time this page was
-> written.  The HIL loop is bench-tested but doesn't yet have
-> automated regression coverage.  Wire-format stability is good
-> — `TC` binary frames + canonical `TSIG_HIL_*` signal IDs — but
-> expect rough edges around staleness handling, on-stop fan
-> behaviour, and ACK retry logic.
+Stage 14 closed.  The HIL loop has automated regression coverage:
+the firmware build runs in CI under the `build-esp32` matrix with
+the PRD §9.2 size budget enforced, and the daemon side is
+exercised on every push by [`test/integration/test_hil_serial.py`](../../test/integration/test_hil_serial.py)
+via a Unix PTY pair (no hardware required).  Bench integration
+with a real ESP32-C3 + DS18B20 + fan remains a **manual /
+nightly procedure**, not a PR gate, per impl-plan §5.
 
 In HIL_PERIPHERAL mode the **ESP32-C3 owns the hardware** (DS18B20
 sensor + Noctua NF-A8 PWM fan, same wiring as the STANDALONE
@@ -234,15 +234,10 @@ opcode `0x01` (TELEM_SAMPLE) for sensor + tach.  If you see
 zero, the firmware isn't in HIL mode (check that you flashed
 the right build, not the STANDALONE one).
 
-## Limitations (Stage 14c)
+## Limitations (post Stage 14d)
 
 These all land in later stages:
 
-- **No PTY integration test.**  Stage 14d will add
-  `test/integration/test_hil_serial.py` that uses a Python
-  `pty` pair to feed crafted TELEM_SAMPLE frames into the
-  daemon and observe its CMD_REQUEST egress, closing the
-  current coverage gap on `bsp_hil_serial.c`.
 - **No staleness timeout on HIL samples.**  If the ESP32 stops
   sending, the daemon keeps using the last-seen temp.  Fallback
   kicks in only when the sample was never seen at all.
@@ -256,9 +251,6 @@ These all land in later stages:
   `HIL_CMD_SET_PWM_DUTY` for actuator slot 0.  PRD §8.3 leaves
   the 0x8000+ command-ID space open for future expansion
   (`SET_PWM_FREQ`, `RESET_TACH_COUNTER`, etc.).
-- **No CI HIL build leg yet.**  Stage 14d adds the
-  `HIL_PERIPHERAL` matrix entry to `build-esp32` and the
-  size-budget assertion against it.
 
 ## Troubleshooting
 

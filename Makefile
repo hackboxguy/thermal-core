@@ -255,11 +255,13 @@ smoke: build test/smoke/test_thermalcored_smoke.py test/smoke/smoke-config.json
 # do not race.
 integration: build test/integration/test_thermalcore_tune.py \
              test/integration/test_thermalcore_tune_pid.py \
+             test/integration/test_hil_serial.py \
              test/integration/pid-config.json \
              tools/thermalcore-tune tools/thermalcore_wire.py \
              test/smoke/smoke-config.json
 	@python3 test/integration/test_thermalcore_tune.py
 	@python3 test/integration/test_thermalcore_tune_pid.py
+	@python3 test/integration/test_hil_serial.py
 
 # --- Integration-can: vcan0 + car-can-emulator hardware loop -------
 # Stage 11 11c: spawns car-can-emulator on vcan0, drives speed via
@@ -711,6 +713,15 @@ build-esp32:
 	    cd platform/esp32_idf && \
 	    idf.py fullclean >/dev/null && \
 	    idf.py -DTHERMALCORE_REPLAY_STANDALONE=ON build'
+	@echo "--- build-esp32: HIL_PERIPHERAL ---"
+	@bash -c '. "$(ESP_IDF_PATH)/export.sh" && \
+	    cd platform/esp32_idf && \
+	    idf.py fullclean >/dev/null && \
+	    idf.py -DTHERMALCORE_HIL_PERIPHERAL=ON build && \
+	    idf.py size-files --format json \
+	        --output-file build/size-files.json'
+	python3 tools/check_esp32_size_budget.py \
+	    platform/esp32_idf/build/size-files.json
 
 clean:
 	rm -rf build

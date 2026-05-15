@@ -285,24 +285,27 @@ jobs:
           path: build/coverage/html/
           if-no-files-found: warn
 
-  # Stage 13 13d: ESP32-C3 firmware build matrix.  Builds the
-  # firmware in both modes (STANDALONE + REPLAY_STANDALONE) inside
-  # the pinned ESP-IDF docker image.  The STANDALONE leg
-  # additionally enforces the PRD section 9.2 size budgets
-  # (.text <= 64 KB, .bss <= 16 KB) on the core/+protocol/
-  # contribution to the linked firmware.  REPLAY just builds (its
-  # LTO + --gc-sections dead-strip drops drivers + BSPs, which
-  # would understate the real footprint).
+  # Stage 13 13d / Stage 14 14d: ESP32-C3 firmware build matrix.
+  # Builds the firmware in all three modes (STANDALONE +
+  # REPLAY_STANDALONE + HIL_PERIPHERAL) inside the pinned ESP-IDF
+  # docker image.  STANDALONE + HIL legs additionally enforce the
+  # PRD section 9.2 size budgets (.text <= 64 KB, .bss <= 16 KB)
+  # on the core/+protocol/ contribution to the linked firmware.
+  # REPLAY skips the gate -- its LTO + --gc-sections dead-strip
+  # is the most aggressive of the three modes (no thermal_core
+  # step, no BSPs referenced) and the measurement would
+  # understate the deployable footprint.
   #
-  # Closes the Stage 13 exit gate per impl-plan section 5 line 471:
-  # "all previous + build-esp32 green.  Target-replay parity is
-  # enforced in nightly, not as a PR gate."
+  # Closes the Stage 13 exit gate (impl-plan section 5 line 471:
+  # "all previous + build-esp32 green") and the Stage 14 exit
+  # gate (impl-plan section 5 Stage 14: "HIL build green;
+  # bench integration manual / nightly").
   build-esp32:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        mode: [STANDALONE, REPLAY_STANDALONE]
+        mode: [STANDALONE, REPLAY_STANDALONE, HIL_PERIPHERAL]
     steps:
       - uses: actions/checkout@v4
       - name: Build firmware (${{ matrix.mode }})
@@ -312,18 +315,23 @@ jobs:
           target: esp32c3
           path: platform/esp32_idf
           command: |
-            if [ "${{ matrix.mode }}" = "REPLAY_STANDALONE" ]; then
+            case "${{ matrix.mode }}" in
+              REPLAY_STANDALONE)
                 idf.py reconfigure -DTHERMALCORE_REPLAY_STANDALONE=ON
-            fi
+                ;;
+              HIL_PERIPHERAL)
+                idf.py reconfigure -DTHERMALCORE_HIL_PERIPHERAL=ON
+                ;;
+            esac
             idf.py build
             idf.py size-files --format json \
                 --output-file build/size-files.json
       - name: Set up Python for size-budget script
-        if: matrix.mode == 'STANDALONE'
+        if: matrix.mode != 'REPLAY_STANDALONE'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Enforce PRD section 9.2 size budget (STANDALONE)
-        if: matrix.mode == 'STANDALONE'
+      - name: Enforce PRD section 9.2 size budget
+        if: matrix.mode != 'REPLAY_STANDALONE'
         run: python3 tools/check_esp32_size_budget.py
             platform/esp32_idf/build/size-files.json
