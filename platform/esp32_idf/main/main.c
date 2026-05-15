@@ -282,7 +282,11 @@ static void app_main_replay(void)
 {
     ESP_LOGI(TAG, "thermal-core ESP32-C3 REPLAY_STANDALONE (Stage 13 13c)");
 
-    thermal_core_t            core;
+    /* `static`: thermal_core_t is 4 KB -- larger than the whole
+     * 3584-byte FreeRTOS main-task stack.  app_main runs once and
+     * never returns, so a static local is morally a global; this
+     * keeps the 4 KB in .bss instead of overflowing the stack. */
+    static thermal_core_t     core;
     thermal_core_callbacks_t  cb = {
         .log_event      = esp32_log_event_cb,
         .telemetry_emit = esp32_telemetry_emit_cb,
@@ -348,7 +352,11 @@ static void app_main_standalone(void)
     uint8_t sensor_ok = 0;
     if (init_bsps(&sensor_ok) != 0) return;
 
-    thermal_core_t            core;
+    /* `static`: thermal_core_t is 4 KB -- larger than the whole
+     * 3584-byte FreeRTOS main-task stack.  app_main runs once and
+     * never returns, so a static local is morally a global; this
+     * keeps the 4 KB in .bss instead of overflowing the stack. */
+    static thermal_core_t     core;
     thermal_core_callbacks_t  cb = {
         .log_event      = esp32_log_event_cb,
         .telemetry_emit = esp32_telemetry_emit_cb,
