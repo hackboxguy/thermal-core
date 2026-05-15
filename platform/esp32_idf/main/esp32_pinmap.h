@@ -6,8 +6,12 @@
  * fan or sensor is a JSON-only change (edit `configs/
  * esp32-c3-standalone.json`, rebuild with `make build-esp32`,
  * flash).  json2static.py emits a `const esp32_pinmap_t
- * G_ESP32_PINMAP` from the JSON's `esp32_pinmap` section,
- * alongside the existing `G_THERMAL_CFG`.
+ * G_ESP32_PINMAP` from the JSON's `mcu_pinmap` section,
+ * alongside the existing `G_THERMAL_CFG`.  The JSON key is
+ * MCU-target-agnostic (`mcu_pinmap`); the emitted C struct is
+ * platform-scoped (`esp32_pinmap_t`), so a future CH32V003 /
+ * RH850 port reuses the same JSON key with its own pinmap
+ * header.
  *
  * v1 design constraints:
  *   - One 1-Wire bus shared by all DS18B20 sensors (the canonical

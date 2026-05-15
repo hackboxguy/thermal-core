@@ -124,13 +124,17 @@ TOP_LEVEL_ALLOWED = {
     "config_version", "control_period_ms",
     "sensors", "context_signals", "actuators", "zones",
     "policy_modifiers", "fault_detection", "telemetry", "control",
-    "esp32_pinmap",                       # ESP32-only, optional
+    "mcu_pinmap",                         # MCU-target-only, optional
 }
 
-ESP32_PINMAP_TOP_ALLOWED      = {"sensors", "actuators"}
-ESP32_PINMAP_SENSOR_ALLOWED   = {"name", "onewire_gpio"}
-ESP32_PINMAP_ACTUATOR_ALLOWED = {"name", "pwm_gpio", "tach_gpio",
-                                  "pwm_freq_hz"}
+# `mcu_pinmap` is the MCU-target-agnostic JSON key (CH32V003,
+# RH850, etc. would reuse it).  The emitted C struct stays
+# platform-scoped (esp32_pinmap_t / G_ESP32_PINMAP), since each
+# MCU port owns its own pinmap header under platform/<target>/.
+MCU_PINMAP_TOP_ALLOWED      = {"sensors", "actuators"}
+MCU_PINMAP_SENSOR_ALLOWED   = {"name", "onewire_gpio"}
+MCU_PINMAP_ACTUATOR_ALLOWED = {"name", "pwm_gpio", "tach_gpio",
+                                "pwm_freq_hz"}
 
 SENSOR_ALLOWED = {
     "id", "name", "iir_alpha_q16", "max_staleness_ms",
@@ -514,7 +518,7 @@ def normalise(raw: dict) -> dict:
         "enabled_signal_ids":  enabled_ids,
     }
 
-    pinmap = normalise_pinmap(raw.get("esp32_pinmap"), sensors, actuators)
+    pinmap = normalise_pinmap(raw.get("mcu_pinmap"), sensors, actuators)
 
     return {
         "config_version":     int(raw["config_version"]),
@@ -526,15 +530,15 @@ def normalise(raw: dict) -> dict:
         "modifiers":          modifiers,
         "faults":             faults,
         "telemetry":          telemetry,
-        "esp32_pinmap":       pinmap,   # None if section omitted
+        "mcu_pinmap":         pinmap,   # None if section omitted
     }
 
 
 def normalise_pinmap(raw_pinmap, sensors, actuators):
-    """Parse the optional `esp32_pinmap` JSON section into a dict
+    """Parse the optional `mcu_pinmap` JSON section into a dict
     indexed by slot (matching the order of `sensors` + `actuators`).
 
-    Returns None if the section is absent (non-ESP32 builds don't
+    Returns None if the section is absent (non-MCU builds don't
     need it).  Raises ConfigError on:
       - typos in keys (reject_unknown);
       - missing entry for a declared sensor/actuator name;
@@ -544,13 +548,13 @@ def normalise_pinmap(raw_pinmap, sensors, actuators):
     if raw_pinmap is None:
         return None
 
-    reject_unknown(raw_pinmap, ESP32_PINMAP_TOP_ALLOWED, "esp32_pinmap")
+    reject_unknown(raw_pinmap, MCU_PINMAP_TOP_ALLOWED, "mcu_pinmap")
 
     sensor_by_name = {}
     onewire_gpio_seen = None
     for i, s in enumerate(raw_pinmap.get("sensors", [])):
-        where = f"esp32_pinmap.sensors[{i}]"
-        reject_unknown(s, ESP32_PINMAP_SENSOR_ALLOWED, where)
+        where = f"mcu_pinmap.sensors[{i}]"
+        reject_unknown(s, MCU_PINMAP_SENSOR_ALLOWED, where)
         for required in ("name", "onewire_gpio"):
             if required not in s:
                 raise ConfigError(f"{where}: missing '{required}'")
@@ -559,7 +563,7 @@ def normalise_pinmap(raw_pinmap, sensors, actuators):
             onewire_gpio_seen = gpio
         elif onewire_gpio_seen != gpio:
             raise ConfigError(
-                f"esp32_pinmap: v1 supports a single shared 1-Wire bus; "
+                f"mcu_pinmap: v1 supports a single shared 1-Wire bus; "
                 f"all sensors must declare the same `onewire_gpio` "
                 f"(got {onewire_gpio_seen} and {gpio})")
         sensor_by_name[s["name"]] = {"onewire_gpio": gpio}
@@ -569,14 +573,14 @@ def normalise_pinmap(raw_pinmap, sensors, actuators):
         name = s["name"]
         if name not in sensor_by_name:
             raise ConfigError(
-                f"esp32_pinmap.sensors: missing entry for '{name}' "
-                f"(declared in sensors[] but not in esp32_pinmap.sensors[])")
+                f"mcu_pinmap.sensors: missing entry for '{name}' "
+                f"(declared in sensors[] but not in mcu_pinmap.sensors[])")
         sensors_out.append(sensor_by_name[name])
 
     actuator_by_name = {}
     for i, a in enumerate(raw_pinmap.get("actuators", [])):
-        where = f"esp32_pinmap.actuators[{i}]"
-        reject_unknown(a, ESP32_PINMAP_ACTUATOR_ALLOWED, where)
+        where = f"mcu_pinmap.actuators[{i}]"
+        reject_unknown(a, MCU_PINMAP_ACTUATOR_ALLOWED, where)
         for required in ("name", "pwm_gpio", "tach_gpio", "pwm_freq_hz"):
             if required not in a:
                 raise ConfigError(f"{where}: missing '{required}'")
@@ -591,8 +595,8 @@ def normalise_pinmap(raw_pinmap, sensors, actuators):
         name = a["name"]
         if name not in actuator_by_name:
             raise ConfigError(
-                f"esp32_pinmap.actuators: missing entry for '{name}' "
-                f"(declared in actuators[] but not in esp32_pinmap.actuators[])")
+                f"mcu_pinmap.actuators: missing entry for '{name}' "
+                f"(declared in actuators[] but not in mcu_pinmap.actuators[])")
         actuators_out.append(actuator_by_name[name])
 
     return {
@@ -744,7 +748,7 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path=""):
         out.append(f"/* Source: {source_path} */")
     out.append("")
     out.append('#include "thermal_core.h"')
-    if cfg.get("esp32_pinmap") is not None:
+    if cfg.get("mcu_pinmap") is not None:
         out.append('#include "esp32_pinmap.h"')
     out.append("")
     out.append(f"const thermal_config_t {symbol} = {{")
@@ -798,8 +802,8 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path=""):
 
     out.append("};")
     out.append("")
-    if cfg.get("esp32_pinmap") is not None:
-        out.append(emit_pinmap(cfg["esp32_pinmap"]))
+    if cfg.get("mcu_pinmap") is not None:
+        out.append(emit_pinmap(cfg["mcu_pinmap"]))
         out.append("")
     return "\n".join(out)
 

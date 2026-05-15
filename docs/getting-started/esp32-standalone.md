@@ -203,11 +203,11 @@ Three pieces in [`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/co
      fans listed under `actuators`.  Hottest sensor drives both
      fans together.
 
-4. **Extend `esp32_pinmap`** with the new GPIO assignments
-   (this is the bit the refactor reads from):
+4. **Extend `mcu_pinmap`** with the new GPIO assignments
+   (this is the bit the firmware reads from):
 
    ```json
-   "esp32_pinmap": {
+   "mcu_pinmap": {
      "sensors": [
        { "name": "soc", "onewire_gpio": 6 },
        { "name": "amp", "onewire_gpio": 6 }
@@ -222,7 +222,10 @@ Three pieces in [`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/co
    The pinmap is **keyed by name** (matches `sensors[].name` /
    `actuators[].name`), so the JSON-side order doesn't matter
    and a typo is caught at build time.  All `onewire_gpio`
-   values must be identical (v1 supports one shared bus).
+   values must be identical (v1 supports one shared bus).  The
+   key is `mcu_pinmap` (not `esp32_pinmap`) so the same JSON
+   schema carries over to future MCU targets — each port emits
+   its own platform-scoped pinmap struct.
 
 ### Build + flash
 

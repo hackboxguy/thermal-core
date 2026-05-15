@@ -4,7 +4,7 @@
  *
  * The hardcoded `#define PIN_*` constants are gone.  Pin
  * assignments come from `G_ESP32_PINMAP`, emitted by
- * tools/json2static.py from the JSON config's `esp32_pinmap`
+ * tools/json2static.py from the JSON config's `mcu_pinmap`
  * section.  Loops over `G_THERMAL_CFG.sensor_count` /
  * `actuator_count` replace the slot-0 hardcoding.  Adding a
  * second fan or DS18B20 is now a JSON-only change: edit the

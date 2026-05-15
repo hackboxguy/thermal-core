@@ -63,7 +63,7 @@
     "enable": false
   },
 
-  "esp32_pinmap": {
+  "mcu_pinmap": {
     "sensors": [
       { "name": "soc", "onewire_gpio": 6 }
     ],
