@@ -104,8 +104,9 @@ T= 28.18 C  duty=   0/255 (  0 %)  tach=   0 ticks/s (~   0 RPM)
 Below 30 °C the fan is off (state 0).  Heat the DS18B20 with
 your finger — when `T` crosses 30.0 °C, the fan jumps to duty
 100 (state 1).  Cross 45.0 °C → duty 160 (state 2).  Cross
-60.0 °C → duty 220 (state 3).  Trips reset on hysteresis
-(`hyst_mc = 2000`, i.e. -2 °C below each trip).
+60.0 °C → duty 220 (state 3).  Cross 85.0 °C → duty 255 (state 4,
+full speed).  Trips reset on hysteresis (`hyst_mc = 2000`,
+i.e. -2 °C below each trip).
 
 ## What's happening on the chip
 
@@ -136,7 +137,8 @@ time by `tools/json2static.py` — change the JSON, re-run
 "trips": [
   { "temp_mc": 30000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 1 },
   { "temp_mc": 45000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 2 },
-  { "temp_mc": 60000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 }
+  { "temp_mc": 60000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 },
+  { "temp_mc": 85000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 4 }
 ]
 ```
 

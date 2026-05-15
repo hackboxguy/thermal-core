@@ -77,8 +77,9 @@ You should see a status line every second:
 T= 31.81 C  duty= 100/255 ( 39 %)  tach=  28 ticks/s (~ 840 RPM)
 ```
 
-Trips fire at 30 / 45 / 60 °C (state_pwm 100 / 160 / 220).  Heat
-the sensor with a finger or hairdryer; the fan steps up.  Full
+Trips fire at 30 / 45 / 60 / 85 °C (state_pwm 100 / 160 / 220 /
+255).  Heat the sensor with a finger or hairdryer; the fan steps
+up.  Full
 walkthrough: [`docs/getting-started/esp32-standalone.md`](docs/getting-started/esp32-standalone.md).
 
 ## Quick start: Linux daemon on a Raspberry Pi 4

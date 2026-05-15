@@ -37,7 +37,8 @@
       "trips": [
         { "temp_mc": 30000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 1 },
         { "temp_mc": 45000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 2 },
-        { "temp_mc": 60000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 }
+        { "temp_mc": 60000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 },
+        { "temp_mc": 85000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 4 }
       ]
     }
   ],

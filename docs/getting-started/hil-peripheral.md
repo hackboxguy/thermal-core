@@ -99,7 +99,7 @@ make build
 A ready-made config lives at
 [`test/integration/hil-config.json`](../../test/integration/hil-config.json).
 It has the same step_wise zone as the ESP32 STANDALONE build
-(trips at 30 / 45 / 60 °C), telemetry on UDP 9030, and
+(trips at 30 / 45 / 60 / 85 °C), telemetry on UDP 9030, and
 `hil.transport = "serial:/dev/ttyACM0"`.
 
 ```bash
