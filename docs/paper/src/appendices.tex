@@ -45,20 +45,22 @@ The reference speed source is OBD-II Service 01 PID \texttt{0x0D}. \texttt{therm
 \texttt{can\_bus\_loss} & timeout and fail-safe behavior \\
 \bottomrule
 \end{tabular}
-\caption{Initial benchmark matrix. Add CSV filenames and git SHA values later.}
+\caption{Benchmark matrix. All ten canonical scenario files run green in the scenario and determinism CI gates; per-figure CSV filenames and data SHA-256 values are added when the figure-regeneration pipeline lands.}
 \end{table}
 
 \section{Appendix D: Fill-In Checklist}
 
+Artefacts the final paper needs. Items marked \emph{done} are in the repository as of this draft; the rest await the formal benchmark sweep.
+
 \begin{itemize}[leftmargin=*]
-    \item final BOM and wiring diagram;
-    \item complete JSON configuration;
-    \item generated static MCU configuration;
-    \item telemetry signal table;
-    \item numeric event code table;
-    \item exact build and flash commands;
-    \item benchmark raw-data paths;
-    \item figure regeneration commands.
+    \item complete JSON configuration --- \emph{done} (\texttt{esp32-c3-standalone.json});
+    \item generated static MCU configuration --- \emph{done} (\texttt{json2static.py} output);
+    \item exact build and flash commands --- \emph{done} (Section~\ref{sec:deployment} and the getting-started guides);
+    \item final BOM and wiring diagram --- \emph{partial} (wiring is in the getting-started guides; a consolidated BOM table is pending);
+    \item telemetry signal table --- \emph{pending};
+    \item numeric event code table --- \emph{pending};
+    \item benchmark raw-data paths --- \emph{pending} (figure pipeline);
+    \item figure regeneration commands --- \emph{pending} (figure pipeline).
 \end{itemize}
 
 \endinput

@@ -1,7 +1,7 @@
 %------------------------
 % Section 4: Zone-Based Mapping
 %------------------------
-\section{Thermal Zone Mapping}
+\section{Thermal Zone Mapping}\label{sec:zone-mapping}
 
 \subsection{Zone Model}
 
@@ -26,13 +26,18 @@ A zone is a logical thermal region such as \texttt{soc}, \texttt{amp}, \texttt{t
 \label{tab:reference-zones}
 \end{table}
 
-\subsection{To Fill In Later}
+\subsection{Reference Zone Configuration}
+
+The shipped reference configuration (\texttt{esp32-c3-standalone.json}, reused with platform-specific I/O paths on the Linux Pi\,4 and HIL bench builds) defines a single \texttt{soc\_zone}:
 
 \begin{itemize}[leftmargin=*]
-    \item exact v1 zone names and IDs;
-    \item sensor-to-zone mapping from \texttt{reference-bench.json};
-    \item trip thresholds used in all benchmark scenarios;
-    \item hysteresis values and rationale.
+    \item one sensor, \texttt{soc} --- a DS18B20 probe --- with a Q16.16 IIR filter and a 5\,s staleness limit;
+    \item one actuator, \texttt{main\_fan}, driven by a step-wise governor with \texttt{max} sensor aggregation;
+    \item four trip points at 30, 45, 60, and 85\,$^\circ$C, each with a 2\,$^\circ$C hysteresis band, mapping to cooling states 1--4;
+    \item a per-actuator \texttt{state\_pwm} staircase of $[0, 100, 160, 220, 255]$, so the fan idles off below 30\,$^\circ$C and reaches full duty once the 85\,$^\circ$C trip is crossed;
+    \item a zone fallback of 85\,$^\circ$C, substituted when the sensor goes stale so a lost probe fails toward cooling rather than away from it.
 \end{itemize}
+
+The hysteresis band is uniform at 2\,$^\circ$C: a trip de-asserts only after the temperature drops 2\,$^\circ$C below its threshold, which prevents fan-state chatter when a reading dwells on a boundary. Adding a second fan or probe is a configuration-only change --- the firmware loops over the declared sensor and actuator counts rather than hardcoding slot~0.
 
 \endinput

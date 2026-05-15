@@ -28,7 +28,7 @@ The evaluation section should report:
 \textbf{Target} & \textbf{Control-period goal} & \textbf{Step-time budget} \\
 \midrule
 Linux host & 100 ms & $<$100 us \\
-ESP32-C6 & 100 ms & $<$1 ms \\
+ESP32-C3 & 100 ms & $<$1 ms \\
 RH850-F1KM budget & 100 ms & $<$500 us \\
 \bottomrule
 \end{tabular}
@@ -36,8 +36,8 @@ RH850-F1KM budget & 100 ms & $<$500 us \\
 \label{tab:timing-budget}
 \end{table}
 
-\subsection{To Fill In Later}
+\subsection{Measurement Status}
 
-Add oscilloscope, telemetry, or benchmark evidence for final timing claims.
+Section~\ref{sec:evaluation} reports the results measured at this draft: firmware footprint, build determinism, and a hardware-in-the-loop bench bring-up. Per-tick execution time is \emph{not} yet instrumented on any target --- the budget in Table~\ref{tab:timing-budget} remains a set of design goals, not measurements. Oscilloscope-grade step-time capture lands with the formal benchmark sweep.
 
 \endinput

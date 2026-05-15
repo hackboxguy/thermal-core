@@ -20,11 +20,11 @@ Initial fault detectors:
     \item fan stall while PWM is above a configured threshold;
     \item stuck sensor over a configured observation window;
     \item thermal runaway when temperature rises despite requested cooling;
-    \item speed-source timeout for acoustic-mask fail-safe behavior.
+    \item stale context input --- for example a speed-source timeout, which drives acoustic-mask fail-safe behavior.
 \end{itemize}
 
-\subsection{To Fill In Later}
+\subsection{Numeric Identity}
 
-Add exact structs, enums, signal IDs, and fault codes once the headers stabilize.
+Every entity the core manipulates is addressed by a small integer, never a string: sensors, actuators, zones, and context signals carry numeric IDs assigned at configuration load. Telemetry signal IDs are partitioned into fixed namespaces --- zone temperatures, actuator outputs, PID terms, context values, modifier outputs, and fault counters --- so a decoder can classify a signal from its ID alone. Fault detectors instantiate per target: one stall detector per actuator, one stuck-sensor detector per sensor, one runaway detector per zone, one stale-context detector per context signal. Each detector runs a common state machine --- normal, then degraded or critical or latched, then recovering --- with per-detector severity, action, and persistence and recovery tick counts. The exact struct layouts, enum values, and the signal-ID and event-code tables are project header artefacts and are catalogued in the appendix reference rather than transcribed here, so the paper cannot drift out of sync with the code.
 
 \endinput

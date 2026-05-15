@@ -22,13 +22,16 @@
 
 The core may depend on fixed-size configuration structures, numeric IDs, deterministic integer math, and a platform vtable. It must not depend on JSON, SocketCAN, sysfs, pthreads, ESP-IDF APIs, OBD-II encoders, or file descriptors.
 
-\subsection{To Fill In Later}
+\subsection{Core Boundary in Practice}
+
+The public surface is small. A caller includes \texttt{core/thermal\_core.h}, provides one \texttt{thermal\_core\_t} --- a fixed-size structure, roughly 4\,KB in the v1 configuration, whose storage the caller owns and the core never resizes --- and drives it with three kinds of call:
 
 \begin{itemize}[leftmargin=*]
-    \item final public headers;
-    \item memory ownership rules;
-    \item exact initialization sequence;
-    \item platform-specific diagrams for Linux and ESP32.
+    \item \texttt{thermal\_core\_init()} binds a \texttt{const thermal\_config\_t} and the platform callback vtable, validates the configuration, and performs all one-time setup. No allocation occurs after this point.
+    \item \texttt{thermal\_core\_step()} consumes one typed input snapshot, runs filtering, zone and trip evaluation, governors, modifiers, arbitration, slew limiting, and fault detection, and writes one output frame of actuator requests.
+    \item The command and telemetry entry points apply a runtime-tuning command to the shadow configuration, or drain numeric telemetry through the platform callback.
 \end{itemize}
+
+Memory ownership is one-directional: the caller owns the \texttt{thermal\_core\_t} and the configuration; the core borrows them for the duration of a call and writes only into caller-provided output structures. There is no hidden global state, so multiple independent cores coexist in one process --- which is exactly how the determinism harness runs a gcc-built and a clang-built core side by side. A dedicated platform-comparison diagram (Linux daemon versus ESP-IDF firmware wiring) is deferred to the next draft.
 
 \endinput

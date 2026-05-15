@@ -23,14 +23,17 @@ Fault / degraded sensor & missing tach, stale sensor, lost CAN & enter explicit 
 \label{tab:thermal-operating-regimes}
 \end{table}
 
-\subsection{To Fill In Later}
+\subsection{Reference Bench Setup}
+
+The bench rig used for the hardware-in-the-loop bring-up (Section~\ref{sec:evaluation}) is deliberately minimal and open-air, so the setup is reproducible without an environmental chamber:
 
 \begin{itemize}[leftmargin=*]
-    \item ambient temperature during each run;
-    \item enclosure or open-bench setup description;
-    \item fan model and supply voltage;
-    \item sensor placement and thermal contact method;
-    \item speed profile used by \texttt{car-can-emulator}.
+    \item \textbf{Controller:} an ESP32-C3 SuperMini board, USB-powered, running the reference ESP-IDF firmware.
+    \item \textbf{Actuator:} a Noctua NF-A8 four-pin PWM fan driven at 25\,kHz, powered from the 5\,V USB rail.
+    \item \textbf{Sensor:} a DS18B20 digital probe on a shared 1-Wire bus with a 4.7\,k$\Omega$ pull-up; additional probes drop onto the same bus.
+    \item \textbf{Enclosure:} none --- the components sit on an open breadboard. During bring-up, thermal input is applied by hand (finger contact, warm air), not by a controlled heater.
 \end{itemize}
+
+Controlled per-run ambient temperature, a calibrated heat source, and a documented \texttt{car-can-emulator} speed profile belong to the formal benchmark sweep and are not yet captured.
 
 \endinput

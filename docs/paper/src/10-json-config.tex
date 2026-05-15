@@ -24,8 +24,10 @@ Embedded builds use a generated or hand-written \texttt{static const thermal\_co
 
 Configuration validation should reject duplicate IDs, references to missing sensors or actuators, zones without sensors, out-of-bounds curve points, invalid PWM limits, and unsupported governor or policy names.
 
-\subsection{To Fill In Later}
+\subsection{Reference Configuration and the MCU Pin Map}
 
-Add the final JSON Schema path, a complete bench config, and a generated static C example.
+The shipped reference configuration is \texttt{platform/esp32\_idf/configs/} \texttt{esp32-c3-standalone.json}: one step-wise \texttt{soc\_zone}, the four-trip staircase of Section~\ref{sec:zone-mapping}, and a telemetry block. On Linux the daemon parses it at startup. For the MCU build, \texttt{tools/json2static.py} converts the same JSON into a generated \texttt{const thermal\_config\_t G\_THERMAL\_CFG} compiled directly into the firmware --- no JSON parser is linked into MCU images. A round-trip test asserts the generated struct is canonically equal to the same JSON loaded through the Linux parser, so the two configuration paths cannot silently diverge.
+
+Platform pin assignments live in an optional top-level \texttt{mcu\_pinmap} section: a 1-Wire GPIO per sensor, and a PWM GPIO, tach GPIO, and PWM frequency per actuator. \texttt{json2static.py} emits this as a second generated structure alongside \texttt{G\_THERMAL\_CFG}. Because the firmware loops over the declared sensor and actuator counts and indexes the pin map by slot, adding a second fan or probe to the bench rig is a JSON-only change --- no firmware C source is edited.
 
 \endinput

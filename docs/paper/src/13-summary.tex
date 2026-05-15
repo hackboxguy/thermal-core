@@ -1,8 +1,8 @@
 \section{Summary, Limitations, and Future Work}
 
-\subsection{Expected Summary}
+\subsection{Summary}
 
-This document will show whether a small protocol-agnostic core can support acoustic-aware IVI fan control while remaining portable across Linux and MCU targets. The expected result is not a production safety component, but a reproducible reference design and paper-ready evidence trail.
+This document describes a protocol-agnostic thermal-control core that has been implemented and exercised across a Linux host and the ESP32-C3, including a hardware-in-the-loop bring-up in which the host runs the control law over real bench peripherals. The implementation through Stage~14 is complete and CI-gated; the formal cross-platform benchmark sweep that will close the evidence trail is still pending. The result is not a production safety component, but a reproducible reference design with a measured-only evidence trail (Section~\ref{sec:evaluation}).
 
 \subsection{Known Limitations}
 
@@ -11,7 +11,8 @@ This document will show whether a small protocol-agnostic core can support acous
     \item no AUTOSAR integration in v1;
     \item OBD-II speed is a reproducible test source, not a production IVI integration strategy;
     \item PWM-seconds is only an acoustic proxy;
-    \item RH850 is structurally planned but not hardware-validated in v1.
+    \item RH850 is structurally planned but not hardware-validated in v1;
+    \item the formal timing and acoustic benchmarks are not yet captured (Section~\ref{sec:eval-gaps}).
 \end{itemize}
 
 \subsection{Future Work}
@@ -25,8 +26,8 @@ This document will show whether a small protocol-agnostic core can support acous
     \item static-analysis and MISRA-oriented hardening.
 \end{itemize}
 
-\subsection{To Fill In Later}
+\subsection{Draft Status}
 
-After benchmark capture, replace this section with final claims, measured results, and practical recommendations.
+The conceptual and implementation sections of this draft are written against the shipped code. The Evaluation section is preliminary: it will grow from the measured footprint, determinism, and bring-up results reported here to the full benchmark sweep --- with regenerated figures --- once that pipeline lands. Final quantitative claims and practical recommendations are written at that point.
 
 \endinput

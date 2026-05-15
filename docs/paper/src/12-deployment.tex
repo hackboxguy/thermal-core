@@ -1,30 +1,64 @@
-\section{Build, Deployment, and HIL Setup}
+\section{Build, Deployment, and HIL Setup}\label{sec:deployment}
 
 \subsection{Linux Daemon}
 
-The Linux reference binary is \texttt{thermalcored}. It is responsible for loading JSON, binding platform backends, starting telemetry transports, and calling the core step function at the configured period.
+The Linux reference binary is \texttt{thermalcored}. \texttt{make build} produces it under \texttt{build/platform-linux/}; it loads a JSON configuration, binds platform backends (\texttt{hwmon} or file sensors, \texttt{sysfs} or HIL PWM, SocketCAN context), starts the configured telemetry transport, and calls \texttt{thermal\_core\_step()} once per control period:
 
-\subsection{ESP32 Reference Firmware}
+\begin{lstlisting}[caption={Running the Linux daemon}]
+make build
+build/platform-linux/thermalcored --config=my-config.json
+\end{lstlisting}
 
-The ESP32 reference firmware has two planned modes:
+The same daemon serves all three Linux roles --- a standalone Raspberry~Pi~4 regulator, the scenario-clock host for the determinism harness, and the host side of the hardware-in-the-loop setup --- selected entirely by configuration.
 
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Standalone:} ESP32 runs the full thermal-core loop.
-    \item \textbf{HIL peripheral:} ESP32 exposes sensors, PWM, tach, and CAN to the Linux daemon.
-\end{itemize}
+\subsection{ESP32-C3 Firmware: Three Build Modes}
+
+The reference firmware targets the ESP32-C3 and links the same portable \texttt{core/} and \texttt{protocol/} C99 sources as the Linux daemon. It builds in three mutually exclusive modes, selected by a CMake flag (the build system rejects any attempt to enable two at once):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.26\textwidth}p{0.62\textwidth}}
+\toprule
+\textbf{Mode} & \textbf{Behavior} \\
+\midrule
+\texttt{STANDALONE} (default) & The ESP32 reads its DS18B20 probe and fan tachometer, runs \texttt{thermal\_core\_step()} locally, drives the fan over LEDC PWM, and prints a human-readable status line. \\
+\texttt{REPLAY\_STANDALONE} & Synthetic input snapshots baked into \texttt{.rodata} replace the live sensors; the core runs locally and emits a byte-stable CSV. Used for on-target determinism checks without any wiring. \\
+\texttt{HIL\_PERIPHERAL} & The ESP32 owns only the peripherals; the Linux daemon runs the core. See below. \\
+\bottomrule
+\end{tabular}
+\caption{ESP32-C3 firmware build modes.}
+\label{tab:esp32-modes}
+\end{table}
+
+\begin{lstlisting}[caption={Building and flashing the firmware}]
+cd platform/esp32_idf
+idf.py build                                  # STANDALONE
+idf.py -DTHERMALCORE_REPLAY_STANDALONE=ON build
+idf.py -DTHERMALCORE_HIL_PERIPHERAL=ON  build
+idf.py flash monitor                           # flash + serial console
+
+# all three modes + size-budget check, from the repo root:
+make build-esp32
+\end{lstlisting}
+
+\subsection{Hardware-in-the-Loop}
+
+\texttt{HIL\_PERIPHERAL} mode splits the system across the USB cable. The ESP32-C3 owns the board-support layer --- DS18B20 over 1-Wire, the tachometer GPIO interrupt, LEDC PWM --- and nothing else. It samples the peripherals, encodes each reading as a \texttt{TELEM\_SAMPLE} \texttt{TC} frame, and streams it over USB-Serial-JTAG to the Linux daemon. The daemon runs \texttt{thermal\_core\_step()}, then sends the resulting fan duty back as a \texttt{CMD\_REQUEST} frame, which the firmware applies to the PWM output. The control law executes on the host while the real sensor and the real fan stay on the bench.
+
+Because both ends link the identical \texttt{core/} source, HIL is also a portability check: a control decision computed by the Linux daemon over HIL is the decision the \texttt{STANDALONE} firmware would have computed on the same inputs. A bench bring-up of this loop is reported in Section~\ref{sec:evaluation}.
 
 \subsection{OBD-II Emulator}
 
-\texttt{car-can-emulator} is included as a submodule under \texttt{tools/car-can-emulator/} and tracks the upstream \texttt{v2-improvements} branch. It is a test dependency, not a runtime dependency of the thermal core.
+\texttt{car-can-emulator} is included as a submodule under \texttt{tools/car-can-emulator/} and tracks the upstream \texttt{v2-improvements} branch. It is a test dependency, not a runtime dependency of the thermal core: it synthesizes OBD-II vehicle-speed responses on a virtual CAN interface so the acoustic-mask policy and the CAN fault paths can be exercised in CI without a vehicle.
 
-\begin{lstlisting}[caption={Emulator build sketch}]
+\begin{lstlisting}[caption={Emulator build}]
 git submodule update --init --recursive
 cmake -H tools/car-can-emulator -B build/car-can-emulator
 cmake --build build/car-can-emulator
 \end{lstlisting}
 
-\subsection{To Fill In Later}
+\subsection{Step-by-Step Guides}
 
-Add exact Linux, ESP-IDF, SocketCAN, \texttt{vcan0}, systemd, and bench wiring commands after implementation starts.
+The repository carries three task-oriented guides under \texttt{docs/getting-started/} that walk through each deployment with exact wiring and commands: \texttt{esp32-standalone.md} (a self-contained ESP32-C3 regulator), \texttt{linux-pi4.md} (a Raspberry~Pi~4 daemon driving a \texttt{sysfs} PWM fan), and \texttt{hil-peripheral.md} (the ESP32-plus-daemon HIL loop). This section gives the architecture; those guides give the keystrokes.
 
 \endinput

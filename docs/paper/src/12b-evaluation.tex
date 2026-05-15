@@ -1,0 +1,78 @@
+\section{Evaluation (Preliminary)}\label{sec:evaluation}
+
+This section reports what has been \emph{measured} as of this draft. It is marked preliminary deliberately: the formal cross-platform benchmark sweep --- with controlled ambient, calibrated instrumentation, and the figure-regeneration pipeline --- has not yet been run. Every number below is reproducible from the repository as it stands; nothing here is projected or estimated. Section~\ref{sec:eval-gaps} states plainly what is \emph{not} yet claimed.
+
+\subsection{Firmware Footprint}
+
+The ESP32-C3 firmware was built in all three modes (Section~\ref{sec:deployment}) and measured with \texttt{idf.py size-files}. Table~\ref{tab:footprint} gives the result. The whole image comfortably fits the 1\,MB application partition in every mode.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Build mode} & \textbf{Firmware image} & \textbf{App partition free} \\
+\midrule
+\texttt{STANDALONE}        & 213 KB & 79\% of 1 MB \\
+\texttt{REPLAY\_STANDALONE} & 164 KB & 84\% of 1 MB \\
+\texttt{HIL\_PERIPHERAL}    & 212 KB & 79\% of 1 MB \\
+\bottomrule
+\end{tabular}
+\caption{ESP32-C3 firmware footprint, measured per build mode.}
+\label{tab:footprint}
+\end{table}
+
+The budget that matters for portability is not the whole image --- most of it is ESP-IDF and FreeRTOS --- but the contribution of the portable \texttt{core/} and \texttt{protocol/} sources, which the PRD caps at 64\,KB \texttt{.text} and 16\,KB \texttt{.bss}. In \texttt{STANDALONE}, where the ESP32 runs the control law, \texttt{core/} contributes \textbf{11{,}728\,bytes} of \texttt{.text} and \textbf{0\,bytes} of \texttt{.bss} --- under one fifth of the text budget, with no static RAM at all, consistent with the no-heap, no-static-state discipline. In \texttt{HIL\_PERIPHERAL}, where the host runs the core, \texttt{core/} dead-strips entirely and only the \texttt{protocol/} wire codec links, at \textbf{946\,bytes}. A per-build size-budget gate enforces these limits in CI.
+
+\subsection{Build Determinism}
+
+Determinism is a stated design goal: identical inputs must produce bit-identical outputs. It is verified by a CI gate over the seven non-CAN canonical scenarios. Each scenario is driven through the daemon under a deterministic scenario clock, and the SHA-256 of the captured telemetry CSV is compared:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Run-to-run:} each scenario is run twice; the two CSVs must be byte-identical.
+    \item \textbf{Cross-compiler:} the daemon and plant model are rebuilt under GCC and under Clang; the CSVs from the two toolchains must be byte-identical.
+\end{itemize}
+
+Both checks pass for all seven scenarios. Because the core uses only Q16.16 fixed-point arithmetic and fixed-size state, this is the expected result --- but the gate makes any future violation a hard CI failure rather than a silent regression.
+
+\subsection{Continuous-Integration Coverage}
+
+The implementation is gated by sixteen CI jobs spanning build and portability checks (Linux builds under GCC and Clang, a no-heap/no-syscall guard on \texttt{core/}, and the three-mode ESP32-C3 build), correctness (unit tests, replay goldens, property-based config and command fuzzing), integration (daemon smoke and integration tests, the scenario suite with and without a virtual CAN bus, and the determinism gate above), and static analysis (\texttt{clang-tidy}, \texttt{cppcheck}, and an AddressSanitizer/UBSan run). A line-coverage report accompanies the suite; at this draft it stands at 89.5\,\% line and 96.3\,\% function coverage over \texttt{core/} and the platform code.
+
+\subsection{Hardware-in-the-Loop Bring-Up}
+
+The HIL loop (Section~\ref{sec:deployment}) was brought up on a bench rig: an ESP32-C3 owning a DS18B20 probe and a Noctua NF-A8 fan, with the Linux daemon running the control law over the USB link. The probe was heated by hand and allowed to cool while the daemon's telemetry was captured. Table~\ref{tab:hil-bringup} lists the trip crossings observed in one heat-and-cool cycle (the three-trip configuration in use at capture time).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccl}
+\toprule
+\textbf{Probe temp.} & \textbf{Fan duty} & \textbf{Event} \\
+\midrule
+27.5 $^\circ$C & 0   & below first trip --- fan off \\
+31.3 $^\circ$C & 100 & 30 $^\circ$C trip --- cooling state 1 \\
+45.6 $^\circ$C & 160 & 45 $^\circ$C trip --- cooling state 2 \\
+60.4 $^\circ$C & 220 & 60 $^\circ$C trip --- cooling state 3 \\
+53.0 $^\circ$C & 160 & cooling: 60 $^\circ$C trip de-asserts (2 $^\circ$C hysteresis) \\
+41.0 $^\circ$C & 100 & cooling: 45 $^\circ$C trip de-asserts \\
+\bottomrule
+\end{tabular}
+\caption{Trip crossings observed during HIL bench bring-up.}
+\label{tab:hil-bringup}
+\end{table}
+
+The capture confirms the closed loop end to end: temperature samples flowing from the ESP32 to the host, the step-wise governor producing the expected discrete duty staircase, the slew limiter bounding every transition, hysteresis holding fan state on the way down, and the trips re-arming for a subsequent heat cycle. This is a functional bring-up, not a controlled benchmark --- heat was applied by hand and ambient was not regulated --- but it establishes that the same \texttt{core/} logic exercised by the simulation gates also runs correctly against real hardware.
+
+\subsection{What This Section Does Not Yet Claim}\label{sec:eval-gaps}
+
+To keep the evidence trail honest, the following are explicitly \emph{not} claimed here and await the formal benchmark sweep:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Per-tick execution time.} The step function has not been instrumented on any target; the timing budget in Table~\ref{tab:timing-budget} remains a set of goals.
+    \item \textbf{Acoustic results.} No calibrated sound-pressure-level measurement has been taken; PWM-seconds with and without acoustic masking are not yet reported.
+    \item \textbf{Quantitative control metrics.} Settling time, overshoot, and fault-detection latency are listed as evaluation targets in Section~6 but are not yet measured.
+    \item \textbf{Cross-platform parity tables.} Host-versus-target byte-for-byte parity is structurally supported by the shared \texttt{core/} source but has not yet been characterized as a table.
+\end{itemize}
+
+These gaps are scheduled work, and the figure-regeneration pipeline that will carry their plots is not yet wired into the paper build.
+
+\endinput

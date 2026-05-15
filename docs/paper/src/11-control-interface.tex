@@ -55,8 +55,10 @@ Scenario files make benchmark runs reproducible: a deterministic snapshot stream
 
 The command surface is verified at three levels. Per-command scenarios in \texttt{test/unit/test\_apply\_command.c} cover every positive path, every error path, and event-emission invariants (one event per call; right code; right args). Random-fuzz testing in \texttt{test/property/property\_command.c} hammers \texttt{apply\_command} with 1000 LCG-seeded random commands per CI run against a persistent core context, asserting every returned status is in \(\{\texttt{OK}, \texttt{INVALID\_ARG}, \texttt{BOUNDS}, \texttt{REJECTED\_SAFETY}\}\) and every call emits exactly one event. Range and monotonicity invariants are shared between \texttt{validate\_config} (at load time) and \texttt{apply\_command} (at runtime), so the same constraint cannot be tightened in one place without tightening it in the other.
 
-\subsection{To Fill In Later}
+\subsection{Wire Codec and Tooling}
 
-Stage 10 of the implementation plan defines the wire codec; this section will absorb the framing format, CRC, and \texttt{thermalcore-probe} / \texttt{thermalcore-tune} CLI examples once that lands. The first three canonical scenario files arrive with Stage 12.
+The \texttt{TC} binary wire codec is implemented in the \texttt{protocol/} module: a twelve-byte header (magic, version, opcode, sequence number, payload length, timestamp), the per-opcode payload, and a trailing CRC-16/CCITT-FALSE. The same codec carries UDP telemetry on Linux and the hardware-in-the-loop frame stream over USB-Serial-JTAG (Section~\ref{sec:deployment}). The decoder is fuzz-tested in CI.
+
+\texttt{thermalcore-probe} is the reference observer: it binds the telemetry UDP port, decodes \texttt{TELEM\_SAMPLE} and \texttt{TELEM\_EVENT} frames, and writes a byte-stable CSV. That byte-stability is what the determinism gate hashes (Section~\ref{sec:evaluation}). The canonical scenario files ship under \texttt{scenarios/}; ten of them are exercised by the scenario and determinism gates.
 
 \endinput
