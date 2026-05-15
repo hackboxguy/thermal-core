@@ -144,6 +144,115 @@ time by `tools/json2static.py` — change the JSON, re-run
 The slew limiter (`slew_per_tick = 8`) caps the per-tick PWM
 delta so the fan ramps smoothly instead of jumping.
 
+## Adding a second fan or sensor
+
+The pin map lives entirely in the JSON config since the
+"JSON-driven pin map" refactor.  No C source edits required.
+
+### Hardware
+
+Recommended GPIO allocations on the C3 SuperMini (free pins
+not used by the default 1-fan setup):
+
+| Signal           | GPIO | Notes                                  |
+|------------------|------|----------------------------------------|
+| Fan 2 PWM out    | 7    | 25 kHz, 3.3 V                          |
+| Fan 2 tach in    | 8    | 10 kΩ pull-up to 3.3 V                 |
+| DS18B20 #2 data  | 6    | **Shared** with sensor 1 -- 1-Wire is multi-drop.  No extra pin or pull-up needed; the existing 4.7 kΩ on GPIO 6 covers both DS18B20s. |
+
+Wire the second Noctua's red / black to the same 5 V / GND as
+the first; tach + PWM go to the new GPIOs.  Wire the second
+DS18B20's DQ in parallel with the first on GPIO 6 (VDD on 3V3,
+GND on GND).
+
+5 V current budget: two NF-A8s draw ~250 mA combined at full
+duty.  USB bus power is usually fine; if the SuperMini browns
+out during simultaneous spin-up, use a powered USB hub or
+external 5 V for the fans.
+
+### JSON edits
+
+Three pieces in [`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/configs/esp32-c3-standalone.json):
+
+1. **Second sensor** under `"sensors"`:
+
+   ```json
+   { "id": 1, "name": "amp",
+     "iir_alpha_q16": 16384, "max_staleness_ms": 5000,
+     "source": "ds18b20:gpio6" }
+   ```
+
+2. **Second actuator** under `"actuators"`:
+
+   ```json
+   { "id": 1, "name": "aux_fan",
+     "pwm_min": 0, "pwm_max": 255, "slew_per_tick": 8,
+     "spinup_pwm": 0, "spinup_ms": 0,
+     "state_pwm": [0, 100, 160, 220, 255],
+     "pwm": "ledc:gpio7", "tach": "gpio_isr:gpio8",
+     "pwm_freq_hz": 25000, "tach_pulses_per_rev": 2 }
+   ```
+
+3. **Pick a zone topology.**  Two common shapes:
+
+   - **Two independent zones**, each owning one sensor + one
+     fan (canonical "CPU + GPU" demo).  Each zone gets its own
+     `trips` block.
+
+   - **One zone aggregating both sensors with `"max"`**, both
+     fans listed under `actuators`.  Hottest sensor drives both
+     fans together.
+
+4. **Extend `esp32_pinmap`** with the new GPIO assignments
+   (this is the bit the refactor reads from):
+
+   ```json
+   "esp32_pinmap": {
+     "sensors": [
+       { "name": "soc", "onewire_gpio": 6 },
+       { "name": "amp", "onewire_gpio": 6 }
+     ],
+     "actuators": [
+       { "name": "main_fan", "pwm_gpio": 4, "tach_gpio": 5, "pwm_freq_hz": 25000 },
+       { "name": "aux_fan",  "pwm_gpio": 7, "tach_gpio": 8, "pwm_freq_hz": 25000 }
+     ]
+   }
+   ```
+
+   The pinmap is **keyed by name** (matches `sensors[].name` /
+   `actuators[].name`), so the JSON-side order doesn't matter
+   and a typo is caught at build time.  All `onewire_gpio`
+   values must be identical (v1 supports one shared bus).
+
+### Build + flash
+
+```bash
+. ~/esp/esp-idf/export.sh
+cd platform/esp32_idf
+idf.py build flash monitor
+```
+
+`json2static.py` regenerates the static config on every build,
+so the new sensor / actuator slots are baked into the firmware.
+The boot log lists the DS18B20 ROM addresses in slot order so
+you can correlate them to your bench labels:
+
+```
+I (xxx) bsp_sensor: DS18B20 slot 0 on GPIO6, ROM=0x28ABCD...
+I (xxx) bsp_sensor: DS18B20 slot 1 on GPIO6, ROM=0x28EF01...
+I (xxx) bsp_pwm: PWM slot 0 on GPIO4 @ 25000 Hz, 8-bit
+I (xxx) bsp_pwm: PWM slot 1 on GPIO7 @ 25000 Hz, 8-bit
+I (xxx) bsp_tach: tach slot 0 on GPIO5 (negedge, 1000 us filter)
+I (xxx) bsp_tach: tach slot 1 on GPIO8 (negedge, 1000 us filter)
+```
+
+ROM order is deterministic across reboots (the espressif/ds18b20
+driver sorts by ROM address), so slot 0 ↔ ROM-A ↔ "soc" stays
+stable.  If you swap which physical DS18B20 you want to call
+"soc", reorder the names in the JSON's `sensors[]` block — the
+ROM-to-slot mapping is fixed by the bus, but the slot-to-name
+mapping is what the firmware uses.
+
 ## Troubleshooting
 
 | Symptom                                      | Likely cause + fix                                              |

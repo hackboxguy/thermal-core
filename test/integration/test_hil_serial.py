@@ -170,10 +170,13 @@ def drain_master_cmds(master_fd: int) -> list:
         opcode, seq, ts_ms, payload = dec
         # Bump cursor past the frame so the next find() doesn't re-decode.
         i = j + 14 + len(payload) + 2
-        if opcode == w.OP_CMD_REQUEST and len(payload) >= 3:
+        if opcode == w.OP_CMD_REQUEST and len(payload) >= 4:
+            # 4-byte HIL_CMD_SET_PWM_DUTY payload:
+            # u16 cmd_id LE + u8 slot + u8 duty.
             cmd_id = struct.unpack("<H", payload[0:2])[0]
-            duty = payload[2] if len(payload) >= 3 else 0
-            out.append(("CMD_REQUEST", cmd_id, duty))
+            slot = payload[2]
+            duty = payload[3]
+            out.append(("CMD_REQUEST", cmd_id, slot, duty))
         elif opcode in (w.OP_CMD_ACK, w.OP_CMD_NACK):
             req_seq, status, detail = w.decode_ack_or_nack(payload) or (0, 0, 0)
             kind = "CMD_ACK" if opcode == w.OP_CMD_ACK else "CMD_NACK"
@@ -286,7 +289,12 @@ def main() -> int:
     if wrong_id:
         fail(f"unexpected command_id values: {wrong_id[:5]}")
 
-    duties = [c[2] for c in cmd_reqs]
+    # Single-actuator config: every CMD_REQUEST should carry slot=0.
+    wrong_slot = [c for c in cmd_reqs if c[2] != 0]
+    if wrong_slot:
+        fail(f"unexpected slot values (expected 0): {wrong_slot[:5]}")
+
+    duties = [c[3] for c in cmd_reqs]
     print(f"  [test_hil_serial] {len(duties)} CMD_REQUEST frames; "
           f"duty range = {min(duties)}..{max(duties)}")
 

@@ -1,17 +1,25 @@
 /* platform/esp32_idf/main/bsp_esp32_sensor.h
  *
- * Stage 13 13a -- DS18B20 1-Wire temperature sensor wrapper.
+ * Multi-device DS18B20 wrapper.  One shared 1-Wire bus drives
+ * up to `THERMAL_MAX_SENSORS` DS18B20 devices in parallel
+ * (multi-drop bus; each DS18B20 has a factory-assigned 64-bit
+ * ROM address that distinguishes it on the bus).
  *
- * Uses the `espressif/onewire_bus` managed component (RMT-based
- * 1-Wire master) and `espressif/ds18b20` driver from the IDF
- * component registry.  Configures the first device found on the
- * bus for 12-bit resolution.  Read returns millicelsius int32
- * so the BSP boundary stays float-free -- the float conversion
- * lives entirely inside `bsp_esp32_sensor.c`.
+ * Slot mapping: the espressif/ds18b20 driver enumerates ROMs
+ * in deterministic ROM-address order, so slot N corresponds to
+ * the Nth-smallest ROM on the bus.  This mapping is stable
+ * across reboots; bench labels can be correlated against the
+ * ROM addresses logged at init.
  *
- * Typical wiring: GPIO 6 with a 4.7 kOhm pull-up to 3.3 V, DS18B20
- * VDD on 3.3 V (parasite power disabled).  Matches the user's
- * working board.
+ * Typical wiring: GPIO 6 with one 4.7 kOhm pull-up to 3.3 V
+ * shared across all DS18B20s; each DS18B20 VDD on 3.3 V
+ * (parasite power disabled).
+ *
+ * v1 limitations:
+ *   - One bus only (all sensors share `onewire_gpio`).
+ *   - All sensors at 12-bit resolution.
+ *   - Single shared 750 ms conversion (skip-rom convert), then
+ *     per-slot read by ROM address.
  */
 #ifndef BSP_ESP32_SENSOR_H
 #define BSP_ESP32_SENSOR_H
@@ -22,19 +30,25 @@
 extern "C" {
 #endif
 
-/* Open the 1-Wire bus on `gpio_num`, enumerate the first
- * DS18B20, set 12-bit resolution.  Returns 0 on success, -1 on
- * bus/device open failure (e.g. missing pull-up, no sensor on
- * bus). */
-int bsp_esp32_sensor_init(int gpio_num);
+/* Open the 1-Wire bus on `gpio_num`, enumerate exactly
+ * `expected_count` DS18B20 devices, set 12-bit resolution on
+ * each.  Logs each device's ROM address at INFO level.
+ *
+ * Returns 0 on success, -1 if `expected_count == 0`,
+ * `expected_count > THERMAL_MAX_SENSORS`, the bus fails to
+ * open, or the wrong number of devices is discovered (helps
+ * the user notice missing pull-up or missing sensor before the
+ * daemon silently fallback-temps). */
+int bsp_esp32_sensor_init(int gpio_num, uint8_t expected_count);
 
-/* Trigger a conversion (12-bit takes <= 750 ms), wait, read
- * back, convert to millicelsius.  Caller pays the 800 ms
- * conversion wait inside this function.
+/* Trigger a conversion (12-bit, ~750 ms shared across all
+ * sensors via skip-rom convert), wait, read back the device
+ * at `slot`, convert to millicelsius.
  *
  * Returns 0 on success (and writes `*out_mc`); -1 on conversion
- * or read failure (and leaves `*out_mc` unchanged). */
-int bsp_esp32_sensor_read_mc(int32_t *out_mc);
+ * or read failure or out-of-range slot (and leaves `*out_mc`
+ * unchanged). */
+int bsp_esp32_sensor_read_mc(uint8_t slot, int32_t *out_mc);
 
 #ifdef __cplusplus
 }

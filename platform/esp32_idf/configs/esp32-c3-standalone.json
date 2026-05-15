@@ -61,5 +61,14 @@
   "control": {
     "listen": "",
     "enable": false
+  },
+
+  "esp32_pinmap": {
+    "sensors": [
+      { "name": "soc", "onewire_gpio": 6 }
+    ],
+    "actuators": [
+      { "name": "main_fan", "pwm_gpio": 4, "tach_gpio": 5, "pwm_freq_hz": 25000 }
+    ]
   }
 }

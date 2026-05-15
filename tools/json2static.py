@@ -124,7 +124,13 @@ TOP_LEVEL_ALLOWED = {
     "config_version", "control_period_ms",
     "sensors", "context_signals", "actuators", "zones",
     "policy_modifiers", "fault_detection", "telemetry", "control",
+    "esp32_pinmap",                       # ESP32-only, optional
 }
+
+ESP32_PINMAP_TOP_ALLOWED      = {"sensors", "actuators"}
+ESP32_PINMAP_SENSOR_ALLOWED   = {"name", "onewire_gpio"}
+ESP32_PINMAP_ACTUATOR_ALLOWED = {"name", "pwm_gpio", "tach_gpio",
+                                  "pwm_freq_hz"}
 
 SENSOR_ALLOWED = {
     "id", "name", "iir_alpha_q16", "max_staleness_ms",
@@ -508,6 +514,8 @@ def normalise(raw: dict) -> dict:
         "enabled_signal_ids":  enabled_ids,
     }
 
+    pinmap = normalise_pinmap(raw.get("esp32_pinmap"), sensors, actuators)
+
     return {
         "config_version":     int(raw["config_version"]),
         "control_period_ms":  int(raw["control_period_ms"]),
@@ -518,6 +526,78 @@ def normalise(raw: dict) -> dict:
         "modifiers":          modifiers,
         "faults":             faults,
         "telemetry":          telemetry,
+        "esp32_pinmap":       pinmap,   # None if section omitted
+    }
+
+
+def normalise_pinmap(raw_pinmap, sensors, actuators):
+    """Parse the optional `esp32_pinmap` JSON section into a dict
+    indexed by slot (matching the order of `sensors` + `actuators`).
+
+    Returns None if the section is absent (non-ESP32 builds don't
+    need it).  Raises ConfigError on:
+      - typos in keys (reject_unknown);
+      - missing entry for a declared sensor/actuator name;
+      - multi-bus 1-Wire (different `onewire_gpio` across sensor
+        slots -- v1 supports one shared bus only).
+    """
+    if raw_pinmap is None:
+        return None
+
+    reject_unknown(raw_pinmap, ESP32_PINMAP_TOP_ALLOWED, "esp32_pinmap")
+
+    sensor_by_name = {}
+    onewire_gpio_seen = None
+    for i, s in enumerate(raw_pinmap.get("sensors", [])):
+        where = f"esp32_pinmap.sensors[{i}]"
+        reject_unknown(s, ESP32_PINMAP_SENSOR_ALLOWED, where)
+        for required in ("name", "onewire_gpio"):
+            if required not in s:
+                raise ConfigError(f"{where}: missing '{required}'")
+        gpio = int(s["onewire_gpio"])
+        if onewire_gpio_seen is None:
+            onewire_gpio_seen = gpio
+        elif onewire_gpio_seen != gpio:
+            raise ConfigError(
+                f"esp32_pinmap: v1 supports a single shared 1-Wire bus; "
+                f"all sensors must declare the same `onewire_gpio` "
+                f"(got {onewire_gpio_seen} and {gpio})")
+        sensor_by_name[s["name"]] = {"onewire_gpio": gpio}
+
+    sensors_out = []
+    for s in sensors:
+        name = s["name"]
+        if name not in sensor_by_name:
+            raise ConfigError(
+                f"esp32_pinmap.sensors: missing entry for '{name}' "
+                f"(declared in sensors[] but not in esp32_pinmap.sensors[])")
+        sensors_out.append(sensor_by_name[name])
+
+    actuator_by_name = {}
+    for i, a in enumerate(raw_pinmap.get("actuators", [])):
+        where = f"esp32_pinmap.actuators[{i}]"
+        reject_unknown(a, ESP32_PINMAP_ACTUATOR_ALLOWED, where)
+        for required in ("name", "pwm_gpio", "tach_gpio", "pwm_freq_hz"):
+            if required not in a:
+                raise ConfigError(f"{where}: missing '{required}'")
+        actuator_by_name[a["name"]] = {
+            "pwm_gpio":    int(a["pwm_gpio"]),
+            "tach_gpio":   int(a["tach_gpio"]),
+            "pwm_freq_hz": int(a["pwm_freq_hz"]),
+        }
+
+    actuators_out = []
+    for a in actuators:
+        name = a["name"]
+        if name not in actuator_by_name:
+            raise ConfigError(
+                f"esp32_pinmap.actuators: missing entry for '{name}' "
+                f"(declared in actuators[] but not in esp32_pinmap.actuators[])")
+        actuators_out.append(actuator_by_name[name])
+
+    return {
+        "sensors":   sensors_out,
+        "actuators": actuators_out,
     }
 
 
@@ -634,6 +714,29 @@ def emit_telemetry(t):
             "    }")
 
 
+def emit_pinmap(pinmap):
+    """Render the optional `esp32_pinmap_t G_ESP32_PINMAP` block.
+    Caller is responsible for emitting the matching `#include`."""
+    out = []
+    out.append("const esp32_pinmap_t G_ESP32_PINMAP = {")
+    out.append(f"    .sensor_count = {len(pinmap['sensors'])},")
+    if pinmap["sensors"]:
+        out.append("    .sensors = {")
+        for s in pinmap["sensors"]:
+            out.append(f"        {{ .onewire_gpio = {s['onewire_gpio']} }},")
+        out.append("    },")
+    out.append(f"    .actuator_count = {len(pinmap['actuators'])},")
+    if pinmap["actuators"]:
+        out.append("    .actuators = {")
+        for a in pinmap["actuators"]:
+            out.append(f"        {{ .pwm_gpio = {a['pwm_gpio']},"
+                       f" .tach_gpio = {a['tach_gpio']},"
+                       f" .pwm_freq_hz = {a['pwm_freq_hz']} }},")
+        out.append("    },")
+    out.append("};")
+    return "\n".join(out)
+
+
 def emit_static(cfg, symbol="G_THERMAL_CFG", source_path=""):
     out = []
     out.append("/* AUTOGENERATED by tools/json2static.py — DO NOT EDIT. */")
@@ -641,6 +744,8 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path=""):
         out.append(f"/* Source: {source_path} */")
     out.append("")
     out.append('#include "thermal_core.h"')
+    if cfg.get("esp32_pinmap") is not None:
+        out.append('#include "esp32_pinmap.h"')
     out.append("")
     out.append(f"const thermal_config_t {symbol} = {{")
     out.append(f"    .config_version    = {cfg['config_version']},")
@@ -693,6 +798,9 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path=""):
 
     out.append("};")
     out.append("")
+    if cfg.get("esp32_pinmap") is not None:
+        out.append(emit_pinmap(cfg["esp32_pinmap"]))
+        out.append("")
     return "\n".join(out)
 
 

@@ -337,11 +337,13 @@ static inline void put_u32_le(uint8_t *p, uint32_t v)
 int bsp_hil_serial_write_actuator(int fd, uint32_t ts_ms,
                                    uint8_t slot, uint8_t duty_0_255)
 {
-    (void)slot;   /* v1: duty applies to actuator slot 0 on the firmware side */
     if (fd < 0) return -1;
 
-    /* HEADER(12) + payload(3 = u16 cmd_id LE + u8 duty) + CRC(2) = 17 */
-    uint8_t frame[THERMAL_WIRE_HEADER_LEN + 3u + THERMAL_WIRE_CRC_LEN];
+    /* HEADER(12) + payload(4 = u16 cmd_id LE + u8 slot + u8 duty)
+     * + CRC(2) = 18 bytes.  The slot byte was added in the
+     * "JSON-driven pin map" refactor so multi-actuator HIL builds
+     * can route per-fan duty commands. */
+    uint8_t frame[THERMAL_WIRE_HEADER_LEN + 4u + THERMAL_WIRE_CRC_LEN];
 
     /* Header per PRD §7.2: TC magic + version + opcode + seq +
      * payload_len + ts_ms. */
@@ -350,16 +352,17 @@ int bsp_hil_serial_write_actuator(int fd, uint32_t ts_ms,
     frame[2] = 1;                                  /* version */
     frame[3] = THERMAL_WIRE_OP_CMD_REQUEST;
     put_u16_le(frame + 4,  ++s_tx_seq);
-    put_u16_le(frame + 6,  3u);                    /* payload_len */
+    put_u16_le(frame + 6,  4u);                    /* payload_len */
     put_u32_le(frame + 8,  ts_ms);
 
-    /* Payload: u16 command_id LE + u8 duty. */
+    /* Payload: u16 command_id LE + u8 slot + u8 duty. */
     put_u16_le(frame + 12, HIL_CMD_SET_PWM_DUTY);
-    frame[14] = duty_0_255;
+    frame[14] = slot;
+    frame[15] = duty_0_255;
 
     /* Trailing CRC over HEADER+payload (PRD §7.2 lines 920-921). */
-    uint16_t crc = thermal_wire_crc16(frame, 15);
-    put_u16_le(frame + 15, crc);
+    uint16_t crc = thermal_wire_crc16(frame, 16);
+    put_u16_le(frame + 16, crc);
 
     ssize_t n = write(fd, frame, sizeof(frame));
     if (n < 0) {

@@ -1,18 +1,16 @@
 /* platform/esp32_idf/main/bsp_esp32_tach.h
  *
- * Stage 13 13a -- GPIO-ISR-based fan-tachometer edge counter.
+ * Slot-indexed GPIO-ISR fan-tachometer edge counter.  Each
+ * actuator slot owns one GPIO + one ISR handler + one per-slot
+ * counter; counters are read+zeroed atomically by
+ * `bsp_esp32_tach_read_ticks_delta(slot)`.
  *
- * Wraps `gpio_config_t` + `gpio_isr_handler_add` to count
- * falling edges on the fan's tach line, with a 1 ms inter-edge
- * filter (empirically validated on the user's bench: Noctua
- * NF-A8 emits ~73 Hz max, leaving 13x margin against EMI bursts).
+ * Empirical 1 ms inter-edge filter rejects EMI bursts.
+ * Noctua NF-A8 max edge rate at 2200 RPM is ~73 Hz -> 13x
+ * margin against the filter.
  *
- * `bsp_esp32_tach_read_ticks_delta()` returns the count delta
- * since the last call and atomically zeroes the counter, so
- * callers can sample on any cadence without losing ticks.
- *
- * Noctua NF-A8 conversion: RPM ~= ticks/s * 30 (2 pulses per
- * revolution).
+ * Noctua NF-A8 RPM conversion: RPM ~= ticks/s * 30
+ * (2 pulses per revolution).
  */
 #ifndef BSP_ESP32_TACH_H
 #define BSP_ESP32_TACH_H
@@ -23,15 +21,21 @@
 extern "C" {
 #endif
 
-/* Install the GPIO ISR + pull-up on `gpio_num`.  Typical:
- * GPIO 5 with an external 10 k pull-up to 3.3 V (per the user's
- * working board).  Returns 0 on success, -1 on IDF failure. */
-int bsp_esp32_tach_init(int gpio_num);
+/* Install the GPIO ISR + pull-up on `gpio_num` for actuator
+ * slot `slot`.  Each slot uses an independent counter.  The
+ * IDF-level `gpio_install_isr_service` is idempotent across
+ * calls -- the first slot's init installs it; subsequent calls
+ * return INVALID_STATE, which we treat as success.
+ *
+ * Returns 0 on success, -1 if `slot >= THERMAL_MAX_ACTUATORS`
+ * or an IDF call fails. */
+int bsp_esp32_tach_init(uint8_t slot, int gpio_num);
 
-/* Read the tick count since the last call to this function (or
- * since init for the first call).  Atomic exchange under the
- * hood so concurrent ISR firings don't lose edges. */
-uint32_t bsp_esp32_tach_read_ticks_delta(void);
+/* Read the tick count for `slot` since the previous call (or
+ * since init for the first call).  Atomic read-and-zero on the
+ * C3 (single-issue 32-bit core; uint32_t reads are naturally
+ * atomic).  Returns 0 if the slot was never initialised. */
+uint32_t bsp_esp32_tach_read_ticks_delta(uint8_t slot);
 
 #ifdef __cplusplus
 }
