@@ -778,6 +778,8 @@ Same `thermal_config_t` shape, populated as a static const in C (built into the 
 
 A small Python tool `tools/json2static.py` converts a JSON config into a `static const thermal_config_t` C file, for round-trip consistency between Linux experimentation and MCU deployment.
 
+MCU-target configs additionally carry an optional `mcu_pinmap` section — a target-agnostic JSON key that names the per-slot GPIO assignments and PWM frequency for each sensor and actuator. When present, `json2static.py` emits a second platform-scoped const struct (e.g. `const esp32_pinmap_t G_ESP32_PINMAP` for the ESP32 target) alongside `G_THERMAL_CFG`, so the firmware's BSP layer reads its pin map from the same JSON the core config came from. The `mcu_pinmap` key is generic; the emitted struct is platform-specific (each MCU port owns its own pinmap header).
+
 ### 5.3 Configuration validation rules
 
 `thermal_core_validate_config()` and the Linux JSON loader must reject invalid configuration before the control loop starts. Required v1 checks:
