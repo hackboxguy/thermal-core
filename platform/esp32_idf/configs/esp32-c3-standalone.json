@@ -7,8 +7,7 @@
       "id": 0,
       "name": "soc",
       "iir_alpha_q16": 16384,
-      "max_staleness_ms": 5000,
-      "source": "ds18b20:gpio6"
+      "max_staleness_ms": 5000
     }
   ],
 
@@ -23,11 +22,7 @@
       "slew_per_tick": 8,
       "spinup_pwm": 0,
       "spinup_ms": 0,
-      "state_pwm": [0, 100, 160, 220, 255],
-      "pwm": "ledc:gpio4",
-      "tach": "gpio_isr:gpio5",
-      "pwm_freq_hz": 25000,
-      "tach_pulses_per_rev": 2
+      "state_pwm": [0, 100, 160, 220, 255]
     }
   ],
 

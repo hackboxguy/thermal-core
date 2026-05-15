@@ -38,9 +38,10 @@ signals on the GPIOs — within Noctua's documented tolerance.
 | DS18B20 GND  | GND     | DS18B20 pin 1                          |
 | DS18B20 data | GPIO 6  | DS18B20 pin 2 (DQ), with 4.7 kΩ pull-up to 3.3 V |
 
-Pin map source: [`platform/esp32_idf/main/main.c`](../../platform/esp32_idf/main/main.c)
-(`PIN_FAN_PWM`, `PIN_FAN_TACH`, `PIN_ONEWIRE`).  Change those
-constants and re-flash if your wiring is different.
+Pin map source: the `mcu_pinmap` section of
+[`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/configs/esp32-c3-standalone.json).
+Change the GPIO numbers there and rebuild (`make build-esp32`)
+if your wiring differs -- no C source edit needed.
 
 ```
    ┌─────────────────┐                     ┌──────────────┐
@@ -178,8 +179,7 @@ Three pieces in [`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/co
 
    ```json
    { "id": 1, "name": "amp",
-     "iir_alpha_q16": 16384, "max_staleness_ms": 5000,
-     "source": "ds18b20:gpio6" }
+     "iir_alpha_q16": 16384, "max_staleness_ms": 5000 }
    ```
 
 2. **Second actuator** under `"actuators"`:
@@ -188,10 +188,12 @@ Three pieces in [`configs/esp32-c3-standalone.json`](../../platform/esp32_idf/co
    { "id": 1, "name": "aux_fan",
      "pwm_min": 0, "pwm_max": 255, "slew_per_tick": 8,
      "spinup_pwm": 0, "spinup_ms": 0,
-     "state_pwm": [0, 100, 160, 220, 255],
-     "pwm": "ledc:gpio7", "tach": "gpio_isr:gpio8",
-     "pwm_freq_hz": 25000, "tach_pulses_per_rev": 2 }
+     "state_pwm": [0, 100, 160, 220, 255] }
    ```
+
+   GPIO + PWM-frequency for the ESP32 build live in
+   `mcu_pinmap` (step 4) -- the `sensors[]` / `actuators[]`
+   blocks carry only the core control parameters.
 
 3. **Pick a zone topology.**  Two common shapes:
 
