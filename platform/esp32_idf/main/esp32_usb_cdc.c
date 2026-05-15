@@ -1,50 +1,54 @@
 /* platform/esp32_idf/main/esp32_usb_cdc.c
  *
- * See esp32_usb_cdc.h for the contract.  The implementation
- * is intentionally small: ESP-IDF already routes stdio to the
- * USB-Serial-JTAG ROM peripheral via CONFIG_ESP_CONSOLE_USB_
- * SERIAL_JTAG=y, so we just need to reconfigure stdio for raw
- * binary writes and silence ESP_LOG.
+ * See esp32_usb_cdc.h for the contract.
+ *
+ * Both directions go through the interrupt-driven
+ * `usb_serial_jtag` driver.  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`
+ * only wires a *polled* console-output path -- it does NOT
+ * install this driver.  `usb_serial_jtag_{read,write}_bytes`
+ * both dereference the driver object (`p_usb_serial_jtag_obj`);
+ * without an explicit `usb_serial_jtag_driver_install` that
+ * object is NULL and `read_bytes` faults (Load access fault).
  */
 #include "esp32_usb_cdc.h"
 
-#include <stdio.h>
-
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
 #include "driver/usb_serial_jtag.h"
 
 void esp32_usb_cdc_init(void)
 {
-    /* Disable stdout line buffering -- TC binary frames contain
-     * arbitrary bytes including 0x0A.  The IDF default _IOLBF at
-     * 128 B would otherwise split frames at every newline byte,
-     * leaving the host decoder permanently misaligned. */
-    setvbuf(stdout, NULL, _IONBF, 0);
-
-    /* Suppress ESP_LOG entirely.  Boot-time component logs
-     * (`I (123) cpu_start: ...`) would otherwise prefix the
-     * binary stream and CRC-fail on the host decoder.  ESP_LOG
-     * cannot share a channel with binary frames without a
-     * frame-level synchronizer, which 14a does not implement. */
+    /* Mute ESP_LOG: binary TC frames must not interleave with
+     * ASCII log lines on the shared USB-Serial-JTAG channel.
+     * (Boot-time logs printed before app_main already went out
+     * over the polled console path; from here on the driver
+     * owns the peripheral and only binary frames flow.) */
     esp_log_level_set("*", ESP_LOG_NONE);
+
+    /* Install the interrupt-driven USB-Serial-JTAG driver -- the
+     * prerequisite for usb_serial_jtag_{read,write}_bytes.  The
+     * default config gives 256-byte TX + RX ring buffers, ample
+     * for the 17/18-byte TC frames exchanged in HIL mode. */
+    usb_serial_jtag_driver_config_t cfg =
+        USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    (void)usb_serial_jtag_driver_install(&cfg);
 }
 
 void esp32_usb_cdc_write(const uint8_t *buf, size_t len)
 {
     if (len == 0) return;
-    (void)fwrite(buf, 1, len, stdout);
-    (void)fflush(stdout);
+    /* Block until the whole frame is queued in the driver's TX
+     * ring -- a finite timeout could queue a partial frame and
+     * desync the host decoder.  The HIL daemon drains the
+     * channel continuously, so the ring never stays full. */
+    (void)usb_serial_jtag_write_bytes(buf, len, portMAX_DELAY);
 }
 
 size_t esp32_usb_cdc_read(uint8_t *buf, size_t cap)
 {
     if (cap == 0) return 0;
     /* 0-tick wait: return immediately with whatever bytes the
-     * USB-Serial-JTAG driver already has buffered.  The driver
-     * is auto-installed by ESP-IDF when
-     * CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y (sdkconfig.defaults,
-     * Stage 13a), so we don't call usb_serial_jtag_driver_install
-     * ourselves. */
+     * driver's RX ring already holds (non-blocking drain). */
     int n = usb_serial_jtag_read_bytes(buf, cap, 0);
     return (n < 0) ? 0 : (size_t)n;
 }
