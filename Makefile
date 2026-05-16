@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 clean
+.PHONY: all test build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -482,6 +482,39 @@ $(PARITY_HOST): $(PARITY_SRCS) $(PARITY_CONFIG_C) $(CORE_ARCHIVE) \
 	@mkdir -p $(PARITY_DIR)
 	$(CC) $(CFLAGS_BASE) -I test/parity -I platform/esp32_idf/main \
 	    -o $@ $(PARITY_SRCS) $(PARITY_CONFIG_C) $(CORE_ARCHIVE)
+
+PARITY_GOLDEN = test/parity/replay_parity.csv
+PARITY_PORT  ?= /dev/ttyACM0
+
+# Host-side replay-parity check (CI-gating, per-PR): the host
+# replay binary must reproduce the committed golden byte-for-byte.
+replay-parity-host: $(PARITY_HOST) $(PARITY_GOLDEN)
+	@$(PARITY_HOST) > $(PARITY_DIR)/replay_host.csv
+	@diff -u $(PARITY_GOLDEN) $(PARITY_DIR)/replay_host.csv \
+	  || { echo "FAIL: host replay output differs from golden"; exit 1; }
+	@echo "replay-parity-host: PASS (host == golden)"
+
+# Full cross-platform replay-parity (bench, on-demand): build +
+# flash the ESP32-C3 REPLAY firmware, capture its canonical CSV
+# over USB-Serial-JTAG, assert it matches the host golden
+# byte-for-byte.  Needs a board on PARITY_PORT; run before release
+# tags -- see ci/runner-strategy.md.
+replay-parity: $(PARITY_GOLDEN)
+	@if [ ! -f "$(ESP_IDF_PATH)/export.sh" ]; then \
+	    echo "SKIP: ESP-IDF not found at $(ESP_IDF_PATH)"; exit 0; fi
+	@mkdir -p $(PARITY_DIR)
+	@echo "--- replay-parity: build + flash ESP32-C3 REPLAY firmware ---"
+	@bash -c '. "$(ESP_IDF_PATH)/export.sh" && cd platform/esp32_idf && \
+	    idf.py fullclean >/dev/null && \
+	    idf.py -DTHERMALCORE_REPLAY_STANDALONE=ON build && \
+	    idf.py -p $(PARITY_PORT) flash'
+	@echo "--- replay-parity: capture canonical CSV from $(PARITY_PORT) ---"
+	@bash -c '. "$(ESP_IDF_PATH)/export.sh" && \
+	    python3 test/parity/capture_esp32.py --port $(PARITY_PORT) \
+	        --out $(PARITY_DIR)/replay_esp32.csv'
+	@diff -u $(PARITY_GOLDEN) $(PARITY_DIR)/replay_esp32.csv \
+	  || { echo "FAIL: ESP32 replay output differs from host golden"; exit 1; }
+	@echo "replay-parity: PASS (ESP32-C3 == host golden)"
 
 replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
         $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \

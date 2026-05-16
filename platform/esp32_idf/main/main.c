@@ -291,19 +291,25 @@ static void app_main_replay(void)
         .log_event      = esp32_log_event_cb,
         .telemetry_emit = esp32_telemetry_emit_cb,
     };
-    thermal_status_t init_s = thermal_core_init(&core, &G_THERMAL_CFG, &cb);
-    if (init_s != THERMAL_OK) {
-        ESP_LOGE(TAG, "thermal_core_init failed: %d", (int)init_s);
-        return;
+
+    /* Emit the canonical CSV on a loop, re-initialising the core
+     * each pass so every pass is byte-identical.  Looping makes the
+     * Stage 15 bench capture race-free: `make replay-parity` can
+     * attach to the serial port at any time and still grab one
+     * complete header..END block.  The replay loop itself
+     * (test/parity/replay_run.c) is the same code the host parity
+     * binary runs. */
+    for (;;) {
+        thermal_status_t init_s =
+            thermal_core_init(&core, &G_THERMAL_CFG, &cb);
+        if (init_s != THERMAL_OK) {
+            ESP_LOGE(TAG, "thermal_core_init failed: %d", (int)init_s);
+            return;
+        }
+        replay_run(&core, &G_THERMAL_CFG);
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-
-    /* The replay loop is shared with the host parity binary
-     * (test/parity/replay_run.c) so both rigs run byte-identical
-     * snapshot-building and stepping code. */
-    replay_run(&core, &G_THERMAL_CFG);
-    fflush(stdout);
-
-    vTaskDelay(portMAX_DELAY);
 }
 
 #else

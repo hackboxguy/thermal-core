@@ -39,11 +39,11 @@ from pathlib import Path
 # (from anywhere) and when imported as a library.
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "test" / "parity"))
 
 import thermalcore_wire as w   # noqa: E402
-
-
-CSV_HEADER = "ts_ms,kind,id,value,a1,a2,a3,a4\n"
+from canonical import (CANONICAL_HEADER, canonical_event,   # noqa: E402
+                       canonical_sample)
 
 
 @dataclass
@@ -56,12 +56,14 @@ class ProbeRecord:
     a2: int = 0
     a3: int = 0
     a4: int = 0
+    flags: int = 0       # telemetry flags (sample rows only)
 
     def csv_row(self) -> str:
         if self.kind == "sample":
-            return f"{self.ts_ms},sample,{self.id},{self.value},,,,\n"
-        return (f"{self.ts_ms},event,{self.id},{self.value},"
-                f"{self.a1},{self.a2},{self.a3},{self.a4}\n")
+            return canonical_sample(self.ts_ms, self.id,
+                                    self.value, self.flags)
+        return canonical_event(self.ts_ms, self.id,
+                               self.a1, self.a2, self.a3, self.a4)
 
 
 class ProbeRecorder:
@@ -112,10 +114,10 @@ class ProbeRecorder:
             return
         opcode, _seq, ts_ms, payload = dec
         if opcode == w.OP_TELEM_SAMPLE and len(payload) == 8:
-            sig, _flags, val = struct.unpack("<HHi", payload)
+            sig, flags, val = struct.unpack("<HHi", payload)
             self.records.append(
                 ProbeRecord(ts_ms=ts_ms, kind="sample",
-                            id=sig, value=val))
+                            id=sig, value=val, flags=flags))
         elif opcode == w.OP_TELEM_EVENT and len(payload) == 18:
             # event payload: u16 code, u32 a1, u32 a2, u32 a3, u32 a4
             code, a1, a2, a3, a4 = struct.unpack("<HIIII", payload)
@@ -128,7 +130,7 @@ class ProbeRecorder:
 
     def write_csv(self, path) -> None:
         with Path(path).open("w", encoding="ascii", newline="") as f:
-            f.write(CSV_HEADER)
+            f.write(CANONICAL_HEADER)
             for rec in self.records:
                 f.write(rec.csv_row())
 

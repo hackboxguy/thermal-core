@@ -58,6 +58,17 @@ jobs:
       - name: Run replay tests
         run: make replay
 
+  replay-parity-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Host-side replay-parity check
+        run: make replay-parity-host
+
   property-config:
     runs-on: ubuntu-latest
     steps:
