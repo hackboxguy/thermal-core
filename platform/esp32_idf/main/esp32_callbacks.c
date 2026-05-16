@@ -13,19 +13,11 @@
  *     - log_event_cb prints the event immediately.
  *
  *   REPLAY_STANDALONE (-DTHERMALCORE_MODE_REPLAY_STANDALONE):
- *     - telemetry_emit_cb writes one byte-stable CSV row per
- *       call, matching tools/thermalcore_probe.py:
- *
- *           ts_ms,sample,signal_id,value,,,,\n
- *
- *     - log_event_cb writes the matching event row.  The probe
- *       duplicates the first event arg into the `value` column
- *       (tools/thermalcore_probe.py:124, value=a1); we mirror
- *       that or Stage 15's SHA gate fails:
- *
- *           ts_ms,event,code,a1,a1,a2,a3,a4\n
- *
- *     Decimal integers, no whitespace, '\n' (no '\r').
+ *     - telemetry_emit_cb / log_event_cb format one canonical CSV
+ *       row per call through test/parity/canonical.c -- the same
+ *       serializer the host parity binary uses, so the two byte
+ *       streams (hence their SHA-256) match for Stage 15's
+ *       replay-parity gate.
  *
  * The cache arrays + accessor functions stay defined in both
  * modes (the accessors are public symbols; defining them
@@ -40,6 +32,7 @@
 
 #include "thermal_signals.h"
 #include "thermal_events.h"
+#include "canonical.h"
 
 /* === Cached telemetry values (read by app_main_standalone) === */
 
@@ -68,22 +61,26 @@ int32_t esp32_callbacks_last_actuator_pwm(uint8_t slot)
 void esp32_telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
                               int32_t value)
 {
-    /* Byte-stable CSV row matching tools/thermalcore_probe.py:62.
-     * Eight columns, last four empty, decimal integers, '\n'. */
-    printf("%" PRIu32 ",sample,%u,%" PRId32 ",,,,\n",
-           ts_ms, (unsigned)signal_id, value);
+    /* Canonical CSV row via the shared serializer; the host parity
+     * binary formats through the identical code. */
+    char buf[128];
+    int  n = thermalcore_canonical_sample(buf, sizeof buf,
+                                          ts_ms, signal_id, value, 0);
+    if (n > 0) {
+        fwrite(buf, 1, (size_t)n, stdout);
+    }
 }
 
 void esp32_log_event_cb(uint32_t ts_ms, uint16_t code,
                         uint32_t a1, uint32_t a2,
                         uint32_t a3, uint32_t a4)
 {
-    /* The probe stores value=a1 (tools/thermalcore_probe.py:124)
-     * so the CSV duplicates a1 into the `value` column.  Mirror
-     * that here -- Stage 15 SHA-256s the exact byte stream. */
-    printf("%" PRIu32 ",event,%u,%" PRIu32 ",%" PRIu32
-           ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "\n",
-           ts_ms, (unsigned)code, a1, a1, a2, a3, a4);
+    char buf[128];
+    int  n = thermalcore_canonical_event(buf, sizeof buf,
+                                         ts_ms, code, a1, a2, a3, a4);
+    if (n > 0) {
+        fwrite(buf, 1, (size_t)n, stdout);
+    }
 }
 
 #else

@@ -52,7 +52,7 @@
 #include "thermal_config.h"
 
 #if defined(THERMALCORE_MODE_REPLAY_STANDALONE)
-#include "replay_fixture.h"
+#include "replay_run.h"
 #endif
 
 #if defined(THERMALCORE_MODE_HIL_PERIPHERAL)
@@ -297,45 +297,10 @@ static void app_main_replay(void)
         return;
     }
 
-    const uint16_t dt_ms = G_THERMAL_CFG.control_period_ms;
-
-    for (uint16_t tick = 0; tick < G_REPLAY_TICK_COUNT; tick++) {
-        uint32_t now_ms = (uint32_t)tick * (uint32_t)dt_ms;
-
-        thermal_sample_t samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
-        uint8_t n = 0;
-
-        for (uint8_t i = 0; i < G_THERMAL_CFG.sensor_count; i++) {
-            samples[n].id           = G_THERMAL_CFG.sensors[i].id;
-            samples[n].kind         = THERMAL_SAMPLE_TEMP_MC;
-            samples[n].sample_ts_ms = now_ms;
-            samples[n].value        = G_REPLAY_TICKS[tick].temp_mc;
-            samples[n].valid        = 1;
-            samples[n].quality      = 0;
-            n++;
-        }
-        for (uint8_t i = 0; i < G_THERMAL_CFG.actuator_count; i++) {
-            samples[n].id           = G_THERMAL_CFG.actuators[i].id;
-            samples[n].kind         = THERMAL_SAMPLE_TACH_RPM;
-            samples[n].sample_ts_ms = now_ms;
-            samples[n].value        = (int32_t)G_REPLAY_TICKS[tick].tach_rpm;
-            samples[n].valid        = 1;
-            samples[n].quality      = 0;
-            n++;
-        }
-
-        thermal_input_snapshot_t snap = {
-            .now_ms       = now_ms,
-            .samples      = samples,
-            .sample_count = n,
-        };
-
-        thermal_output_frame_t out;
-        memset(&out, 0, sizeof(out));
-        (void)thermal_core_step(&core, &snap, &out);
-    }
-
-    printf("END\n");
+    /* The replay loop is shared with the host parity binary
+     * (test/parity/replay_run.c) so both rigs run byte-identical
+     * snapshot-building and stepping code. */
+    replay_run(&core, &G_THERMAL_CFG);
     fflush(stdout);
 
     vTaskDelay(portMAX_DELAY);

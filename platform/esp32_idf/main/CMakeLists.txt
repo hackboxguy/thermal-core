@@ -10,8 +10,10 @@
 # to compile the fixture-driven REPLAY firmware.  The option
 # defines THERMALCORE_MODE_REPLAY_STANDALONE on the component's
 # compile line; main.c + esp32_callbacks.c branch on it.  The
-# replay_fixture.c source is linked unconditionally; LTO dead-
-# strips it under STANDALONE since nothing references G_REPLAY_TICKS.
+# shared parity sources under test/parity/ (canonical.c,
+# replay_fixture.c, replay_run.c) are linked unconditionally; LTO
+# dead-strips them under STANDALONE / HIL since nothing references
+# them there.
 
 option(THERMALCORE_REPLAY_STANDALONE
        "Build firmware in REPLAY_STANDALONE mode (fixture-driven, no hardware)"
@@ -64,8 +66,10 @@ idf_component_register(
         "bsp_esp32_tach.c"
         "bsp_esp32_sensor.c"
         "esp32_callbacks.c"
-        "replay_fixture.c"
         "esp32_usb_cdc.c"
+        "${PROJECT_DIR}/../../test/parity/canonical.c"
+        "${PROJECT_DIR}/../../test/parity/replay_fixture.c"
+        "${PROJECT_DIR}/../../test/parity/replay_run.c"
         ${CORE_SRCS}
         ${PROTOCOL_SRCS}
         "${GENERATED_CONFIG_C}"
@@ -73,6 +77,7 @@ idf_component_register(
         "."
         "${PROJECT_DIR}/../../core"
         "${PROJECT_DIR}/../../protocol"
+        "${PROJECT_DIR}/../../test/parity"
         "${GENERATED_DIR}"
 )
 

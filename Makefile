@@ -458,6 +458,31 @@ $(FULL_STEP_REPLAY): test/replay/full_step_replay.c core/thermal_core.h \
 	@mkdir -p $(REPLAY_BIN_DIR)
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
+# --- Stage 15 cross-platform parity: host replay binary ---
+# Host side of replay-parity.  Compiles the shared test/parity/
+# sources against the json2static-generated G_THERMAL_CFG of
+# esp32-c3-standalone.json -- the identical const config the
+# ESP32-C3 REPLAY firmware builds.  -I platform/esp32_idf/main is
+# for esp32_pinmap.h, which the generated config #includes.
+PARITY_DIR        = build/parity
+PARITY_HOST       = $(PARITY_DIR)/replay_host
+PARITY_CONFIG_C   = $(PARITY_DIR)/esp32_config.c
+ESP32_CONFIG_JSON = platform/esp32_idf/configs/esp32-c3-standalone.json
+PARITY_SRCS       = test/parity/replay_host.c test/parity/replay_run.c \
+                    test/parity/replay_fixture.c test/parity/canonical.c
+
+$(PARITY_CONFIG_C): $(ESP32_CONFIG_JSON) tools/json2static.py
+	@mkdir -p $(PARITY_DIR)
+	python3 tools/json2static.py -o $@ $(ESP32_CONFIG_JSON) \
+	    --symbol G_THERMAL_CFG
+
+$(PARITY_HOST): $(PARITY_SRCS) $(PARITY_CONFIG_C) $(CORE_ARCHIVE) \
+                test/parity/canonical.h test/parity/replay_fixture.h \
+                test/parity/replay_run.h
+	@mkdir -p $(PARITY_DIR)
+	$(CC) $(CFLAGS_BASE) -I test/parity -I platform/esp32_idf/main \
+	    -o $@ $(PARITY_SRCS) $(PARITY_CONFIG_C) $(CORE_ARCHIVE)
+
 replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
         $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \
         $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY)
