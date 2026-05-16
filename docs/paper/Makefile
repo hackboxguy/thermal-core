@@ -32,9 +32,12 @@ $(PDF): $(SRC) $(wildcard $(SRC_DIR)/*.tex)
 	cd $(SRC_DIR) && $(LATEX) -output-directory=../$(OUTPUT_DIR) -halt-on-error $(MAIN).tex
 	@echo "=== PDF generated: $(PDF) ==="
 
-# Placeholder for generated benchmark plots.
+# Regenerate the data-driven benchmark figures.  Delegates to the
+# root Makefile's `paper-figures` target, which runs the canonical
+# scenarios and renders one matplotlib PDF per figure (Stage 16).
 figures:
-	@echo "=== No generated figures configured yet ==="
+	@echo "=== Regenerating benchmark figures ==="
+	$(MAKE) -C ../.. paper-figures
 
 # Iterative writing workflow. Requires latexmk.
 watch:

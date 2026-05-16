@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 clean
+.PHONY: all test build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 paper-figures clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -780,6 +780,32 @@ build-esp32:
 	        --output-file build/size-files.json'
 	python3 tools/check_esp32_size_budget.py \
 	    platform/esp32_idf/build/size-files.json
+
+# --- White-paper figure-regeneration pipeline (Stage 16) -------
+# Drives the canonical host scenarios that back the paper's
+# data-driven figures, then renders one matplotlib PDF per
+# figure (PRD section 12.3: one plot script per figure under
+# docs/paper/figures/plots/).  `make -C docs/paper figures`
+# delegates here so the impl-plan's documented entry point
+# stays the paper Makefile.  The CAN-dependent acoustic-mask
+# scenarios are not in this batch -- they need vcan0.
+PAPER_FIGURE_SCENARIOS = heat_soak_ramp step_load \
+                         fan_stall_recovery runaway
+
+paper-figures: build build/tools/thermalcore-scenario/libplant.so \
+               tools/thermalcore-scenario/run.py \
+               tools/thermalcore-scenario/plant_ffi.py \
+               tools/thermalcore-scenario/scenario.py \
+               tools/thermalcore-probe \
+               $(wildcard docs/paper/figures/plots/*.py)
+	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
+	    echo "=== scenario: $$s ==="; \
+	    python3 tools/thermalcore-scenario/run.py scenarios/$$s.scn; \
+	done
+	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
+	    python3 docs/paper/figures/plots/plot_$$s.py; \
+	done
+	@echo "paper-figures: ALL FIGURES WRITTEN"
 
 clean:
 	rm -rf build
