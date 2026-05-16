@@ -346,3 +346,11 @@ jobs:
         if: matrix.mode != 'REPLAY_STANDALONE'
         run: python3 tools/check_esp32_size_budget.py
             platform/esp32_idf/build/size-files.json
+      # Stage 15 15d: keep the per-mode firmware size measurement as
+      # a CI artifact so footprint can be tracked over time.
+      - name: Upload firmware size measurement
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-files-${{ matrix.mode }}
+          path: platform/esp32_idf/build/size-files.json
+          if-no-files-found: error

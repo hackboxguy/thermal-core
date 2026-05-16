@@ -1,0 +1,42 @@
+# test/bench/tolerances.yaml
+#
+# Behavioral tolerance bands for the Stage 15 physical HIL check.
+#
+# Real hardware cannot reproduce the host simulator's telemetry
+# byte-for-byte -- tach jitter, USB-Serial-JTAG latency, and CAN
+# frame timing all vary tick-to-tick.  So a hardware run of the
+# canonical scenarios is compared to the host-simulator reference
+# within these *behavioral* bands, not by SHA equality (that is
+# what deterministic replay-parity, Stage 15a-c, is for).
+#
+# STATUS -- spec defaults, NOT yet bench-characterized.
+# These are the impl-plan Stage 15 starting values.  They have
+# not been measured against real bench runs; the impl-plan
+# budgets "several nightly runs" to settle them.  Tightening or
+# loosening a band is a deliberate PR once bench data exists.
+# The `make hil-tolerance` harness that consumes this file is
+# itself bench-design-coupled and is tracked as on-bench
+# follow-on work (see impl-plan Stage 15, Shipped 15d).
+
+settling_time:
+  description: >-
+    Time for the controlled signal to settle after a step,
+    hardware vs host-simulator reference.
+  band_pct: 10          # hardware within +/- 10 % of reference
+
+overshoot:
+  description: >-
+    Peak excursion of the controlled signal past setpoint,
+    hardware vs host-simulator reference.
+  band_pct: 5
+
+fault_detection_latency:
+  description: >-
+    Time from fault onset to the detector raising it.  An
+    absolute envelope, not a relative band.
+  envelope_ms: 3000     # e.g. fan stall raised within 3 s
+
+pwm_seconds:
+  description: >-
+    Integral of fan PWM duty over the run -- the acoustic proxy.
+  band_pct: 15
