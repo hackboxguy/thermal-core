@@ -1,0 +1,54 @@
+# White-paper release build (Stage 16 16c).
+#
+# Runs only on v* tags -- NOT a PR gate.  Per the impl-plan, the
+# LaTeX paper build lives here, off the per-PR path: regenerate the
+# data-driven figures with the pinned matplotlib, build the PDF,
+# and upload it as a workflow artifact for the release.
+#
+# Figure freshness (manifest hashes + \datasha caption SHAs) is
+# already gated on every push + PR by the `figure-freshness` job
+# in ci.yml; this workflow regenerates the figures from scratch, so
+# it does not re-run that check.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  paper-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dev dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Install TeX Live
+        # Mirrors the documented paper-build requirements
+        # (docs/paper/Makefile `help`): latex-base + pictures (TikZ)
+        # + latex-extra, plus the recommended font/macro companions.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-latex-base texlive-latex-recommended \
+            texlive-latex-extra texlive-fonts-recommended \
+            texlive-pictures
+      - name: Regenerate figures (pinned matplotlib)
+        # `make figures` delegates to the root `paper-figures`
+        # target, which builds the daemon + plant it depends on.
+        run: make -C docs/paper figures
+      - name: Build the white-paper PDF
+        run: make -C docs/paper
+      - name: Upload white-paper PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: thermal-core-spec-${{ github.ref_name }}
+          path: docs/paper/output/thermal-core-spec.pdf
+          if-no-files-found: error
