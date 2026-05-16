@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.7
+**Document status:** Draft v0.8
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.14)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.15)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -588,6 +588,26 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 ---
 
+### Stage 18 — CH32V003 STANDALONE port (post-v1)
+**Post-v1 stage. Do not start until Stage 16 is closed. Independent of Stage 17 — both touch `core/` config, but in either order.** Specified in PRD Appendix D.
+
+**Deliverable:** a self-contained thermal-core regulator on the WCH CH32V003 (RV32EC, 16 KB flash / 2 KB SRAM) — a real DS18B20 feeds `thermal_core_step()`, which drives a real fan over PWM with tach readback, on the chip, with no host. Two pieces:
+
+1. **The tiny profile.** `#ifndef`-guard the `THERMAL_MAX_*` constants in `core/thermal_config.h` (currently plain `#define`s) so a profile header can override them; add an MCU profile (1 zone / 1 sensor / 1 actuator / 4 faults / 2 samples-per-snapshot) and cut `THERMAL_CORE_T_RESERVED_BYTES` from 4096 to ~1024. Target-agnostic — any future constrained-MCU port reuses it.
+2. **`platform/ch32v003/`** — mirrors `platform/esp32_idf/`: `bsp_ch32_{pwm,tach,sensor}.c` (TIM2 PWM / EXTI tach / bit-banged DS18B20, adapted from the bench firmware), `mcu_pinmap`-driven `json2static` config, `ch32fun` vendored as a pinned git submodule at `platform/ch32v003/ch32fun/`, a plain Makefile, and a `make build-ch32` target. STANDALONE only; no on-device display (it does not co-fit 16 KB — PRD §D.2).
+
+**Step 1 (do first):** a skeleton link — tiny-profile `core/` plus stub BSPs, cross-compiled for RV32EC — to confirm the PRD §D.2 ~15 KB flash budget on real `riscv64-unknown-elf-gcc` before the BSPs are built out. If the skeleton blows the budget, the BSP work does not start.
+
+**Tests added:**
+- **Build gate:** a `build-ch32` CI job — cross-compiles the firmware and asserts a `.text` / `.bss` size budget (mirrors `build-esp32`); SKIPs cleanly when `riscv64-unknown-elf-gcc` is absent, so Linux-only devs are unaffected.
+- **Tiny-profile unit run:** the existing `core/` unit suite must pass compiled under the tiny profile — compiling at `maxima = 1` is not the same as behaving correctly at `maxima = 1`.
+
+**Regression value:** Locks the tiny profile and proves the portability claim at the smallest target — a ~10-cent MCU running the identical `core/` source as the Linux daemon. The `#ifndef`-guarded maxima also unblock any future constrained port.
+
+**Exit gate:** all previous green, plus `build-ch32` green and the `core/` unit suite green under the tiny profile.
+
+---
+
 ## 6. Paper update cadence
 
 The white paper is not a Stage-16-only deliverable. Conceptual sections draft in parallel with code; results-bearing sections fill in as benchmarks land. This table maps stages to paper sections that can credibly advance once that stage lands.
@@ -608,6 +628,7 @@ The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 
 | Stage 15 | §10 Evaluation — cross-platform parity tables, full benchmark table, per-platform comparison | Replay parity green; HIL tolerance bands characterized |
 | Stage 16 | §1 Abstract, §11 Honest limitations, §13 Conclusions, §12 Future work; tighten + final prose pass | Everything else; written when the paper knows what it's saying |
 | Stage 17 (post-v1) | A new fan-health subsection — predictive-maintenance concept + degradation-drift results — as a post-v1 paper supplement | Fan-health detector module + golden replay green |
+| Stage 18 (post-v1) | §6 Portability strategy — a 10-cent-MCU paragraph: the core running self-contained on the CH32V003, with the measured size budget | `build-ch32` green + measured budget |
 
 **Rules of thumb:**
 
@@ -701,6 +722,7 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 | 15 | Deterministic replay parity + benchmarks | replay-parity (conditional), hil-tolerance (nightly) | host vs ESP32 standalone byte-equal replay green when infra exists; otherwise release-gate |
 | 16 | White paper figures + benchmark manifest | (release workflow) | PDF builds + manifest consistent |
 | 17 | **(post-v1)** Fan-health detector — advisory PWM→RPM drift module | — | fan-health module golden + reference cross-check green |
+| 18 | **(post-v1)** CH32V003 STANDALONE port — tiny profile + platform/ch32v003/ | build-ch32 | tiny-profile build + unit suite + size budget green |
 
 ---
 
@@ -715,4 +737,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.7*
+*End of implementation plan v0.8*

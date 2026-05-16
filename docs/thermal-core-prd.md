@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.14
+**Document status:** Draft v0.15
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -1396,6 +1396,7 @@ The white paper contains a dedicated section on limitations, written explicitly 
 - **Functional-safety scaffolding** (MISRA-C, static analysis CI) as a path toward ASIL-B/C readiness.
 - **Web-based live dashboard** built on the telemetry UDP stream (separate tool, not in core repo).
 - **Fan-health / degradation detection** — graded PWM-to-RPM drift versus a calibrated baseline for predictive maintenance; see Appendix C for the post-v1 minimal-slice sketch.
+- **CH32V003 STANDALONE port** — the portable core running self-contained on a ~10-cent 16 KB / 2 KB RV32EC microcontroller; see Appendix D for the post-v1 sketch.
 
 ## 17. Decision Log and Remaining Questions
 
@@ -1548,6 +1549,57 @@ The detector is compile-optional (`THERMALCORE_ENABLE_FAN_HEALTH`, default off o
 
 Implementation is tracked as Stage 17 of the implementation plan, the first post-v1 stage.
 
+## Appendix D: CH32V003 STANDALONE Port (Post-v1 Sketch)
+
+This appendix sketches a **post-v1** target: a fully self-contained thermal regulator on the WCH CH32V003 — a ~10-cent RV32EC microcontroller with 16 KB flash and 2 KB SRAM. It is recorded here so the design is settled before implementation begins; it is **not** part of v1 scope and affects no v1 gate.
+
+### D.1 Goal
+
+Run the unmodified `core/` — the same C99 source that runs in the Linux daemon and the ESP32-C3 firmware — **STANDALONE** on the CH32V003: a real DS18B20 probe feeds `thermal_core_step()`, which drives a real 4-wire fan over PWM with tach readback, on the chip, with **no host**. This demonstrates the portability thesis at the extreme low end: if the core fits a 10-cent part, the protocol-agnostic, static-allocation, fixed-point discipline has earned its keep.
+
+### D.2 Fit (measured)
+
+The CH32V003's 2 KB SRAM cannot hold the default `thermal_core_t` (a 4096-byte reservation), so the **tiny profile** (§D.3) is mandatory. With it, the budget — measured on a `riscv64` GCC 13.2.0 cross-build, RV32EC, `-Os -flto` with `--gc-sections` — is:
+
+| Item | Size | Source |
+|---|---|---|
+| tiny-profile `core/` + libgcc soft-arithmetic | ~10.7 KB | measured |
+| `const G_THERMAL_CFG` (tiny profile) | 0.54 KB | measured |
+| 1-Wire + TIM2 PWM + EXTI tach BSP | ~0.8 KB | bench firmware |
+| ch32fun runtime + vector table | ~1.0 KB | bench firmware |
+| UART status print (optional) | ~1.2 KB | bench firmware |
+| app glue (tick loop, snapshot build) | ~0.5 KB | new |
+| **STANDALONE total** | **~14.5–15.5 KB of 16 KB** | fits |
+
+RAM: the tiny-profile core state is 792 B (core internal struct + input snapshot + output frame); with BSP globals and stack the regulator runs in ~1.3 KB of the 2 KB SRAM. The RV32EC core has no hardware multiply or divide, so the Q16.16 math pulls in libgcc soft-arithmetic (`__muldi3`, `__divdi3`, …); that cost is included in the ~10.7 KB above.
+
+**Display tradeoff.** An on-device SSD1306 OLED costs ~2.7 KB (driver + font table). A STANDALONE core and an OLED do not co-fit 16 KB — it is one or the other. This sketch assumes **no on-device display**: the regulator is headless, with an optional UART status line as the only readout.
+
+### D.3 The tiny profile
+
+A compile-time profile for severely flash- and RAM-constrained MCUs:
+
+- The `THERMAL_MAX_*` constants in `core/thermal_config.h` are currently plain `#define`s. They become `#ifndef`-guarded so a profile header, selected by a build flag, can override them.
+- The MCU profile sets 1 zone / 1 sensor / 1 actuator / 4 fault detectors / 2 samples-per-snapshot, and cuts `THERMAL_CORE_T_RESERVED_BYTES` from 4096 to ~1024.
+- This shrinks `thermal_core_internal_t` from 2712 B to 760 B (measured) — the single change that takes the core from "2× over the 2 KB SRAM" to comfortably under.
+
+The tiny profile is target-agnostic; any future constrained-MCU port reuses it.
+
+### D.4 Platform integration
+
+`platform/ch32v003/` mirrors `platform/esp32_idf/`:
+
+- `bsp_ch32_pwm.c` / `bsp_ch32_tach.c` / `bsp_ch32_sensor.c` — slot-indexed BSP wrappers, adapted from the existing bench firmware (TIM2 PWM at 25 kHz, EXTI falling-edge tach, DS18B20 over bit-banged 1-Wire).
+- The `mcu_pinmap` JSON section drives the GPIO assignments — already target-agnostic (that is why the key was renamed from `esp32_pinmap`); `json2static.py` emits the pin map exactly as it does for the ESP32.
+- **`ch32fun` is vendored as a pinned git submodule** at `platform/ch32v003/ch32fun/` — the `tools/car-can-emulator/` model (§17.1 decision 3): pinned by commit SHA, tracked branch documented. ch32fun supplies the CH32 MCU headers, startup, and linker scripts; it is small enough to vendor, and pinning it keeps the build reproducible. ESP-IDF, by contrast, is too large to vendor and stays a system install. The `riscv64-unknown-elf-gcc` cross-compiler is likewise a system tool, pinned in `ci/tool-versions.md`.
+- A plain Makefile (ch32fun's model — no CMake or IDF) and a `make build-ch32` target mirroring `make build-esp32`, including a `.text`/`.bss` size-budget assertion.
+
+### D.5 Scope
+
+STANDALONE only. No on-device display. No CAN — a CH32V003 node is a single zone with no vehicle-context input. The `HIL_PERIPHERAL` and `REPLAY_STANDALONE` modes also fit the part comfortably (the core dead-strips in HIL; REPLAY drops the BSP) and become available for free, but they are not the target of this sketch.
+
+Implementation is tracked as Stage 18 of the implementation plan.
+
 ---
 
-*End of PRD v0.13*
+*End of PRD v0.15*
