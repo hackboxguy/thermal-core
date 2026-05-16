@@ -2,7 +2,7 @@
 
 **Document status:** Draft v0.7
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.13)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.14)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
