@@ -805,6 +805,7 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
 	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
 	    python3 docs/paper/figures/plots/plot_$$s.py; \
 	done
+	@python3 tools/figure_manifest.py
 	@echo "paper-figures: ALL FIGURES WRITTEN"
 
 clean:

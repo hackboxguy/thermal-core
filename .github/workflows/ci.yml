@@ -296,6 +296,28 @@ jobs:
           path: build/coverage/html/
           if-no-files-found: warn
 
+  # Stage 16 16b: figure-freshness gate.  Regenerates the canonical
+  # scenario CSVs that back the white-paper figures and asserts the
+  # committed docs/paper/figures/manifest.yaml -- and every
+  # \datasha{} caption in the paper -- still matches the data.
+  # Stale or hand-edited figures fail loudly.  Needs the daemon
+  # build + scenario runner; no texlive -- the paper PDF build
+  # lives in release.yml (Stage 16 16c), not on the PR path.
+  figure-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dev dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Build daemon + scenario plant
+        run: make build build/tools/thermalcore-scenario/libplant.so
+      - name: Check figure freshness
+        run: python3 tools/check_figure_freshness.py
+
   # Stage 13 13d / Stage 14 14d: ESP32-C3 firmware build matrix.
   # Builds the firmware in all three modes (STANDALONE +
   # REPLAY_STANDALONE + HIL_PERIPHERAL) inside the pinned ESP-IDF

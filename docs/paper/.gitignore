@@ -1,4 +1,11 @@
 output/
+
+# Generated scenario-plot figures (Stage 16).  Rebuilt by
+# `make figures`; release.yml regenerates them with the pinned
+# matplotlib before the PDF build.  The plot scripts + manifest.yaml
+# are committed; the rendered PDFs are not.
+figures/*.pdf
+
 *.aux
 *.bbl
 *.bcf

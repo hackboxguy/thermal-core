@@ -72,6 +72,15 @@
 \definecolor{outdoorzone}{RGB}{255,180,50}
 \definecolor{codeblock}{RGB}{240,240,240}
 
+% Data-provenance tag for generated-figure captions (Stage 16).
+% \datasha{<8hex>} renders "[data: <8hex>]" -- the first 8 hex of
+% the figure's telemetry-CSV SHA-256, recorded in
+% docs/paper/figures/manifest.yaml.  Captions cite the data SHA,
+% not the commit; the figure-freshness CI gate
+% (tools/check_figure_freshness.py) verifies every \datasha{}
+% prefixes a manifest entry.
+\newcommand{\datasha}[1]{\textcolor{gray}{\small[data:~\texttt{#1}]}}
+
 %------------------------
 % Document starts here
 %------------------------
