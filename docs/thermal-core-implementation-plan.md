@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.6
+**Document status:** Draft v0.7
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.13)
 
@@ -100,7 +100,7 @@ The CI workflow is `.github/workflows/ci.yml`. Each row below is a `job:` added 
 | 12 | `scenario` | runs all canonical scenarios; assertions decide pass/fail |
 | 12 | `determinism` | reruns scenarios twice, compares SHA-256 of telemetry |
 | 13 | `build-esp32` | `idf.py -DIDF_TARGET=esp32c3 build` (RISC-V) on the ESP-IDF docker image; size-budget assertions |
-| 15 | `replay-parity` | **conditional gate.** Runs a fixed synthetic input stream through host build and ESP32 standalone; asserts byte-identical telemetry SHA. Becomes a PR/merge-queue gate **only when** a stable ESP32-C6 RISC-V QEMU path or a reliable self-hosted ESP32 runner exists. Until that infrastructure lands, this is a release/nightly gate. The plan does not promise an always-on PR gate before the runner strategy is real. |
+| 15 | `replay-parity` | **conditional gate.** Runs a fixed synthetic input stream through host build and ESP32 standalone; asserts byte-identical telemetry SHA. Becomes a PR/merge-queue gate **only when** a stable ESP32-C3 RISC-V QEMU path or a reliable self-hosted ESP32 runner exists. Until that infrastructure lands, this is a release/nightly gate. The plan does not promise an always-on PR gate before the runner strategy is real. |
 | nightly | `hil-tolerance` | runs canonical scenarios on the bench (host + ESP32 HIL, or ESP32 standalone) and asserts behavioral bands rather than SHA equality; gated by `[hil]` PR label or scheduled run |
 
 Three workflows in total:
@@ -501,10 +501,10 @@ the product but the Linux v1 release artefact does not change.
 ### Stage 15 — Cross-platform parity + benchmarks
 **Two flavors of parity, deliberately separated:**
 
-1. **Deterministic replay parity — conditional PR gate.** Host build and ESP32-C6 standalone build are fed *identical synthetic input streams* (no real sensors, no real CAN — just `thermal_input_snapshot_t` arrays played from a fixture file). Both rigs are deterministic; the SHA-256 of the resulting telemetry CSV must be byte-equal.
+1. **Deterministic replay parity — conditional PR gate.** Host build and ESP32-C3 standalone build are fed *identical synthetic input streams* (no real sensors, no real CAN — just `thermal_input_snapshot_t` arrays played from a fixture file). Both rigs are deterministic; the SHA-256 of the resulting telemetry CSV must be byte-equal.
 
 **Infrastructure precondition (be explicit about what we're promising):**
-- If a stable ESP32-C6 RISC-V QEMU path exists in ESP-IDF *or* a reliable self-hosted ESP32-C6 runner is connected to the repo, `replay-parity` is a per-PR / merge-queue gate.
+- If a stable ESP32-C3 RISC-V QEMU path exists in ESP-IDF *or* a reliable self-hosted ESP32-C3 runner is connected to the repo, `replay-parity` is a per-PR / merge-queue gate.
 - If neither exists, Stage 15 cannot claim PR-gated replay parity. The gate becomes a **release-tag gate** (must pass before a `v*` tag is cut) and a nightly job; PR merges are not blocked by it. The plan does not promise an always-on PR gate before the runner strategy is real.
 - The repo `README.md` records which mode is currently active.
 
@@ -546,9 +546,9 @@ The canonical column projection and the row-ordering contract live in `tools/the
 - Bench-rig benchmark table from PRD §9.2 captured (step time, memory, settling, overshoot, PWM-seconds, fault latency).
 - Memory-footprint check: ESP32 binary size tracked over time as a CI artifact; trend visible in PR comments.
 
-**CI rigor added:** `replay-parity` (**conditional gate** — PR/merge-queue when ESP32-C6 QEMU or a self-hosted runner exists; release/nightly otherwise); `hil-tolerance` (nightly or `[hil]`-labeled, never PR-gating).
+**CI rigor added:** `replay-parity` (**conditional gate** — PR/merge-queue when ESP32-C3 QEMU or a self-hosted runner exists; release/nightly otherwise); `hil-tolerance` (nightly or `[hil]`-labeled, never PR-gating).
 
-**Exit gate:** all previous green, plus `replay-parity` green **on the gating tier the repo is currently in**. If `ci/runner-strategy.md` records "QEMU available" or "self-hosted ESP32-C6 connected," `replay-parity` is a PR gate. Otherwise the Stage 15 exit gate is "release-tag run of `replay-parity` green" — i.e., before any `v*` tag is cut, the parity job must have passed on a recent nightly. `hil-tolerance` is informational on PRs, blocking only on release tags.
+**Exit gate:** all previous green, plus `replay-parity` green **on the gating tier the repo is currently in**. If `ci/runner-strategy.md` records "QEMU available" or "self-hosted ESP32-C3 connected," `replay-parity` is a PR gate. Otherwise the Stage 15 exit gate is "release-tag run of `replay-parity` green" — i.e., before any `v*` tag is cut, the parity job must have passed on a recent nightly. `hil-tolerance` is informational on PRs, blocking only on release tags.
 
 ---
 
@@ -604,7 +604,7 @@ The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 
 | Stage 9 | §10 JSON config — schema examples locked from the actual loader; appendix's reference config | JSON loader + json2static round-trip green |
 | Stage 11 | §12 Deployment — CAN/OBD-II integration narrative | `car-can-emulator` integration green on `vcan0` |
 | Stage 12 | §10 Evaluation — first batch of scenario plots (heat soak, step load, fan stall, acoustic mask on/off) regenerated from real telemetry CSVs | All canonical scenarios green + determinism stable |
-| Stage 13 | §6 Portability strategy — measured ESP32-C6 `.text`/`.bss` numbers in the budget table | ESP32-C6 build green + size budgets |
+| Stage 13 | §6 Portability strategy — measured ESP32-C3 `.text`/`.bss` numbers in the budget table | ESP32-C3 build green + size budgets |
 | Stage 15 | §10 Evaluation — cross-platform parity tables, full benchmark table, per-platform comparison | Replay parity green; HIL tolerance bands characterized |
 | Stage 16 | §1 Abstract, §11 Honest limitations, §13 Conclusions, §12 Future work; tighten + final prose pass | Everything else; written when the paper knows what it's saying |
 | Stage 17 (post-v1) | A new fan-health subsection — predictive-maintenance concept + degradation-drift results — as a post-v1 paper supplement | Fan-health detector module + golden replay green |
@@ -696,7 +696,7 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 | 10 | Control plane + tune CLI + **`protocol/` wire codec** | fuzz-wire | wire round-trip + ack + timestamp + seq-wrap green |
 | 11 | SocketCAN + OBD-II + emulator | — | vcan0 integration green on canonical CI |
 | 12 | Scenario runner + C plant simulator + 10 scenarios | scenario, determinism | all canonical scenarios + determinism green |
-| 13 | ESP32-C6 STANDALONE + REPLAY_STANDALONE builds | build-esp32 | C6 RISC-V build + REPLAY_STANDALONE build + size budgets green |
+| 13 | ESP32-C3 STANDALONE + REPLAY_STANDALONE builds | build-esp32 | C3 RISC-V build + REPLAY_STANDALONE build + size budgets green |
 | 14 | ESP32 HIL_PERIPHERAL build | — | HIL build green; bench run on demand |
 | 15 | Deterministic replay parity + benchmarks | replay-parity (conditional), hil-tolerance (nightly) | host vs ESP32 standalone byte-equal replay green when infra exists; otherwise release-gate |
 | 16 | White paper figures + benchmark manifest | (release workflow) | PDF builds + manifest consistent |
@@ -709,10 +709,10 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 Items deliberately deferred from this plan; resolve when the relevant stage starts:
 
 - **Coverage gate threshold.** Stage 9 introduces lcov as visibility only. A future decision: should coverage become a gate (e.g., new code must keep total coverage ≥ 80%)? Defer until coverage baseline is established.
-- **ESP32-C6 emulator in CI.** Stage 13 cross-compiles for ESP32-C6 (RISC-V) but doesn't run the binary in CI by default. Once `qemu-system-riscv32` with ESP32-C6 emulation, ESP-IDF's C6 QEMU image, or a stable self-hosted ESP32-C6 runner becomes available, the cross-platform unit replay can move to a real instruction-accurate run in CI. Until then, target-instruction replay stays nightly or hardware-driven. Defer until infrastructure exists.
+- **ESP32-C3 emulator in CI.** Stage 13 cross-compiles for ESP32-C3 (RISC-V) but doesn't run the binary in CI by default. Once `qemu-system-riscv32` with ESP32-C3 emulation, ESP-IDF's C3 QEMU image, or a stable self-hosted ESP32-C3 runner becomes available, the cross-platform unit replay can move to a real instruction-accurate run in CI. Until then, target-instruction replay stays nightly or hardware-driven. Defer until infrastructure exists.
 - **Self-hosted runner for HW-in-CI.** v1 keeps bench scenarios manual. If bench failures start landing in `main` repeatedly, promote the bench Pi 4 to a self-hosted runner gated on a `[hil]` PR label.
 - **Property test budget.** Stage 4 introduces property testing with a 100-case budget per PR. If shrinkage costs become noticeable, drop to 20 cases per PR + 1000 cases nightly.
 
 ---
 
-*End of implementation plan v0.6*
+*End of implementation plan v0.7*
