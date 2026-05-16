@@ -1395,6 +1395,7 @@ The white paper contains a dedicated section on limitations, written explicitly 
 - **Multi-fan coordinated control** with acoustic cancellation considerations (out-of-phase PWM, RPM detuning).
 - **Functional-safety scaffolding** (MISRA-C, static analysis CI) as a path toward ASIL-B/C readiness.
 - **Web-based live dashboard** built on the telemetry UDP stream (separate tool, not in core repo).
+- **Fan-health / degradation detection** — graded PWM-to-RPM drift versus a calibrated baseline for predictive maintenance; see Appendix C for the post-v1 minimal-slice sketch.
 
 ## 17. Decision Log and Remaining Questions
 
@@ -1471,6 +1472,76 @@ The white paper contains a dedicated section on limitations, written explicitly 
 - **SPL**: Sound Pressure Level
 - **TWAI**: ESP32 CAN-bus peripheral name ("Two-Wire Automotive Interface")
 - **callback surface**: Optional struct of function pointers used by the core only for numeric logs and telemetry emission
+
+## Appendix C: Fan-Health Detector (Post-v1 Sketch)
+
+This appendix sketches a **post-v1** feature: a fan-health (fan-aging / contamination) detector. It is recorded here so the design is settled before implementation begins; it is **not** part of the v1 scope and affects no v1 gate. The full predictive-maintenance feature is larger than what is sketched here — this appendix deliberately scopes only the **minimal core-worthy slice**, the part that belongs in `core/`. Baseline capture, persistence, and the host CLI are platform and tooling work, scoped separately.
+
+### C.1 Concept
+
+A 4-wire fan's RPM at a given PWM duty drifts predictably as the fan ages: dust on the blades and heatsink, bearing wear, and restricted airflow all lower RPM at a fixed PWM. Capturing a known-good **PWM-to-RPM baseline** once — at the factory, at first boot, or at a service event — and comparing in-field operation against it detects degradation *weeks or months before stall*, while service is convenient rather than urgent.
+
+This is a **predictive-maintenance** feature, not a safety feature. It is **advisory-only**: it emits health telemetry and never commands an actuator. Thermal safety remains entirely with the v1 stall and runaway detectors.
+
+### C.2 Relationship to the v1 stall detector
+
+Fan-health consumes the *identical* per-tick input the stall detector already receives — `(commanded_pwm, tach_rpm, tach_valid)` (see §4.7 and `thermal_fault_stall_step()`). The two sit at opposite ends of one spectrum: the stall detector raises a binary fault at the *terminal* failure (RPM near zero at high PWM); fan-health grades the *approach* to that failure. Fan-health is the early-warning companion to stall detection, reading data the core already has in hand.
+
+It is **not** a fifth `thermal_fault` detector. The v1 fault detectors share `thermal_fault_detector_cfg_t` (two generic thresholds, an `action`, and the `NORMAL → … → LATCHED` FSM). Fan-health has no `action` (it is advisory-only), needs an N-point baseline table rather than two scalar thresholds, and produces a graded result rather than a binary state. It is therefore its own module, and the frozen v1 `thermal_fault_detection_cfg_t` is left untouched.
+
+### C.3 The minimal core-worthy slice
+
+A new compile-optional core module, `core/thermal_fan_health.{c,h}`, sibling to `core/thermal_fault.c`. It obeys every core constraint — no heap, no syscalls, deterministic fixed-point math, fixed-size state, snapshot-driven — so it passes the same `no-heap-no-syscall` portability gate and is replay-testable like every other core module.
+
+**Baseline as configuration.** The per-actuator PWM-to-RPM baseline is supplied to the core as `const` configuration data, exactly as `thermal_config_t` is. The core never loads, captures, or persists the baseline — that is the platform's job. For the reference bench the baseline is hand-authored in the JSON config and `json2static.py` emits it as a `const` struct, identical to how `G_THERMAL_CFG` is produced. This single decision is what keeps the slice inside the core boundary: no file I/O, no NVS, no storage format in `core/`.
+
+**Per-tick behavior (opportunistic monitoring).** No active fan cycling, no governor override:
+
+1. Track whether PWM has been stable within a small tolerance for a configured number of ticks, and RPM stable within a percentage tolerance for a (shorter) configured number of ticks.
+2. When both are stable and the PWM sits near a baseline point, compute that point's signed `delta_pct` = (measured RPM − baseline RPM) / baseline RPM.
+3. Aggregate the per-point deltas into a weighted `health_pct`, weighting mid-range PWM points more heavily — that is where signal-to-noise is best (near stall the fan is noisy; at 100% it is voltage-limited).
+4. Classify a `severity` — HEALTHY / AGING / DEGRADED / FAILING — from configurable `health_pct` thresholds.
+5. Emit `delta_pct` and `severity` per fan through the existing telemetry callback. No actuator command is ever produced.
+
+State is one fixed-size struct per actuator, sized at `THERMAL_MAX_ACTUATORS`.
+
+### C.4 Configuration surface
+
+A per-actuator `fan_health` block, optional (absent → the detector is disabled for that actuator):
+
+```json
+"fan_health": {
+  "enable": true,
+  "baseline": [[64,900],[96,1400],[128,1850],[160,2200],[192,2500],[255,2900]],
+  "stable_pwm_ticks": 300,
+  "stable_rpm_ticks": 50,
+  "severity_pct": { "aging": -5, "degraded": -15, "failing": -30 }
+}
+```
+
+`baseline` is the hand-authored PWM-to-RPM table. On MCU targets the same fields are populated through the generated static `const` config.
+
+### C.5 Telemetry signals
+
+Per-fan signals in a dedicated namespace range — a signed `delta_pct` and a `severity` per actuator — with exact IDs assigned at implementation time, following the established signal-ID allocation convention (§17.1 decision 20).
+
+### C.6 Scope boundary — what is NOT in the slice
+
+Deliberately deferred to a separate, larger post-v1 effort:
+
+- **Baseline capture** — the active low-to-high PWM sweep with the governor disabled, plus the scenario-runner directives to drive it.
+- **Baseline persistence** — NVS (ESP32) / JSON-file (Linux) load and save, and the cross-platform blob format and CRC.
+- **The `thermalcore-fanhealth` host CLI** — capture, inspect, diff, live view.
+- **Scheduled-probe mode** — a periodic active mini-sweep.
+- **BLOCKED detection** — a *positive* delta (RPM above baseline) cross-correlated with rising zone temperatures to flag a blocked intake. That needs temperature-trend state; the minimal slice handles only the negative-delta ageing ladder.
+- **2D temperature-compensated baseline** — baselines captured at several ambient bands.
+- Bench dust-loading experiments and white-paper figures.
+
+### C.7 Budget
+
+The detector is compile-optional (`THERMALCORE_ENABLE_FAN_HEALTH`, default off on MCU). Compiled out, it contributes zero bytes. Compiled in, the slice is small — an estimated 1–2 KB of `.text`, comfortably inside the §9.2 ESP32 budget of ≤ 64 KB `.text`.
+
+Implementation is tracked as Stage 17 of the implementation plan, the first post-v1 stage.
 
 ---
 

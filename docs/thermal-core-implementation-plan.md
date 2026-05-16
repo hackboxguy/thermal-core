@@ -569,6 +569,25 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 ---
 
+### Stage 17 — Fan-health detector (post-v1)
+**First post-v1 stage. Do not start until Stage 16 is closed and the v1 white paper has shipped.** Specified in PRD Appendix C.
+
+**Deliverable:** `core/thermal_fan_health.{c,h}` — the minimal core-worthy slice of the fan-health detector. A compile-optional (`THERMALCORE_ENABLE_FAN_HEALTH`), advisory-only module that consumes the same `(commanded_pwm, tach_rpm, tach_valid)` triple as the stall detector, compares it against a per-actuator `const` PWM-to-RPM baseline, and emits a graded `delta_pct` plus a `severity` (HEALTHY / AGING / DEGRADED / FAILING) through the telemetry callback. It never commands an actuator. `tools/json2static.py` and the Linux JSON loader gain the per-actuator `fan_health` block (baseline table, stability windows, severity thresholds); the baseline is hand-authored config, not captured. No baseline capture, no NVS/file persistence, no CLI — those are deferred (see below).
+
+**Tests added:**
+- **Unit:** stability-gate windows (PWM/RPM stable-tick counting at threshold boundaries); `delta_pct` computation against a fabricated baseline; weighted `health_pct` aggregation; `severity` classification at exact threshold and ±1.
+- **Golden replay:** a fan-degradation fixture — a synthetic `(pwm, rpm)` snapshot stream that drifts progressively below baseline — captured as `test/replay/golden/fan_health_drift.csv`, asserting the expected `severity` escalation HEALTHY → AGING → DEGRADED → FAILING.
+- **Reference cross-check:** a pure-integer Python reference (`test/reference/fan_health.py`), bit-exact against the C module like the other core modules.
+- **Portability:** the `no-heap-no-syscall` gate stays green with `THERMALCORE_ENABLE_FAN_HEALTH=1` — the module adds no heap or syscall dependency.
+
+**Regression value:** Locks the delta/severity math. The load-bearing invariant is the **advisory-only contract** — the module must never appear in an actuator command path; a unit test asserts the output actuator frame is byte-identical with the detector enabled vs. disabled on the same inputs.
+
+**Exit gate:** all previous green, plus the new unit + replay + reference cross-check, and `no-heap-no-syscall` green with the feature compiled in.
+
+**Follow-on (not yet staged):** the full predictive-maintenance feature — baseline capture sweep plus scenario directives, NVS/JSON baseline persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection (positive-delta cross-correlated with rising zone temperature), the 2D temperature-compensated baseline, and the bench dust-loading experiments plus white-paper supplement — is a separate effort, scoped when Stage 17 lands.
+
+---
+
 ## 6. Paper update cadence
 
 The white paper is not a Stage-16-only deliverable. Conceptual sections draft in parallel with code; results-bearing sections fill in as benchmarks land. This table maps stages to paper sections that can credibly advance once that stage lands.
@@ -588,6 +607,7 @@ The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 
 | Stage 13 | §6 Portability strategy — measured ESP32-C6 `.text`/`.bss` numbers in the budget table | ESP32-C6 build green + size budgets |
 | Stage 15 | §10 Evaluation — cross-platform parity tables, full benchmark table, per-platform comparison | Replay parity green; HIL tolerance bands characterized |
 | Stage 16 | §1 Abstract, §11 Honest limitations, §13 Conclusions, §12 Future work; tighten + final prose pass | Everything else; written when the paper knows what it's saying |
+| Stage 17 (post-v1) | A new fan-health subsection — predictive-maintenance concept + degradation-drift results — as a post-v1 paper supplement | Fan-health detector module + golden replay green |
 
 **Rules of thumb:**
 
@@ -680,6 +700,7 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 | 14 | ESP32 HIL_PERIPHERAL build | — | HIL build green; bench run on demand |
 | 15 | Deterministic replay parity + benchmarks | replay-parity (conditional), hil-tolerance (nightly) | host vs ESP32 standalone byte-equal replay green when infra exists; otherwise release-gate |
 | 16 | White paper figures + benchmark manifest | (release workflow) | PDF builds + manifest consistent |
+| 17 | **(post-v1)** Fan-health detector — advisory PWM→RPM drift module | — | fan-health module golden + reference cross-check green |
 
 ---
 
