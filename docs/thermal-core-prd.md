@@ -1495,15 +1495,19 @@ A new compile-optional core module, `core/thermal_fan_health.{c,h}`, sibling to 
 
 **Baseline as configuration.** The per-actuator PWM-to-RPM baseline is supplied to the core as `const` configuration data, exactly as `thermal_config_t` is. The core never loads, captures, or persists the baseline — that is the platform's job. For the reference bench the baseline is hand-authored in the JSON config and `json2static.py` emits it as a `const` struct, identical to how `G_THERMAL_CFG` is produced. This single decision is what keeps the slice inside the core boundary: no file I/O, no NVS, no storage format in `core/`.
 
+**Baseline sourcing and provenance.** A baseline is only as good as the fan it was measured on. The platform selects one by priority: a **field- or factory-calibrated** sweep of *this exact unit* (highest priority — it measures true aging from this fan's own known-good state); failing that, a **model-generic** baseline — a sweep of a golden sample of the same fan model, or, as a thin last resort, the manufacturer datasheet curve; failing both, no baseline is supplied and the detector is disabled for that actuator. A golden-sample sweep is strongly preferred over datasheet transcription, since fan datasheets rarely publish a clean PWM-to-RPM table. The chosen baseline carries a `source` tag — `field`, `factory`, or `model` — into the `const` config; selecting which file to load is platform I/O and stays outside `core/`. Sweeps captured in raw tach ticks are normalized to RPM at config-generation time, matching the core's `tach_rpm` convention (Appendix A).
+
 **Per-tick behavior (opportunistic monitoring).** No active fan cycling, no governor override:
 
 1. Track whether PWM has been stable within a small tolerance for a configured number of ticks, and RPM stable within a percentage tolerance for a (shorter) configured number of ticks.
 2. When both are stable and the PWM sits near a baseline point, compute that point's signed `delta_pct` = (measured RPM − baseline RPM) / baseline RPM.
 3. Aggregate the per-point deltas into a weighted `health_pct`, weighting mid-range PWM points more heavily — that is where signal-to-noise is best (near stall the fan is noisy; at 100% it is voltage-limited).
-4. Classify a `severity` — HEALTHY / AGING / DEGRADED / FAILING — from configurable `health_pct` thresholds.
-5. Emit `delta_pct` and `severity` per fan through the existing telemetry callback. No actuator command is ever produced.
+4. Classify a `severity` — HEALTHY / AGING / DEGRADED / FAILING — from configurable `health_pct` thresholds, with the resolution gated by baseline provenance (see below).
+5. Emit `delta_pct`, `severity`, and `baseline_source` per fan through the existing telemetry callback. No actuator command is ever produced.
 
 State is one fixed-size struct per actuator, sized at `THERMAL_MAX_ACTUATORS`.
+
+**Severity resolution by baseline provenance.** A unit-specific baseline (`field` or `factory`) measures drift of this fan from its *own* new condition, so the full `HEALTHY / AGING / DEGRADED / FAILING` ladder is meaningful. A model-generic baseline (`model`) cannot — it conflates aging with unit-to-unit manufacturing variance, itself a few percent, so a brand-new fan could legitimately read several percent off the golden sample. With a `model` baseline the detector therefore asserts only the coarse `DEGRADED` / `FAILING` end — gross degradation that exceeds any plausible manufacturing spread — and suppresses `AGING`. The emitted `severity` is always paired with the `baseline_source` signal (§C.5) so a consumer never mistakes model-deviation for unit-aging.
 
 ### C.4 Configuration surface
 
@@ -1512,6 +1516,7 @@ A per-actuator `fan_health` block, optional (absent → the detector is disabled
 ```json
 "fan_health": {
   "enable": true,
+  "baseline_source": "field",
   "baseline": [[64,900],[96,1400],[128,1850],[160,2200],[192,2500],[255,2900]],
   "stable_pwm_ticks": 300,
   "stable_rpm_ticks": 50,
@@ -1519,11 +1524,11 @@ A per-actuator `fan_health` block, optional (absent → the detector is disabled
 }
 ```
 
-`baseline` is the hand-authored PWM-to-RPM table. On MCU targets the same fields are populated through the generated static `const` config.
+`baseline` is the PWM-to-RPM table; `baseline_source` is `field`, `factory`, or `model` and gates severity resolution (§C.3). On MCU targets the same fields are populated through the generated static `const` config.
 
 ### C.5 Telemetry signals
 
-Per-fan signals in a dedicated namespace range — a signed `delta_pct` and a `severity` per actuator — with exact IDs assigned at implementation time, following the established signal-ID allocation convention (§17.1 decision 20).
+Per-fan signals in a dedicated namespace range — a signed `delta_pct`, a `severity`, and a `baseline_source` (so a consumer always knows whether it is reading unit-aging or model-deviation) per actuator — with exact IDs assigned at implementation time, following the established signal-ID allocation convention (§17.1 decision 20).
 
 ### C.6 Scope boundary — what is NOT in the slice
 
