@@ -25,22 +25,20 @@ void thermal_filter_step(thermal_filter_state_t *state,
     }
     /* IIR step from held filtered_value (possibly after an invalid run).
      *
-     * KNOWN LIMITATION (impl-plan Stage 11d known limitations):
-     * the `>> 16` arithmetic right-shift truncates toward negative
-     * infinity (the gcc + clang interpretation of right-shift on
-     * negative two's-complement ints).  Consequence: positive
-     * deltas with |alpha_q16 * delta| < 65536 truncate to 0, so
-     * positive-direction convergence asymptotes at
-     * `target - ceil(65536/alpha_q16)` short of target -- e.g.,
-     * 32 short for the canbus context's alpha_q16=2048.  Negative
-     * deltas always produce at least -1 (floor), so decrease-
-     * direction convergence reaches target exactly.  Round-to-
-     * nearest would fix this symmetrically but rewrites the
-     * SHA-256 of every replay golden + scenario CSV; the fix is
-     * tracked work for the white-paper benchmark sweep.
+     * delta = round(alpha_q16 * (sample - filtered) / 2^16), rounded
+     * half-away-from-zero.  A plain `>> 16` floors (gcc + clang
+     * arithmetic shift), which would stall positive convergence
+     * `ceil(2^16/alpha_q16)` short of target while letting negative
+     * convergence reach target exactly -- the sign-aware rounding
+     * keeps the two directions symmetric.  `-product` cannot
+     * overflow: product is alpha_q16 (<= 2^16) times a millidegree
+     * difference, far inside int64.
      */
-    int64_t delta = ((int64_t)alpha_q16 *
-                     (int64_t)(sample - state->filtered_value)) >> 16;
+    int64_t product = (int64_t)alpha_q16 *
+                      (int64_t)(sample - state->filtered_value);
+    int64_t delta = (product >= 0)
+                  ?  ( (product + 32768) >> 16)
+                  : -(((-product) + 32768) >> 16);
     int64_t next  = (int64_t)state->filtered_value + delta;
     if (next > INT32_MAX) {
         state->filtered_value = INT32_MAX;

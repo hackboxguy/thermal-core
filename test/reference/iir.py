@@ -39,9 +39,11 @@ def filter_step(state: dict, alpha_q16: int, sample: int, sample_valid: int) -> 
         state["initialized"] = 1
         state["valid"] = 1
         return
-    # Python's `>>` on int floors toward -inf, matching C arithmetic shift
-    # on gcc/clang (PRD §4.5 convention).
-    delta = (alpha_q16 * (sample - state["filtered_value"])) >> 16
+    # delta = round(alpha_q16 * (sample - filtered) / 2^16), rounded
+    # half-away-from-zero -- mirrors thermal_filter_step exactly.
+    product = alpha_q16 * (sample - state["filtered_value"])
+    delta = ((product + 32768) >> 16 if product >= 0
+             else -(((-product) + 32768) >> 16))
     nxt = state["filtered_value"] + delta
     if nxt > INT32_MAX:
         nxt = INT32_MAX

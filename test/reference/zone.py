@@ -47,7 +47,9 @@ def filter_step(state: dict, alpha_q16: int, sample: int, sample_valid: int) -> 
         state["initialized"] = 1
         state["valid"] = 1
         return
-    delta = (alpha_q16 * (sample - state["filtered_value"])) >> 16
+    product = alpha_q16 * (sample - state["filtered_value"])
+    delta = ((product + 32768) >> 16 if product >= 0
+             else -(((-product) + 32768) >> 16))
     nxt = state["filtered_value"] + delta
     if nxt > INT32_MAX:
         nxt = INT32_MAX

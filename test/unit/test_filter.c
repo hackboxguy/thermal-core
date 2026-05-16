@@ -99,15 +99,17 @@ TEST_CASE(filter) {
     EXPECT_EQ(s.filtered_value, 2000);
     EXPECT_EQ(s.valid, 1);
 
-    /* === Arithmetic shift floors toward -inf for negative delta ===
-     * Prev = 100, sample = 99, alpha = 0.25:
-     *   alpha * (sample - prev) = 16384 * -1 = -16384
-     *   -16384 >> 16 = -1 (arithmetic floor)
-     *   next = 99. */
+    /* === Round-half-away-from-zero: sub-LSB deltas round to 0 both ways ===
+     * alpha = 0.25, |sample - prev| = 1:
+     *   alpha * (+/-1) = +/-16384  (+/-0.25 LSB)  -> round-half-away -> 0
+     * so a filter within 1 LSB of target holds, with no direction bias
+     * (the old `>> 16` floor crept -1 on the negative side only). */
     thermal_filter_reset(&s);
     thermal_filter_step(&s, Q16_ONE, 100, 1);
-    thermal_filter_step(&s, 16384, 99, 1);
-    EXPECT_EQ(s.filtered_value, 99);
+    thermal_filter_step(&s, 16384, 99, 1);    /* -0.25 LSB -> 0 */
+    EXPECT_EQ(s.filtered_value, 100);
+    thermal_filter_step(&s, 16384, 101, 1);   /* +0.25 LSB -> 0 */
+    EXPECT_EQ(s.filtered_value, 100);
 
     /* === Invalid as the very first sample leaves filter uninitialized === */
     thermal_filter_reset(&s);
