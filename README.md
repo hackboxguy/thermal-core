@@ -18,6 +18,7 @@ not a production deliverable.  It is **not** ASIL-rated and
 | Wire protocol    | [`protocol/`](protocol/)            | "TC" binary frames + OBD-II Service 01 codec                |
 | Linux daemon     | [`platform/linux/`](platform/linux) | `thermalcored` + BSPs (tmpfs / SocketCAN / serial-HIL)      |
 | ESP32-C3 firmware| [`platform/esp32_idf/`](platform/esp32_idf) | ESP-IDF v5.5.2 component built in three modes              |
+| CH32V003 firmware| [`platform/ch32v003/`](platform/ch32v003) | STANDALONE port on a ~10-cent RV32EC MCU (post-v1)          |
 | Scenario harness | [`tools/thermalcore-scenario/`](tools/thermalcore-scenario) | Plant simulator + Python runner + determinism gate          |
 | Probe            | [`tools/thermalcore_probe.py`](tools/thermalcore_probe.py) | UDP -> CSV telemetry recorder for plots and SHA-256 gates  |
 | Reference docs   | [`docs/`](docs)                     | PRD (`thermal-core-prd.md`) + implementation plan + paper   |
@@ -156,6 +157,48 @@ Status appears in the daemon's UDP telemetry (probe on port
 stderr.  Full walkthrough including frame anatomy:
 [`docs/getting-started/hil-peripheral.md`](docs/getting-started/hil-peripheral.md).
 
+## Quick start: CH32V003 STANDALONE (post-v1)
+
+Stage 18 ports the full thermal-core onto the WCH CH32V003 -- a
+~10-cent RISC-V (RV32EC) microcontroller with 16 KB flash and
+2 KB SRAM.  A compile-time *tiny profile* shrinks the static
+maxima so the identical `core/` source fits the part; the
+regulator is headless -- no display, no CAN (PRD Appendix D).
+
+Hardware: a CH32V003 board (e.g. CH32V003F4P6) + DS18B20
+(4.7 kΩ pull-up) + Noctua NF-A8 PWM fan with tach, plus a
+WCH-LinkE programmer.
+
+```bash
+sudo apt-get install gcc-riscv64-unknown-elf            # RV32EC cross-toolchain
+git submodule update --init platform/ch32v003/ch32fun   # vendored ch32fun
+
+make build-ch32                                          # cross-compile + size-budget gate
+cd platform/ch32v003 && make flash                       # flash via WCH-LinkE
+```
+
+`make build-ch32` cross-compiles the firmware and asserts the
+PRD Appendix D.2 budget (flash ≤ 16 KB, SRAM ≤ 2 KB).  The
+current STANDALONE build links at ~12.1 KB flash / ~1.0 KB SRAM.
+
+Expected pin map (see [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)):
+
+| Signal       | Pin | Notes                                  |
+|--------------|-----|----------------------------------------|
+| Fan PWM out  | PD4 | TIM2_CH1, 25 kHz                       |
+| Fan tach in  | PD0 | EXTI0, 10 kΩ pull-up + ~10 nF filter cap to GND |
+| DS18B20 data | PD3 | 4.7 kΩ pull-up (1-Wire)                |
+
+An optional once-per-second status line is printed over the SWIO
+debug channel (`make monitor`; compile-gated by
+`THERMALCORE_CH32_STATUS`, on by default).
+
+**Status:** the firmware is verified to cross-compile, link, and
+fit the part -- gated in CI by `build-ch32`.  On-hardware
+bring-up, exercising the bench-derived TIM2 / EXTI / 1-Wire
+drivers through the control core on a real CH32V003, is
+follow-on bench work.
+
 ## Build + test (host-side)
 
 The Linux daemon, replay tests, scenario harness, and
@@ -173,9 +216,11 @@ make integration-can    # SocketCAN integration via car-can-emulator
                         # (auto-SKIPs if vcan0 isn't available)
 make build-esp32        # ESP32-C3 STANDALONE + REPLAY firmware builds
                         # (auto-SKIPs if ESP-IDF isn't installed)
+make build-ch32         # CH32V003 STANDALONE firmware cross-build
+                        # (auto-SKIPs if the RISC-V toolchain is absent)
 ```
 
-PR CI runs all 15 of these gates on every push; see
+PR CI runs the full gate set on every push; see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Repository status
@@ -196,8 +241,20 @@ Recent stages:
   with size budgets.  PTY-driven integration test
   (`test_hil_serial.py`) closes the daemon-side BSP coverage
   gap.  Bench integration documented as manual / nightly.
-- **Stage 15** — host-vs-target byte-for-byte SHA-256
-  parity gate (pending).
+- **Stage 15** — cross-platform replay parity.  The host
+  replay binary reproduces a committed golden telemetry CSV
+  byte-for-byte (`replay-parity-host`, PR-gated); the full
+  host-vs-target comparison is release-tag bench discipline.
+- **Stage 16** — white-paper figure pipeline: canonical
+  scenario plots regenerated from telemetry CSVs, a benchmark
+  manifest, a `figure-freshness` PR gate, and a `release.yml`
+  that builds the paper PDF on `v*` tags.  Closes the v1
+  implementation plan (Stages 0-16).
+- **Stage 18** (post-v1) — CH32V003 STANDALONE port: the
+  portable `core/` cross-builds self-contained on a ~10-cent
+  RV32EC MCU, gated by `build-ch32` + `unit-tiny-profile`.
+  Cross-build verified; on-hardware bring-up is follow-on
+  bench work.
 
 ## Documentation
 

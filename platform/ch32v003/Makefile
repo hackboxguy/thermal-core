@@ -48,4 +48,7 @@ $(GENERATED_CONFIG) : configs/ch32v003-standalone.json \
 clean : cv_clean
 	rm -rf generated
 
-.PHONY : all build clean
+# Flash the firmware over a WCH-LinkE (ch32fun's minichlink).
+flash : cv_flash
+
+.PHONY : all build clean flash
