@@ -6,10 +6,13 @@
  * D.3) runs the control law on-chip with no host: a DS18B20 feeds
  * thermal_core_step(), which drives a 4-wire fan over PWM with tach
  * readback. Same shape as the ESP32 STANDALONE app_main, trimmed to
- * the single mode this port supports.
+ * the single mode this port supports (PRD Appendix D.5).
  *
- * Stage 18b note: the bsp_ch32_* wrappers are skeleton stubs here;
- * Stage 18c lands the real TIM2 / EXTI / 1-Wire drivers.
+ * Pacing: each tick is delimited by a SysTick window of
+ * control_period_ms. The DS18B20 conversion wait (~800 ms, blocking
+ * inside the sensor BSP) is absorbed within the window, so the
+ * effective control period stays control_period_ms as long as that
+ * exceeds the conversion time -- the config sets it to 1000 ms.
  */
 #include "ch32fun.h"
 
@@ -22,6 +25,17 @@
 #include "bsp_ch32_pwm.h"
 #include "bsp_ch32_tach.h"
 #include "bsp_ch32_sensor.h"
+
+/* Optional once-per-tick status line over the SWIO debug channel
+ * (PRD Appendix D.2 -- the only readout on this headless board).
+ * Build with -DTHERMALCORE_CH32_STATUS=0 to drop it (and ch32fun's
+ * printf, ~1.2 KB) on a flash-critical build. */
+#ifndef THERMALCORE_CH32_STATUS
+#define THERMALCORE_CH32_STATUS 1
+#endif
+#if THERMALCORE_CH32_STATUS
+#include <stdio.h>
+#endif
 
 /* Emitted by json2static.py from configs/ch32v003-standalone.json. */
 extern const thermal_config_t G_THERMAL_CFG;
@@ -40,6 +54,7 @@ static void log_event_cb(uint32_t ts_ms, uint16_t code,
 int main(void)
 {
     SystemInit();
+    Delay_Ms(100);
 
     /* Bring up the BSPs from the JSON-driven pin map. */
     for (uint8_t i = 0; i < G_CH32_PINMAP.actuator_count; i++) {
@@ -66,10 +81,15 @@ int main(void)
     const uint16_t dt_ms  = G_THERMAL_CFG.control_period_ms;
 
     for (;;) {
+        uint32_t win_t0 = SysTick->CNT;
+
         /* Build the input snapshot: one temperature sample per
          * sensor, one tach-RPM sample per actuator. */
         thermal_sample_t samples[THERMAL_MAX_SAMPLES_PER_SNAPSHOT];
-        uint8_t n = 0;
+        uint8_t  n           = 0;
+        int32_t  temp0_mc    = 0;
+        uint8_t  temp0_valid = 0;
+        uint32_t rpm0        = 0;
 
         for (uint8_t i = 0; i < G_THERMAL_CFG.sensor_count; i++) {
             int32_t temp_mc = 0;
@@ -80,16 +100,25 @@ int main(void)
             samples[n].value        = temp_mc;
             samples[n].valid        = (uint8_t)ok;
             samples[n].quality      = 0;
+            if (i == 0) {
+                temp0_mc    = temp_mc;
+                temp0_valid = (uint8_t)ok;
+            }
             n++;
         }
         for (uint8_t i = 0; i < G_THERMAL_CFG.actuator_count; i++) {
-            uint32_t ticks = bsp_ch32_tach_read_ticks_delta(i);
+            /* NF-A8: 2 tach pulses per revolution; over a 1 s window
+             * the tick delta times 30 is RPM. */
+            uint32_t rpm = bsp_ch32_tach_read_ticks_delta(i) * 30u;
             samples[n].id           = G_THERMAL_CFG.actuators[i].id;
             samples[n].kind         = THERMAL_SAMPLE_TACH_RPM;
             samples[n].sample_ts_ms = now_ms;
-            samples[n].value        = (int32_t)(ticks * 30u);
+            samples[n].value        = (int32_t)rpm;
             samples[n].valid        = 1;
             samples[n].quality      = 0;
+            if (i == 0) {
+                rpm0 = rpm;
+            }
             n++;
         }
 
@@ -104,18 +133,35 @@ int main(void)
         (void)thermal_core_step(&core, &snap, &out);
 
         /* Apply actuator commands (resolve actuator_id -> slot). */
+        uint8_t duty0 = 0;
         for (uint8_t i = 0; i < out.actuator_cmd_count; i++) {
             for (uint8_t s = 0; s < G_THERMAL_CFG.actuator_count; s++) {
                 if (out.actuator_cmds[i].actuator_id ==
                     G_THERMAL_CFG.actuators[s].id) {
                     bsp_ch32_pwm_set_duty(s,
                         out.actuator_cmds[i].duty_0_255);
+                    if (s == 0) {
+                        duty0 = out.actuator_cmds[i].duty_0_255;
+                    }
                     break;
                 }
             }
         }
 
+#if THERMALCORE_CH32_STATUS
+        if (temp0_valid) {
+            printf("T=%d mC  duty=%u/255  fan=%u RPM\n",
+                   (int)temp0_mc, (unsigned)duty0, (unsigned)rpm0);
+        } else {
+            printf("T=ERR     duty=%u/255  fan=%u RPM\n",
+                   (unsigned)duty0, (unsigned)rpm0);
+        }
+#endif
+
+        /* Hold the window open to the full control period. */
+        while ((uint32_t)(SysTick->CNT - win_t0) <
+               Ticks_from_Ms(dt_ms)) {
+        }
         now_ms += dt_ms;
-        Delay_Ms(dt_ms);
     }
 }
