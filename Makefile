@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 paper-figures clean
+.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 build-ch32 paper-figures clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -793,6 +793,25 @@ build-esp32:
 	        --output-file build/size-files.json'
 	python3 tools/check_esp32_size_budget.py \
 	    platform/esp32_idf/build/size-files.json
+
+# --- Stage 18: CH32V003 STANDALONE firmware build + size gate ----
+# Cross-compiles platform/ch32v003/ for RV32EC via ch32fun, then
+# asserts the whole-firmware flash/SRAM budget (PRD Appendix D.2).
+# SKIPs cleanly when the RISC-V cross-compiler or the ch32fun
+# submodule is absent, so Linux-only devs are unaffected (mirrors
+# build-esp32's ESP-IDF skip).
+build-ch32:
+	@if ! command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then \
+	    echo "SKIP: riscv64-unknown-elf-gcc not found; install the RISC-V toolchain to build the CH32V003 port"; \
+	    exit 0; \
+	fi
+	@if [ ! -e platform/ch32v003/ch32fun/ch32fun/ch32fun.mk ]; then \
+	    echo "SKIP: ch32fun submodule not initialised (git submodule update --init platform/ch32v003/ch32fun)"; \
+	    exit 0; \
+	fi
+	$(MAKE) -C platform/ch32v003 clean
+	$(MAKE) -C platform/ch32v003 build
+	python3 tools/check_ch32_size_budget.py platform/ch32v003/main.elf
 
 # --- White-paper figure-regeneration pipeline (Stage 16) -------
 # Drives the canonical host scenarios that back the paper's

@@ -1,0 +1,10 @@
+# ch32fun build artifacts (TARGET := main)
+main.elf
+main.bin
+main_ext.bin
+main.hex
+main.lst
+main.map
+
+# json2static-generated config (rebuilt by `make build`)
+generated/
