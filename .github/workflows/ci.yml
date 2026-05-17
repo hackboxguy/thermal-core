@@ -389,7 +389,10 @@ jobs:
         with:
           submodules: recursive
       - name: Install the RISC-V cross-toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+        # libnewlib-dev supplies the newlib headers ch32fun.mk expects
+        # at /usr/include/newlib (declarations only -- the build is
+        # -nostdlib and ch32fun provides its own libc/libgcc).
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf libnewlib-dev
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
