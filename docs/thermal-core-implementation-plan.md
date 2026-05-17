@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.9
+**Document status:** Draft v0.10
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.15)
 
@@ -620,6 +620,13 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Exit gate:** all previous green, plus `build-ch32` green and the `core/` unit suite green under the tiny profile.
 
+- **Shipped 18a:** the tiny build profile. Every `THERMAL_MAX_*` (plus `THERMAL_CORE_T_RESERVED_BYTES` and `THERMAL_FAULT_RUNAWAY_WINDOW_MAX`) in `core/thermal_config.h` is now `#ifndef`-guarded; `core/thermal_profile_tiny.h` overrides them for a constrained MCU (1 zone / 1 sensor / 1 actuator; trips, cooling states, and curve points kept since one zone still runs the full staircase; reserved bytes 4096 → 1024, with the `thermal_core_t_fits` assertion confirming the internal struct fits). `make test-tiny-profile` clean-builds and runs the unit suite under the profile (force-included via `-include`); the resource-count-dependent sub-scenarios across five test files are `#if`-guarded to a no-op pass under maxima=1 — one (`test_config_hash` scenario 5) was a latent intra-struct out-of-bounds read. The default profile is byte-unchanged.
+- **Shipped 18b:** the `platform/ch32v003/` skeleton + the flash-budget gate. ch32fun added as a pinned git submodule (`c29e297`, the commit the bench firmware was validated against). The platform dir is a flat ch32fun project mirroring `platform/esp32_idf/`: a Makefile (includes `ch32fun.mk`, force-includes the tiny profile, no `protocol/`), `configs/ch32v003-standalone.json`, `ch32_pinmap.h`, a STANDALONE `main.c`, and skeleton-stub BSPs. `json2static.py` gained `--pinmap-prefix` so it emits `ch32_pinmap_t G_CH32_PINMAP` (default stays `esp32`). `make build-ch32` cross-compiles and runs `tools/check_ch32_size_budget.py`. The skeleton linked at flash 9548 B of 16 KB — the budget gate passed with clear BSP headroom, so the BSP work proceeded.
+- **Shipped 18c:** the real CH32V003 BSPs + control loop, adapted from Albert's validated bench firmware. `bsp_ch32_pwm.c` (TIM2 channel 1, ATRLR from the pin map's frequency), `bsp_ch32_tach.c` (EXTI line-0 edge count + 8 ms inter-edge filter), `bsp_ch32_sensor.c` (bit-banged DS18B20 over ch32fun's `static_onewire.h`, bus pin taken at runtime from the pin map). `main.c` gained SysTick-windowed pacing (the ~800 ms DS18B20 conversion absorbed within the 1 s control period) and an optional compile-gated SWIO status line. The full firmware cross-builds at flash 12 056 B of 16 KB (74 %), SRAM 1044 B of 2 KB (51 %).
+- **Shipped 18d:** the CI gates + Stage close. A `build-ch32` CI job (apt-installs `gcc-riscv64-unknown-elf`, builds through the ch32fun submodule, enforces the budget, uploads the linker map) and a `unit-tiny-profile` job (the unit suite under the tiny profile). `ci/tool-versions.md` records the RISC-V toolchain and the ch32fun submodule pin. The white paper's Evaluation section gains a measured CH32V003 footprint paragraph (Draft 0.4).
+
+**Stage 18 status:** the tiny profile, the `platform/ch32v003/` STANDALONE port, and the `build-ch32` + `unit-tiny-profile` CI gates are shipped; Stage 18 is closed. The CH32V003 firmware is verified to cross-compile, link, and fit the part (flash 74 %, SRAM 51 %). **On-hardware regulation has not been verified** — the BSP drivers are lifted from Albert's proven bench firmware, but their integration with `thermal_core_step()` is exercised only on the bench; on-device bring-up is the documented follow-on. Remaining post-v1 work is Stage 17 (fan-health detector), independent of Stage 18 and not yet started.
+
 ---
 
 ## 6. Paper update cadence
@@ -751,4 +758,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.9*
+*End of implementation plan v0.10*

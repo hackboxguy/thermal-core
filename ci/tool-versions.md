@@ -55,8 +55,12 @@ Pinned by docker image tag. The image is run in CI for the `build-esp32` job (`.
 | Tool | Intended pin | Consumed by |
 |---|---|---|
 | ESP-IDF | `espressif/idf:v5.5.2` (SHA pin deferred until image drift causes CI flakes) | Stage 13 |
+| riscv64-unknown-elf-gcc | floating (`gcc-riscv64-unknown-elf` from `ubuntu-latest` apt; 13.x at Stage 18) | Stage 18 |
+| ch32fun | git submodule `platform/ch32v003/ch32fun`, pinned by commit SHA (currently `c29e297`); tracked branch `master` | Stage 18 |
 
 The reference target is **ESP32-C3 (RISC-V)** — selected over the PRD §4.1 ESP32-C6 nomination during impl-plan-review-v3 because Albert's existing bench rig is C3-based. The canonical Kconfig pin lives in `platform/esp32_idf/sdkconfig.defaults` (`CONFIG_IDF_TARGET="esp32c3"`); the canonical daemon config consumed by CI is `platform/esp32_idf/configs/esp32-c3-standalone.json`. C6 remains a future-portability claim; the portable C99 `core/` is target-agnostic and a C6 matrix leg lands if/when the hardware does.
+
+The **CH32V003** (Stage 18, post-v1) is the second MCU target — a ~10-cent RV32EC part. Its `build-ch32` job apt-installs `gcc-riscv64-unknown-elf` and builds through the vendored `ch32fun` submodule, which ships its own `libgcc.a` (`platform/ch32v003/ch32fun/misc/`) for the `rv32ec`/`ilp32e` soft-arithmetic; the distro toolchain's multilib coverage therefore does not matter. ESP-IDF, by contrast, is too large to vendor and stays a pinned docker image.
 
 ## Bump policy
 

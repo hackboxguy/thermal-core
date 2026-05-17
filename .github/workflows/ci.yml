@@ -376,3 +376,45 @@ jobs:
           name: size-files-${{ matrix.mode }}
           path: platform/esp32_idf/build/size-files.json
           if-no-files-found: error
+
+  # Stage 18 18d: CH32V003 STANDALONE firmware build gate.  Cross-
+  # compiles platform/ch32v003/ for RV32EC via the ch32fun submodule
+  # and enforces the whole-firmware flash/SRAM budget (PRD Appendix
+  # D.2) -- the portable core/ runs the control law on a ~10-cent
+  # MCU with no host, the portability thesis at the smallest target.
+  build-ch32:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install the RISC-V cross-toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build CH32V003 firmware + enforce size budget
+        run: make build-ch32
+      - name: Upload firmware linker map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ch32v003-firmware-map
+          path: platform/ch32v003/main.map
+          if-no-files-found: warn
+
+  # Stage 18 18d: the core/ unit suite compiled + run under the tiny
+  # build profile (PRD Appendix D.3).  Compiling at maxima=1 is not
+  # the same as behaving correctly at maxima=1, so the suite is
+  # exercised under the constrained profile as well as the default.
+  unit-tiny-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run the unit suite under the tiny profile
+        run: make test-tiny-profile
