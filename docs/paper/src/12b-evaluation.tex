@@ -1,6 +1,6 @@
 \section{Evaluation (Preliminary)}\label{sec:evaluation}
 
-This section reports what has been \emph{measured} as of this draft. It is marked preliminary deliberately: the formal cross-platform benchmark sweep --- with controlled ambient, calibrated instrumentation, and the figure-regeneration pipeline --- has not yet been run. Every number below is reproducible from the repository as it stands; nothing here is projected or estimated. Section~\ref{sec:eval-gaps} states plainly what is \emph{not} yet claimed.
+This section reports what has been \emph{measured} as of this draft. It is marked preliminary deliberately: the formal cross-platform benchmark sweep --- with controlled ambient and calibrated instrumentation --- has not yet been run. Every number below is reproducible from the repository as it stands; nothing here is projected or estimated. Section~\ref{sec:eval-gaps} states plainly what is \emph{not} yet claimed.
 
 \subsection{Firmware Footprint}
 
@@ -33,6 +33,48 @@ Determinism is a stated design goal: identical inputs must produce bit-identical
 \end{itemize}
 
 Both checks pass for all seven scenarios. Because the core uses only Q16.16 fixed-point arithmetic and fixed-size state, this is the expected result --- but the gate makes any future violation a hard CI failure rather than a silent regression.
+
+\subsection{Closed-Loop Scenario Behavior}\label{sec:eval-scenarios}
+
+The canonical scenarios are also behavioral traces: each one drives the plant model and the governor through a defined disturbance, and the captured telemetry shows the closed loop responding. The figures below are rendered straight from the scenario telemetry CSVs by the figure-regeneration pipeline (\texttt{make -C docs/paper figures}); each caption carries the first eight hex digits of its source CSV's SHA-256, recorded in \texttt{docs/paper/figures/manifest.yaml}, and a CI check fails if a caption and its data drift apart. These are deterministic host-simulator runs --- qualitative evidence that the control law behaves as designed, not calibrated hardware benchmarks.
+
+\texttt{heat\_soak\_ramp} (Figure~\ref{fig:heat-soak-ramp}) ramps the zone temperature upward; the step-wise governor advances through its discrete duty staircase, one step per trip crossing, with the slew limiter bounding every transition.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{heat_soak_ramp}
+\caption{\texttt{heat\_soak\_ramp}: zone temperature and fan duty as the governor climbs its trip staircase. \datasha{8299c814}}
+\label{fig:heat-soak-ramp}
+\end{figure}
+
+\texttt{step\_load} (Figure~\ref{fig:step-load}) applies an abrupt temperature step; the governor moves to the duty level for the new temperature within one tick and holds it, and the filtered zone signal tracks the step without oscillation.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{step_load}
+\caption{\texttt{step\_load}: closed-loop response to an abrupt temperature step. \datasha{96dfd568}}
+\label{fig:step-load}
+\end{figure}
+
+\texttt{fan\_stall\_recovery} (Figure~\ref{fig:fan-stall-recovery}) injects a fan stall; the stall detector raises the fault within its configured persistence window, the governor drives the fan to maximum duty, and the fault moves through \emph{recovering} to \emph{clear} once the tachometer signal returns.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{fan_stall_recovery}
+\caption{\texttt{fan\_stall\_recovery}: stall-fault detection and recovery. \datasha{dbdbe9f3}}
+\label{fig:fan-stall-recovery}
+\end{figure}
+
+\texttt{runaway} (Figure~\ref{fig:runaway}) models a cooling-capacity shortfall; the governor saturates at maximum duty and the runaway fault is raised, yet the plant temperature keeps climbing --- the controller cannot correct a deficit the hardware cannot meet.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{runaway}
+\caption{\texttt{runaway}: thermal runaway --- temperature rising despite maximum cooling. \datasha{e11aba2e}}
+\label{fig:runaway}
+\end{figure}
+
+These traces confirm the \emph{shape} of the response, not its calibrated magnitude. The quantitative control metrics --- settling time, overshoot, fault-detection latency --- remain evaluation targets (Section~\ref{sec:eval-gaps}).
 
 \subsection{Continuous-Integration Coverage}
 
@@ -70,9 +112,9 @@ To keep the evidence trail honest, the following are explicitly \emph{not} claim
     \item \textbf{Per-tick execution time.} The step function has not been instrumented on any target; the timing budget in Table~\ref{tab:timing-budget} remains a set of goals.
     \item \textbf{Acoustic results.} No calibrated sound-pressure-level measurement has been taken; PWM-seconds with and without acoustic masking are not yet reported.
     \item \textbf{Quantitative control metrics.} Settling time, overshoot, and fault-detection latency are listed as evaluation targets in Section~6 but are not yet measured.
-    \item \textbf{Cross-platform parity tables.} Host-versus-target byte-for-byte parity is structurally supported by the shared \texttt{core/} source but has not yet been characterized as a table.
+    \item \textbf{Cross-platform parity table.} Host-side replay parity is gated in CI --- the host replay binary reproduces a committed golden telemetry CSV byte-for-byte --- but the full host-versus-target byte comparison runs on the bench and is not yet reported here as a table.
 \end{itemize}
 
-These gaps are scheduled work, and the figure-regeneration pipeline that will carry their plots is not yet wired into the paper build.
+These gaps are scheduled work; closing them needs the formal benchmark sweep on instrumented hardware. The figure-regeneration pipeline that renders the scenario plots above (Section~\ref{sec:eval-scenarios}) will carry their figures once that data exists.
 
 \endinput

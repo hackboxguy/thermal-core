@@ -31,6 +31,6 @@ The first policy curve maps vehicle speed to a PWM cap and optional trip offset:
 
 Curves are fixed-size point tables evaluated by deterministic linear interpolation between adjacent breakpoints, with flat (clamped) extrapolation outside the table. Inputs, outputs, and the interpolation arithmetic are integer or Q16.16 fixed-point, so a curve evaluates bit-for-bit identically on the Linux host and the ESP32-C3. Breakpoints are validated at configuration load to be strictly ascending on the x-axis.
 
-The acoustic-mask curve values in Table~\ref{tab:acoustic-mask-curve} remain provisional pending tuning. Before/after plots showing the masking effect on PWM-seconds are produced by the figure-regeneration pipeline, which is not yet wired up; this draft documents the mechanism, not tuned acoustic results.
+The acoustic-mask curve values in Table~\ref{tab:acoustic-mask-curve} remain provisional pending tuning. The figure-regeneration pipeline is in place and renders the closed-loop scenario plots in Section~\ref{sec:eval-scenarios}, but the before/after plots showing the masking effect on PWM-seconds depend on the CAN-driven acoustic-mask scenarios and are deferred with the rest of the acoustic benchmark work; this draft documents the mechanism, not tuned acoustic results.
 
 \endinput

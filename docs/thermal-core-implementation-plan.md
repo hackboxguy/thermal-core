@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.8
+**Document status:** Draft v0.9
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.15)
 
@@ -574,6 +574,13 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Exit gate:** `release.yml` produces the PDF; manifest is internally consistent; caption SHAs map to manifest entries.
 
+- **Shipped 16a:** the white-paper figure-regeneration pipeline. New `docs/paper/figures/plots/` — a shared `_render.py` (parses the canonical 9-column telemetry CSV, renders the dual-axis temperature/duty figure with fault-event markers) and one thin `plot_<scenario>.py` per figure (PRD §12.3). A root-Makefile `paper-figures` target runs the canonical host scenarios through the existing scenario runner, then the plot scripts; `make -C docs/paper figures` delegates to it. First batch: `heat_soak_ramp`, `step_load`, `fan_stall_recovery`, `runaway` — the non-CAN, host-deterministic scenarios. The CAN-driven `acoustic_mask_*` pair is deferred with the acoustic benchmark work. matplotlib PDFs are made byte-stable (`savefig` metadata `CreationDate=None`).
+- **Shipped 16b:** the benchmark manifest + figure-freshness gate. `docs/paper/figures/manifest.yaml` (written by `paper-figures` via `tools/figure_manifest.py`) records per figure: scenario, `csv_sha256`, config path + `config_sha256`, plus `git_sha` and `tool_versions`. The `\datasha{<8hex>}` caption macro cites the data SHA, not the commit. `tools/check_figure_freshness.py` regenerates the scenario CSVs, asserts every manifest hash still matches and that every `\datasha{}` prefixes a manifest entry; wired into CI as the per-PR `figure-freshness` job (daemon build, no texlive). `config_sha256` is a plain file-bytes SHA-256, not the canonical config hash — no Python canonical encoder exists and `csv_sha256` is the actual freshness signal. The rendered figure PDFs are gitignored: local matplotlib is off the `requirements-dev.txt` pin, so committed PDF bytes would not match the release build.
+- **Shipped 16c:** `release.yml` — on `v*` tags only, never PR-gating. Installs the dev Python deps + TeX Live, regenerates the figures with the pinned matplotlib (`make -C docs/paper figures`), builds the PDF (`make -C docs/paper`), uploads it as a workflow artifact. Figure freshness is already gated per-PR by `figure-freshness`, so the release workflow does not re-run that check; it regenerates the figures from scratch.
+- **Shipped 16d:** the four scenario plots embedded in the Evaluation section's new "Closed-Loop Scenario Behavior" subsection, each with a `\datasha`-tagged caption; `\graphicspath` extended to `../figures/`. Stage-16 prose pass: abstract, draft-status, and summary refreshed from "Stage 14" to the complete v1 plan; the stale "not yet wired up" / "To Fill In Later" notes in `05-curves`, `03-human-vision`, and `appendices` retired or corrected. White paper to Draft 0.3 (title, footer, revision row).
+
+**Stage 16 status:** the figure-regeneration pipeline, the benchmark manifest, the per-PR freshness gate, the `v*`-tag release build, and the white-paper Draft 0.3 are shipped. Stage 16 is closed, which **completes the v1 implementation plan (Stages 0–16)**. Two items remain explicitly deferred as the documented on-bench follow-on (the same bucket as Stage 15d): the formal hardware benchmark sweep — calibrated acoustic and timing measurement, feeding the PRD §9.2 benchmark table and the CAN-driven `acoustic_mask_*` plots — and the bench-rig photograph. The paper stays an honest draft pending that data. Post-v1 work resumes at Stage 17 (fan-health detector) and Stage 18 (CH32V003 port).
+
 ---
 
 ### Stage 17 — Fan-health detector (post-v1)
@@ -744,4 +751,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.8*
+*End of implementation plan v0.9*

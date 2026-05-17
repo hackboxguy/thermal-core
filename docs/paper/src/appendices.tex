@@ -45,7 +45,7 @@ The reference speed source is OBD-II Service 01 PID \texttt{0x0D}. \texttt{therm
 \texttt{can\_bus\_loss} & timeout and fail-safe behavior \\
 \bottomrule
 \end{tabular}
-\caption{Benchmark matrix. All ten canonical scenario files run green in the scenario and determinism CI gates; per-figure CSV filenames and data SHA-256 values are added when the figure-regeneration pipeline lands.}
+\caption{Benchmark matrix. All ten canonical scenario files run green in the scenario and determinism CI gates; the figure-regeneration pipeline records each plotted scenario's telemetry-CSV SHA-256 in \texttt{docs/paper/figures/manifest.yaml}.}
 \end{table}
 
 \section{Appendix D: Fill-In Checklist}
@@ -59,8 +59,8 @@ Artefacts the final paper needs. Items marked \emph{done} are in the repository 
     \item final BOM and wiring diagram --- \emph{partial} (wiring is in the getting-started guides; a consolidated BOM table is pending);
     \item telemetry signal table --- \emph{pending};
     \item numeric event code table --- \emph{pending};
-    \item benchmark raw-data paths --- \emph{pending} (figure pipeline);
-    \item figure regeneration commands --- \emph{pending} (figure pipeline).
+    \item benchmark raw-data paths --- \emph{done} (telemetry CSVs from the scenario runner; SHA-256 recorded in the figure manifest);
+    \item figure regeneration commands --- \emph{done} (\texttt{make -C docs/paper figures}).
 \end{itemize}
 
 \endinput
