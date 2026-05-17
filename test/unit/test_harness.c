@@ -9,5 +9,8 @@
 
 TEST_CASE(harness_works) {
     EXPECT_EQ(1, 1);
-    EXPECT_EQ(THERMAL_MAX_ZONES, 4);
+    /* Profile-agnostic: proves the cross-directory include of
+     * thermal_config.h resolved without pinning the default-profile
+     * value (a tiny-profile build overrides THERMAL_MAX_ZONES). */
+    EXPECT_EQ(THERMAL_MAX_ZONES >= 1, 1);
 }

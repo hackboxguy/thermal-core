@@ -425,6 +425,7 @@ TEST_CASE(config_jsmn) {
         }
     }
 
+#if THERMAL_MAX_SENSORS >= 2  /* 2-sensor config; skipped under a maxima=1 profile */
     /* === Scenario 17: weighted aggregation needs N weights ====== */
     {
         /* Two sensors, weighted aggregation, but only one weight.
@@ -456,4 +457,5 @@ TEST_CASE(config_jsmn) {
             exit(1);
         }
     }
+#endif  /* Scenario 17 */
 }

@@ -22,6 +22,13 @@
 #include "thermal_events.h"
 #include "thermal_types.h"
 
+/* This suite exercises the full command surface over a 2-zone
+ * (step-wise + PID) / 2-sensor config; that config is not
+ * constructible under a maxima=1 build profile (PRD Appendix D.3
+ * tiny profile). Under such a profile the suite compiles to a
+ * trivial pass — the default profile provides the real coverage. */
+#if THERMAL_MAX_ZONES >= 2 && THERMAL_MAX_SENSORS >= 2
+
 /* === Mock callback recorders ================================== */
 
 #define MOCK_EVENT_CAP 64
@@ -493,3 +500,7 @@ TEST_CASE(apply_command_full_surface) {
         EXPECT_EQ(mock_event_count, 0);
     }
 }
+
+#else  /* maxima=1 build profile — see the #if after the includes */
+TEST_CASE(apply_command_full_surface) { }
+#endif

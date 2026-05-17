@@ -178,6 +178,7 @@ TEST_CASE(config_hash) {
         }
     }
 
+#if THERMAL_MAX_SENSORS >= 2  /* bumps sensor_count to 2; skipped under a maxima=1 profile */
     /* === Scenario 5: count sensitivity =========================== */
     {
         thermal_config_t a, b;
@@ -197,4 +198,5 @@ TEST_CASE(config_hash) {
             exit(1);
         }
     }
+#endif  /* Scenario 5 */
 }

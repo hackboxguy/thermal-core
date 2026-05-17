@@ -99,11 +99,14 @@ TEST_CASE(validate_config) {
     cfg.modifier_count = THERMAL_MAX_MODIFIERS + 1;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_NO_SPACE);
 
+#if THERMAL_MAX_MODIFIERS >= 2  /* needs modifier_count=2 <= MAX; skipped under a maxima=1 profile */
     /* === Rule 9: v1 modifier limit (count > 1, but still <= MAX === 2) === */
     make_valid_config(&cfg);
     cfg.modifier_count = 2;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
 
+#if THERMAL_MAX_SENSORS >= 2  /* needs a 2-sensor config; skipped under a maxima=1 profile */
     /* === Rule 10: duplicate sensor IDs === */
     make_valid_config(&cfg);
     cfg.sensor_count = 2;
@@ -111,17 +114,20 @@ TEST_CASE(validate_config) {
     cfg.sensors[1].iir_alpha_q16 = 16384;
     cfg.sensors[1].max_staleness_ms = 500;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
 
     /* === Rule 11: max_staleness_ms == 0 === */
     make_valid_config(&cfg);
     cfg.sensors[0].max_staleness_ms = 0;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+#if THERMAL_MAX_ACTUATORS >= 2  /* needs a 2-actuator config; skipped under a maxima=1 profile */
     /* === Rule 12: duplicate actuator IDs === */
     make_valid_config(&cfg);
     cfg.actuator_count = 2;
     cfg.actuators[1] = cfg.actuators[0];    /* same id */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
 
     /* === Rule 13: pwm_min > pwm_max === */
     make_valid_config(&cfg);
@@ -141,6 +147,7 @@ TEST_CASE(validate_config) {
     cfg.actuators[0].spinup_pwm = 50;       /* would be invalid if spinup_ms > 0 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
+#if THERMAL_MAX_CONTEXT_SIGNALS >= 2  /* needs a 2-context config; skipped under a maxima=1 profile */
     /* === Rule 15: duplicate context IDs === */
     make_valid_config(&cfg);
     cfg.context_count = 2;
@@ -151,6 +158,7 @@ TEST_CASE(validate_config) {
     cfg.contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_STATIONARY;
     cfg.contexts[1] = cfg.contexts[0];
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
 
     /* === Rule 16: zone sensor_count == 0 === */
     make_valid_config(&cfg);

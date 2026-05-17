@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 paper-figures clean
+.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 paper-figures clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -63,6 +63,19 @@ test: $(TEST_BINS)
 build/test/test_%: test/unit/test_%.c test/unit/harness.h core/thermal_config.h $(CORE_ARCHIVE)
 	@mkdir -p build/test
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
+# --- Stage 18 18a: core/ unit suite under the tiny build profile ---
+# Force-includes core/thermal_profile_tiny.h so the THERMAL_MAX_*
+# maxima collapse to the constrained-MCU values (PRD Appendix D.3) --
+# compiling the suite at maxima=1 is not the same as behaving
+# correctly at maxima=1.  The profile changes object *contents* but
+# not their build/ paths, so a stale default build/ tree would mask
+# the flag; this target brackets the run with clean builds and
+# leaves build/ empty, so the next default `make test` is unaffected.
+test-tiny-profile:
+	$(MAKE) clean
+	$(MAKE) test CFLAGS_EXTRA='-include $(CURDIR)/core/thermal_profile_tiny.h'
+	$(MAKE) clean
 
 # --- Special: JSON loader test pulls in platform/linux sources ---
 # Overrides the wildcard rule above for this specific target because

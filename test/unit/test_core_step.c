@@ -260,6 +260,7 @@ TEST_CASE(core_step_full_loop) {
                   THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP);
     }
 
+#if THERMAL_MAX_ZONES >= 2  /* two-zone config — skipped under a maxima=1 profile */
     /* ============================================================
      * S3 -- Two-zone max-wins arbitration. Two zones reference the
      * same actuator. Zone A at 72°C -> cs=2 -> 160; Zone B at 86°C
@@ -293,6 +294,7 @@ TEST_CASE(core_step_full_loop) {
         }
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
     }
+#endif  /* S3 */
 
     /* ============================================================
      * S4 -- CRITICAL trip bypasses acoustic cap.  (impl-plan §5 named)
@@ -889,6 +891,7 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
     }
 
+#if THERMAL_MAX_SENSORS_PER_ZONE >= 2  /* two-sensor zone — skipped under a maxima=1 profile */
     /* ============================================================
      * S24 (codex v3-#4) -- multi-sensor stuck-sensor "max of remaining
      * valid sensors". Two-sensor zone: one sensor stuck flat (50000),
@@ -948,7 +951,9 @@ TEST_CASE(core_step_full_loop) {
         }
         EXPECT_EQ(stuck_count, 1);
     }
+#endif  /* S24 */
 
+#if THERMAL_MAX_ZONES >= 2  /* two-zone config — skipped under a maxima=1 profile */
     /* ============================================================
      * S25 (codex v3-#1) -- range-based telemetry dispatch across two
      * zones and two actuators. Verifies the new TSIG_*(slot) macros
@@ -996,4 +1001,5 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ(saw_z0, 1);
         EXPECT_EQ(saw_z1, 1);
     }
+#endif  /* S25 */
 }
