@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.13
+**Document status:** Draft v0.14
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.17)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.18)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -586,17 +586,19 @@ The canonical column projection and the row-ordering contract live in `tools/the
 ### Stage 17 — Fan-health detector (post-v1)
 **First post-v1 stage. Do not start until Stage 16 is closed and the v1 white paper has shipped.** Specified in PRD Appendix C.
 
-**Deliverable:** `core/thermal_fan_health.{c,h}` — the minimal core-worthy slice of the fan-health detector. A compile-optional (`THERMALCORE_ENABLE_FAN_HEALTH`), advisory-only module that consumes the same `(commanded_pwm, tach_rpm, tach_valid)` triple as the stall detector, compares it against a per-actuator `const` PWM-to-RPM baseline tagged with its provenance (`field` / `factory` / `model`), and emits a graded `delta_pct`, a `severity` (HEALTHY / AGING / DEGRADED / FAILING), and the `baseline_source` through the telemetry callback. The severity ladder's resolution is gated by provenance — a model-generic baseline asserts only `DEGRADED` / `FAILING` and suppresses `AGING` (PRD Appendix C). It never commands an actuator. `tools/json2static.py` and the Linux JSON loader gain the per-actuator `fan_health` block (baseline table + source, stability windows, severity thresholds); the baseline is hand-authored config, not captured. No baseline capture, no NVS/file persistence, no CLI — those are deferred (see below).
+**Deliverable:** `core/thermal_fan_health.{c,h}` — the minimal core-worthy slice of the fan-health detector. A compile-optional (`THERMALCORE_ENABLE_FAN_HEALTH`), advisory-only module that detects **negative RPM drift** (bearing wear, motor degradation, load-adding contamination — *not* blocked airflow, which can raise RPM and is deferred). It reads measured tach RPM aligned to the **previous tick's final applied `duty_0_255`** — the duty that actually produced the tach sample, not the stall detector's pre-slew/pre-fault requested PWM — and skips any tick that is not free-running steady operation: `tach_valid == 0`, no tach configured, applied PWM below the baseline range, spin-up grace, slew-limited, or fault-override windows. It linearly interpolates expected RPM between adjacent points of a per-actuator `const` PWM-to-RPM baseline (tagged with provenance `field` / `factory` / `model`), computes a signed whole-percent `delta_pct` (negative = under baseline, round-half-away-from-zero, saturated), folds per-point deltas through fixed-size EMA accumulators into an aggregate `health_delta_pct`, and emits `health_delta_pct`, a `severity` (HEALTHY / AGING / DEGRADED / FAILING), `baseline_source`, and a `confidence` figure through the telemetry callback. Severity stays HEALTHY until at least `min_points_observed` baseline points have accumulated samples; the ladder's resolution is further gated by provenance — a model-generic baseline asserts only `DEGRADED` / `FAILING` and suppresses `AGING` (PRD Appendix C). It never commands an actuator. New core constant `THERMAL_MAX_FAN_HEALTH_POINTS` (default 8, matching `THERMAL_MAX_CURVE_POINTS`) bounds the baseline; new signal range `TSIG_FAN_HEALTH_BASE = 0x0800` (DELTA / SEVERITY / BASELINE_SOURCE / CONFIDENCE per slot — `0x0700` is taken by HIL) is reserved in `core/thermal_signals.h`. `tools/json2static.py` and the Linux JSON loader gain the per-actuator `fan_health` block (baseline table + source, `fan_model`, stability windows + tolerances, `min_points_observed`, severity thresholds) and the PRD §C.4 validation rules (point count 2..MAX, PWM sorted/unique/0–255, RPM positive/`uint16_t`, monotonic baseline, strictly-monotonic thresholds, tachless-actuator rejection); the baseline is hand-authored config, not captured. No baseline capture, no NVS/file persistence, no CLI — those are deferred (see below).
 
 **Tests added:**
-- **Unit:** stability-gate windows (PWM/RPM stable-tick counting at threshold boundaries); `delta_pct` computation against a fabricated baseline; weighted `health_pct` aggregation; `severity` classification at exact threshold and ±1; provenance gating (a `model` baseline suppresses `AGING`, a `field`/`factory` baseline does not, on identical inputs).
+- **Unit:** stability-gate windows (PWM/RPM stable-tick counting at threshold boundaries); skip-window suppression (tach-invalid, spin-up, slew-limited, fault-override → no state update, no telemetry); previous-applied-duty alignment (current tach is compared against the prior tick's applied duty, not the current request); interpolation of expected RPM at off-baseline PWM with endpoint clamping; signed `delta_pct` at round-half-away-from-zero boundaries and at saturation; weighted `health_delta_pct` aggregation; `severity` classification at exact threshold and ±1; provenance gating (a `model` baseline suppresses `AGING`, a `field`/`factory` baseline does not, on identical inputs).
+- **Negative controls:** a positive RPM delta at stable PWM stays HEALTHY (never AGING / DEGRADED / FAILING — positive drift is not the negative aging ladder); insufficient observed coverage (fewer than `min_points_observed` points with samples) reports HEALTHY regardless of delta magnitude.
+- **Config validation:** malformed baselines — point count out of range, unsorted or duplicate PWM, non-monotonic RPM, non-monotonic severity thresholds, a `fan_health` block on a tachless actuator — are rejected by **both** the Linux JSON loader and `json2static.py`.
 - **Golden replay:** a fan-degradation fixture — a synthetic `(pwm, rpm)` snapshot stream that drifts progressively below baseline — captured as `test/replay/golden/fan_health_drift.csv`, asserting the expected `severity` escalation HEALTHY → AGING → DEGRADED → FAILING.
 - **Reference cross-check:** a pure-integer Python reference (`test/reference/fan_health.py`), bit-exact against the C module like the other core modules.
 - **Portability:** the `no-heap-no-syscall` gate stays green with `THERMALCORE_ENABLE_FAN_HEALTH=1` — the module adds no heap or syscall dependency.
 
 **Regression value:** Locks the delta/severity math. The load-bearing invariant is the **advisory-only contract** — the module must never appear in an actuator command path; a unit test asserts the output actuator frame is byte-identical with the detector enabled vs. disabled on the same inputs.
 
-**Exit gate:** all previous green, plus the new unit + replay + reference cross-check, and `no-heap-no-syscall` green with the feature compiled in.
+**Exit gate:** all previous green, plus the new unit + negative-control + config-validation + replay + reference cross-check tests, and `no-heap-no-syscall` green with the feature compiled in.
 
 **Follow-on (not yet staged):** the full predictive-maintenance feature — baseline capture sweep plus scenario directives, NVS/JSON baseline persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection (positive-delta cross-correlated with rising zone temperature), the 2D temperature-compensated baseline, and the bench dust-loading experiments plus white-paper supplement — is a separate effort, scoped when Stage 17 lands.
 
@@ -759,4 +761,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.13*
+*End of implementation plan v0.14*
