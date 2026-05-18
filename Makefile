@@ -3,7 +3,14 @@
 # Stage 0: harness sanity test, core-archive stub, portability guard.
 
 CC ?= gcc
-CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic -I core -I test/unit $(CFLAGS_EXTRA)
+
+# Stage 17: the fan-health detector (PRD Appendix C) is compile-optional.
+# Host builds compile it in so the unit/replay/portability gates exercise
+# it; ESP32/CH32 firmware builds do not define this, so the MCU images
+# stay byte-for-byte unchanged and the size-budget legs cover the off path.
+FAN_HEALTH_FLAG = -DTHERMALCORE_ENABLE_FAN_HEALTH=1
+
+CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic -I core -I test/unit $(FAN_HEALTH_FLAG) $(CFLAGS_EXTRA)
 
 # --- Unit test discovery (excludes core_only_runner.c — separate target) ---
 TEST_SRCS = $(wildcard test/unit/test_*.c)

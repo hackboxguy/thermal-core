@@ -52,6 +52,7 @@ typedef uint16_t thermal_telemetry_signal_t;
 #define TSIG_MODIFIER_BASE   0x0500u
 #define TSIG_FAULT_BASE      0x0600u
 #define TSIG_HIL_BASE        0x0700u
+#define TSIG_FAN_HEALTH_BASE 0x0800u
 
 /* === Sub-signal strides within each range === */
 #define TSIG_RANGE_SIZE      0x0100u
@@ -158,6 +159,32 @@ typedef uint16_t thermal_telemetry_signal_t;
     ((uint16_t)(TSIG_HIL_BASE + TSIG_HIL_SUB_SENSOR_TEMP + (slot)))
 #define TSIG_HIL_TACH_RPM(slot) \
     ((uint16_t)(TSIG_HIL_BASE + TSIG_HIL_SUB_TACH_RPM + (slot)))
+
+/* === Fan-health detector sub-signals (Stage 17, PRD Appendix C) ===
+ * Advisory-only fan-degradation telemetry, indexed per actuator slot.
+ * The detector never commands an actuator; these are read-only health
+ * indicators. 0x0700 is owned by HIL, so the range opens at 0x0800.
+ *
+ *   DELTA            signed health_delta_pct (negative = under baseline)
+ *   SEVERITY         HEALTHY / AGING / DEGRADED / FAILING (0..3)
+ *   BASELINE_SOURCE  field / factory / model (0..2) -- so a consumer
+ *                    knows whether it is reading unit-aging or
+ *                    model-deviation
+ *   CONFIDENCE       count of baseline points with observed samples
+ */
+#define TSIG_FAN_HEALTH_SUB_DELTA            0x00u
+#define TSIG_FAN_HEALTH_SUB_SEVERITY         0x10u
+#define TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE  0x20u
+#define TSIG_FAN_HEALTH_SUB_CONFIDENCE       0x30u
+
+#define TSIG_FAN_HEALTH_DELTA(actuator_slot) \
+    ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_DELTA + (actuator_slot)))
+#define TSIG_FAN_HEALTH_SEVERITY(actuator_slot) \
+    ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_SEVERITY + (actuator_slot)))
+#define TSIG_FAN_HEALTH_BASELINE_SOURCE(actuator_slot) \
+    ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE + (actuator_slot)))
+#define TSIG_FAN_HEALTH_CONFIDENCE(actuator_slot) \
+    ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_CONFIDENCE + (actuator_slot)))
 
 /* === Backward-compatibility aliases for PRD §7.1 example named
  * constants. Defined in terms of slot 0/1 of their respective ranges;

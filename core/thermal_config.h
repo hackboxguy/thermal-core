@@ -48,6 +48,12 @@
 #ifndef THERMAL_MAX_CURVE_POINTS
 #define THERMAL_MAX_CURVE_POINTS           8
 #endif
+/* PWM-to-RPM baseline points for the post-v1 fan-health detector
+ * (PRD Appendix C, Stage 17). Sized to match THERMAL_MAX_CURVE_POINTS;
+ * the detector reuses thermal_curve.c interpolation. */
+#ifndef THERMAL_MAX_FAN_HEALTH_POINTS
+#define THERMAL_MAX_FAN_HEALTH_POINTS      8
+#endif
 #ifndef THERMAL_MAX_TELEMETRY_SIGNALS
 #define THERMAL_MAX_TELEMETRY_SIGNALS    128
 #endif
