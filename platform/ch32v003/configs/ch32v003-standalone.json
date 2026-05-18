@@ -50,7 +50,7 @@
   "telemetry": {
     "enable": true,
     "period_ticks": 1,
-    "signals": ["zone_temp_*", "actuator_pwm_*"],
+    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*"],
     "transport": "uart:console"
   },
 

@@ -68,8 +68,12 @@ int main(void)
 
 #if THERMALCORE_CH32_TELEMETRY
     /* Bring up the telemetry UART and emit the canonical CSV header
-     * once, before any data rows. */
-    bsp_ch32_uart_init(115200);
+     * once, before any data rows. 9600 baud, not 115200: the
+     * CH32V003 has no crystal, and its internal RC oscillator
+     * drifts as the die warms on the bench -- a slow baud keeps a
+     * wide timing margin so high-temperature captures stay clean.
+     * The telemetry stream is only a few short rows per second. */
+    bsp_ch32_uart_init(9600);
     bsp_ch32_uart_puts(THERMALCORE_CANONICAL_HEADER);
 #endif
 

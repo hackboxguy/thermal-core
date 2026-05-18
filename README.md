@@ -197,15 +197,20 @@ debug channel (`make monitor`; compile-gated by
 
 `make build-ch32 CH32_TELEMETRY=1` adds a USART1 telemetry tap:
 the regulator emits the **canonical 9-column telemetry CSV** --
-zone temperature, fan duty, fault events -- the same projection
-the host scenario runner and determinism gate produce. Wire a
-USB-serial adapter to USART1 (PD5 TX / PD6 RX) and capture it:
+zone temperature, fan duty, fan RPM, fault events -- the same
+projection the host scenario runner and determinism gate produce.
+Wire a USB-serial adapter to USART1 (PD5 TX / PD6 RX) and capture
+it at **9600 baud**:
 
 ```bash
 make build-ch32 CH32_TELEMETRY=1                   # build + size gate
 make flash-ch32 CH32_TELEMETRY=1                   # build + flash via WCH-LinkE
-tio /dev/ttyUSB0 -b 115200 -l /tmp/ch32-telemetry.csv
+tio /dev/ttyUSB0 -b 9600 -l /tmp/ch32-telemetry.csv
 ```
+
+The baud is deliberately low: the CH32V003 has no crystal, and its
+internal RC oscillator drifts as the die warms, so 9600 keeps a
+wide timing margin for clean high-temperature captures.
 
 Pass `CH32_TELEMETRY=1` to **both** commands: ch32fun relinks the
 firmware from source on every invocation, so `make flash-ch32`
