@@ -161,7 +161,11 @@ static int send_request(int fd, uint8_t pid)
     frame.can_dlc = OBD2_FRAME_DLC;
     obd2_encode_request_byte(pid, frame.data);
 
-    ssize_t w = write(fd, &frame, sizeof(frame));
+    /* MSG_DONTWAIT: never block the control tick on the CAN tx
+     * queue.  A congested / bus-off interface returns EAGAIN, which
+     * the caller treats as "retry next tick" rather than a stall.
+     * Mirrors the MSG_DONTWAIT on the recv path below. */
+    ssize_t w = send(fd, &frame, sizeof(frame), MSG_DONTWAIT);
     if (w == (ssize_t)sizeof(frame)) return 0;
     if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         /* Tx queue full; try again next tick.  Not fatal. */

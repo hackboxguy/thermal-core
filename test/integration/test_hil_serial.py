@@ -6,13 +6,21 @@ without requiring an ESP32 on a bench.  Opens a Unix PTY pair,
 runs thermalcored with `hil.transport = "serial:<pty-slave>"`,
 injects crafted `TELEM_SAMPLE` TC frames on the master side
 (simulating the ESP32 firmware's sensor + tach broadcasts), and
-verifies the daemon emits `CMD_REQUEST(HIL_CMD_SET_PWM_DUTY)`
-frames on the same channel as the synthetic temperature climbs
-across the configured trip points.
+verifies the daemon's behaviour.
+
+Two scenarios:
+  - ramp:      synthetic temp climbs through the trip points; the
+               daemon must emit CMD_REQUEST(HIL_CMD_SET_PWM_DUTY)
+               frames that visit each cooling-state plateau.
+  - staleness: one cold reading, then the stream stalls; the
+               cached sample must expire after max_staleness_ms so
+               the zone falls back to fallback_temp_mc and the fan
+               is driven to the critical-state plateau (the
+               codex-v8 finding-1 regression guard).
 
 Drives the daemon under `--clock=scenario` + DONE handshake so
-the test is strictly synchronous: inject samples -> TICK -> DONE
--> drain output -> repeat.  No wall-clock dependencies.
+each scenario is strictly synchronous: inject -> TICK -> DONE ->
+drain output -> repeat.  No wall-clock dependencies.
 
 Exits non-zero on any failed assertion (same convention as the
 sibling integration tests).
@@ -38,13 +46,12 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import thermalcore_wire as w   # noqa: E402
 
-DAEMON_PATH       = ROOT / "build" / "platform-linux" / "thermalcored"
-CFG_PATH          = "/tmp/hil-pty-config.json"
-CLOCK_PATH        = "/tmp/thermalcored-hil-pty-clock.sock"
-DAEMON_LOG_PATH   = "/tmp/thermalcored-hil-pty.log"
+DAEMON_PATH = ROOT / "build" / "platform-linux" / "thermalcored"
+CFG_PATH    = "/tmp/hil-pty-config.json"
+CLOCK_PATH  = "/tmp/thermalcored-hil-pty-clock.sock"
 
-UDP_HOST          = "127.0.0.1"
-UDP_TELEM_PORT    = 9099
+UDP_HOST       = "127.0.0.1"
+UDP_TELEM_PORT = 9099
 
 # Canonical HIL signal IDs from core/thermal_signals.h (TSIG_HIL_*).
 SIG_SENSOR_TEMP_0 = 0x0700
@@ -59,6 +66,9 @@ HIL_CMD_SET_PWM_DUTY = 0x8001
 #   45-59   -> state 2         -> duty 160
 #   60+     -> state 3         -> duty 220
 EXPECTED_DUTIES_AT_TRIPS = [100, 160, 220]
+
+# config max_staleness_ms -- the HIL cache freshness window.
+MAX_STALENESS_MS = 5000
 
 
 def fail(msg: str) -> None:
@@ -75,7 +85,7 @@ def write_config(slave_path: str) -> None:
         "sensors": [{
             "id": 0, "name": "soc",
             "iir_alpha_q16": 16384,
-            "max_staleness_ms": 5000,
+            "max_staleness_ms": MAX_STALENESS_MS,
             "source": "hil:slot0",
         }],
         "context_signals": [],
@@ -143,8 +153,8 @@ def recv_done(clk: socket.socket, timeout_s: float = 5.0) -> None:
 
 def drain_master_cmds(master_fd: int) -> list:
     """Read all bytes currently available on the master fd, scan for
-    complete TC frames, return list of (opcode, command_id, duty) for
-    every CMD_REQUEST we see and (opcode, status, detail) for ACK/NACK."""
+    complete TC frames, return list of (opcode, command_id, slot, duty) for
+    every CMD_REQUEST we see and (kind, status, detail) for ACK/NACK."""
     out = []
     chunks = []
     while True:
@@ -184,35 +194,38 @@ def drain_master_cmds(master_fd: int) -> list:
     return out
 
 
-# -------------------------------------------------------------- main
+# -------------------------------------------------------------- session
 
-def main() -> int:
-    if not DAEMON_PATH.exists():
-        fail(f"daemon binary missing at {DAEMON_PATH}; run `make build` first")
-
-    # Pre-clean any stale clock socket from a prior run.
-    try:
-        os.unlink(CLOCK_PATH)
-    except FileNotFoundError:
-        pass
+def run_session(name: str, tick_count: int, tick_callback) -> list:
+    """Open a PTY, run thermalcored under the scenario clock for
+    `tick_count` ticks (control_period_ms = 100, so now_ms = tick*100),
+    calling tick_callback(tick, now_ms, master_fd, seq) -> seq each
+    tick to inject frames.  Returns a per-tick list: element `t` is
+    the list of CMD/ACK/NACK tuples the daemon emitted on tick `t`."""
+    log_path = f"/tmp/thermalcored-hil-pty-{name}.log"
 
     master_fd, slave_fd = pty.openpty()
     slave_path = os.ttyname(slave_fd)
-    # Make master non-blocking so drain_master_cmds doesn't hang.
+    # Non-blocking master so drain_master_cmds doesn't hang.
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL, 0)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     write_config(slave_path)
+
+    try:
+        os.unlink(CLOCK_PATH)
+    except FileNotFoundError:
+        pass
 
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     udp.bind((UDP_HOST, UDP_TELEM_PORT))
     udp.settimeout(0.1)
 
-    daemon_log = Path(DAEMON_LOG_PATH).open("w")
+    daemon_log = Path(log_path).open("w")
     daemon = None
     clk = None
-    cmds_observed: list = []
+    per_tick: list = []
     try:
         daemon = subprocess.Popen(
             [str(DAEMON_PATH),
@@ -221,46 +234,26 @@ def main() -> int:
              f"--scenario-clock-uri=unix:{CLOCK_PATH}"],
             stdout=daemon_log, stderr=daemon_log)
 
-        # Wait for the daemon to bind the scenario clock socket.
         deadline = time.time() + 5.0
         while not os.path.exists(CLOCK_PATH):
             if time.time() > deadline:
-                fail(f"daemon did not bind {CLOCK_PATH} within 5 s; "
-                     f"see {DAEMON_LOG_PATH}")
+                fail(f"[{name}] daemon did not bind {CLOCK_PATH} within "
+                     f"5 s; see {log_path}")
             if daemon.poll() is not None:
-                fail(f"daemon exited early (rc={daemon.returncode}); "
-                     f"see {DAEMON_LOG_PATH}")
+                fail(f"[{name}] daemon exited early (rc={daemon.returncode}); "
+                     f"see {log_path}")
             time.sleep(0.05)
 
         clk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         clk.connect(CLOCK_PATH)
 
-        # Drive 50 ticks over 5 s scenario time.  Ramp the synthetic
-        # sensor temp from 25 C to 75 C linearly.  At control_period_ms
-        # = 100 + IIR alpha = 16384 (=0.25), the filter tracks the ramp
-        # within a few hundred mc.
-        TICK_COUNT = 50
-        TEMP_START_MC = 25000
-        TEMP_END_MC   = 75000
         seq = 0
-        for tick in range(TICK_COUNT):
+        for tick in range(tick_count):
             now_ms = tick * 100
-            temp_mc = TEMP_START_MC + (TEMP_END_MC - TEMP_START_MC) \
-                                       * tick // (TICK_COUNT - 1)
-            # Inject sensor sample first, then tach (fan-off baseline).
-            inject_telem_sample(master_fd, seq, now_ms,
-                                SIG_SENSOR_TEMP_0, temp_mc)
-            seq = (seq + 1) & 0xFFFF
-            inject_telem_sample(master_fd, seq, now_ms,
-                                SIG_TACH_RPM_0, 0)
-            seq = (seq + 1) & 0xFFFF
-
+            seq = tick_callback(tick, now_ms, master_fd, seq)
             clk.sendall(f"TICK {now_ms}\n".encode("ascii"))
             recv_done(clk)
-
-            # Drain any CMD_REQUEST / ACK / NACK frames the daemon wrote.
-            cmds_observed.extend(drain_master_cmds(master_fd))
-
+            per_tick.append(drain_master_cmds(master_fd))
     finally:
         if clk is not None:
             clk.close()
@@ -274,46 +267,126 @@ def main() -> int:
         os.close(slave_fd)
         daemon_log.close()
         udp.close()
+    return per_tick
 
-    # === Assertions =====================================================
-    nacks = [c for c in cmds_observed if c[0] == "CMD_NACK"]
+
+# -------------------------------------------------------------- ramp test
+
+RAMP_TICKS    = 50
+TEMP_START_MC = 25000
+TEMP_END_MC   = 75000
+
+
+def run_ramp_test() -> None:
+    """Ramp the synthetic sensor 25 C -> 75 C and verify the duty
+    trajectory crosses each cooling-state plateau."""
+    def ramp_tick(tick, now_ms, master_fd, seq):
+        temp_mc = TEMP_START_MC + (TEMP_END_MC - TEMP_START_MC) \
+                                   * tick // (RAMP_TICKS - 1)
+        inject_telem_sample(master_fd, seq, now_ms,
+                            SIG_SENSOR_TEMP_0, temp_mc)
+        seq = (seq + 1) & 0xFFFF
+        inject_telem_sample(master_fd, seq, now_ms, SIG_TACH_RPM_0, 0)
+        seq = (seq + 1) & 0xFFFF
+        return seq
+
+    per_tick = run_session("ramp", RAMP_TICKS, ramp_tick)
+    cmds = [c for tick_cmds in per_tick for c in tick_cmds]
+
+    nacks = [c for c in cmds if c[0] == "CMD_NACK"]
     if nacks:
-        fail(f"unexpected NACKs from daemon: {nacks[:5]}")
+        fail(f"[ramp] unexpected NACKs from daemon: {nacks[:5]}")
 
-    cmd_reqs = [c for c in cmds_observed if c[0] == "CMD_REQUEST"]
+    cmd_reqs = [c for c in cmds if c[0] == "CMD_REQUEST"]
     if not cmd_reqs:
-        fail(f"no CMD_REQUEST frames seen on PTY master over "
-             f"{TICK_COUNT} ticks; see {DAEMON_LOG_PATH}")
+        fail(f"[ramp] no CMD_REQUEST frames seen over {RAMP_TICKS} ticks")
 
     wrong_id = [c for c in cmd_reqs if c[1] != HIL_CMD_SET_PWM_DUTY]
     if wrong_id:
-        fail(f"unexpected command_id values: {wrong_id[:5]}")
+        fail(f"[ramp] unexpected command_id values: {wrong_id[:5]}")
 
-    # Single-actuator config: every CMD_REQUEST should carry slot=0.
     wrong_slot = [c for c in cmd_reqs if c[2] != 0]
     if wrong_slot:
-        fail(f"unexpected slot values (expected 0): {wrong_slot[:5]}")
+        fail(f"[ramp] unexpected slot values (expected 0): {wrong_slot[:5]}")
 
     duties = [c[3] for c in cmd_reqs]
-    print(f"  [test_hil_serial] {len(duties)} CMD_REQUEST frames; "
+    print(f"  [ramp] {len(duties)} CMD_REQUEST frames; "
           f"duty range = {min(duties)}..{max(duties)}")
 
     if max(duties) < 220:
-        fail(f"expected duty to reach 220 (critical state) but "
+        fail(f"[ramp] expected duty to reach 220 (critical state) but "
              f"max observed = {max(duties)}")
-
-    # First few ticks: synthetic temp is 25 C, below the 30 C warn trip,
-    # so duty must be 0 (fan off).
     if duties[0] != 0:
-        fail(f"expected duty=0 at first tick (temp=25 C, below warn) "
-             f"but observed = {duties[0]}")
-
-    # As the temp climbs, duty must visit each cooling-state plateau.
+        fail(f"[ramp] expected duty=0 at first tick (temp=25 C, below "
+             f"warn) but observed = {duties[0]}")
     for state_pwm in EXPECTED_DUTIES_AT_TRIPS:
         if state_pwm not in duties:
-            fail(f"duty never crossed expected cooling-state plateau "
-                 f"{state_pwm}; observed duty trajectory: {duties}")
+            fail(f"[ramp] duty never crossed expected cooling-state "
+                 f"plateau {state_pwm}; observed trajectory: {duties}")
+    print("  [ramp] PASS")
 
+
+# -------------------------------------------------------------- staleness test
+
+STALE_TICKS = 70
+
+
+def run_staleness_test() -> None:
+    """Inject a cold (25 C) reading for the first 10 ticks, then let
+    the stream stall.  The cached HIL sample must expire once it is
+    older than max_staleness_ms: the zone then falls back to
+    fallback_temp_mc (85 C) and the fan is driven to the critical
+    plateau.  Before the codex-v8 finding-1 fix the cache never
+    expired and the daemon regulated on the frozen 25 C reading
+    forever -- this scenario is the regression guard."""
+    def staleness_tick(tick, now_ms, master_fd, seq):
+        if tick < 10:
+            inject_telem_sample(master_fd, seq, now_ms,
+                                SIG_SENSOR_TEMP_0, 25000)
+            seq = (seq + 1) & 0xFFFF
+            inject_telem_sample(master_fd, seq, now_ms, SIG_TACH_RPM_0, 0)
+            seq = (seq + 1) & 0xFFFF
+        return seq
+
+    per_tick = run_session("staleness", STALE_TICKS, staleness_tick)
+
+    def duties_in(lo, hi):
+        return [c[3] for tick in range(lo, hi)
+                for c in per_tick[tick] if c[0] == "CMD_REQUEST"]
+
+    nacks = [c for tc in per_tick for c in tc if c[0] == "CMD_NACK"]
+    if nacks:
+        fail(f"[staleness] unexpected NACKs from daemon: {nacks[:5]}")
+
+    # The last good frame is drained at now_ms = 900.  Ticks 0..54
+    # (now_ms <= 5400) keep age <= 4500 ms, inside the 5000 ms
+    # window: the sample stays valid at 25 C, below all trips ->
+    # duty 0.
+    fresh = duties_in(0, 55)
+    if not fresh or any(d != 0 for d in fresh):
+        fail(f"[staleness] expected duty 0 while the cached 25 C sample "
+             f"is fresh, observed duties {sorted(set(fresh))}")
+
+    # Ticks 66..69 (now_ms >= 6600) put age >= 5700 ms, past the
+    # 5000 ms window.  The sample must expire -> zone temp falls back
+    # to 85 C -> critical cooling state -> duty 220.
+    stale = duties_in(66, STALE_TICKS)
+    if not stale or any(d != 220 for d in stale):
+        fail(f"[staleness] expected duty 220 (stale sample -> 85 C "
+             f"fallback) once the HIL stream stalled, observed duties "
+             f"{sorted(set(stale))}")
+
+    print(f"  [staleness] PASS (fresh-window duty 0, "
+          f"post-staleness duty {stale[-1]})")
+
+
+# -------------------------------------------------------------- main
+
+def main() -> int:
+    if not DAEMON_PATH.exists():
+        fail(f"daemon binary missing at {DAEMON_PATH}; run `make build` first")
+    run_ramp_test()
+    run_staleness_test()
     print("test_hil_serial: PASS")
     return 0
 

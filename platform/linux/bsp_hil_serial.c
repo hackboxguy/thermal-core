@@ -35,7 +35,7 @@
 
 typedef struct {
     int32_t  value;
-    uint32_t last_ts_ms;
+    uint32_t recv_ts_ms;   /* host now_ms when the frame was decoded */
     uint8_t  ever_seen;
 } hil_sample_cell_t;
 
@@ -173,8 +173,12 @@ void bsp_hil_serial_close(int fd)
 /* Inbound dispatch                                             */
 /* =========================================================== */
 
+/* `recv_ts_ms` is the host now_ms at the moment the frame was
+ * decoded -- NOT the ESP32 frame timestamp.  The HIL peer's clock
+ * is a foreign timebase; freshness must be measured against the
+ * daemon's own clock. */
 static void dispatch_telem_sample(uint16_t signal_id, int32_t value,
-                                   uint32_t ts_ms)
+                                   uint32_t recv_ts_ms)
 {
     if (signal_id >= TSIG_HIL_BASE
      && signal_id <  TSIG_HIL_BASE + TSIG_RANGE_SIZE) {
@@ -183,13 +187,13 @@ static void dispatch_telem_sample(uint16_t signal_id, int32_t value,
         uint8_t  slot = (uint8_t)(off & 0x0Fu);
         if (sub == TSIG_HIL_SUB_SENSOR_TEMP && slot < THERMAL_MAX_SENSORS) {
             s_sensor_cache[slot].value      = value;
-            s_sensor_cache[slot].last_ts_ms = ts_ms;
+            s_sensor_cache[slot].recv_ts_ms = recv_ts_ms;
             s_sensor_cache[slot].ever_seen  = 1;
             return;
         }
         if (sub == TSIG_HIL_SUB_TACH_RPM && slot < THERMAL_MAX_ACTUATORS) {
             s_tach_cache[slot].value      = value;
-            s_tach_cache[slot].last_ts_ms = ts_ms;
+            s_tach_cache[slot].recv_ts_ms = recv_ts_ms;
             s_tach_cache[slot].ever_seen  = 1;
             return;
         }
@@ -206,7 +210,7 @@ static void dispatch_frame(const thermal_wire_frame_t *fr, uint32_t now_ms)
         if (thermal_wire_decode_telem_sample(fr, &signal_id,
                                               &flags, &value) == THERMAL_WIRE_OK) {
             (void)flags;
-            dispatch_telem_sample(signal_id, value, fr->ts_ms);
+            dispatch_telem_sample(signal_id, value, now_ms);
         }
         return;
     }
@@ -282,7 +286,6 @@ int bsp_hil_serial_read_sensor(const thermal_config_t *cfg,
                                 uint8_t slot, uint32_t now_ms,
                                 thermal_sample_t *out)
 {
-    (void)now_ms;
     if (!cfg || !out) return 0;
     memset(out, 0, sizeof(*out));
     if (slot >= cfg->sensor_count || slot >= THERMAL_MAX_SENSORS) {
@@ -290,10 +293,18 @@ int bsp_hil_serial_read_sensor(const thermal_config_t *cfg,
     }
     out->id           = cfg->sensors[slot].id;
     out->kind         = THERMAL_SAMPLE_TEMP_MC;
-    out->sample_ts_ms = s_sensor_cache[slot].last_ts_ms;
+    out->sample_ts_ms = s_sensor_cache[slot].recv_ts_ms;
     out->value        = s_sensor_cache[slot].value;
-    out->valid        = s_sensor_cache[slot].ever_seen;
     out->quality      = 0;
+    /* PRD freshness contract: a cached sample goes valid=0 once it
+     * is older than the sensor's max_staleness_ms.  Measured
+     * against the host receive time -- if the HIL peer stops
+     * sending, the daemon must not regulate on a frozen reading. */
+    if (s_sensor_cache[slot].ever_seen
+     && (now_ms - s_sensor_cache[slot].recv_ts_ms)
+            <= cfg->sensors[slot].max_staleness_ms) {
+        out->valid = 1;
+    }
     return 0;
 }
 
@@ -301,7 +312,6 @@ int bsp_hil_serial_read_tach(const thermal_config_t *cfg,
                               uint8_t slot, uint32_t now_ms,
                               thermal_sample_t *out)
 {
-    (void)now_ms;
     if (!cfg || !out) return 0;
     memset(out, 0, sizeof(*out));
     if (slot >= cfg->actuator_count || slot >= THERMAL_MAX_ACTUATORS) {
@@ -309,10 +319,18 @@ int bsp_hil_serial_read_tach(const thermal_config_t *cfg,
     }
     out->id           = cfg->actuators[slot].id;
     out->kind         = THERMAL_SAMPLE_TACH_RPM;
-    out->sample_ts_ms = s_tach_cache[slot].last_ts_ms;
+    out->sample_ts_ms = s_tach_cache[slot].recv_ts_ms;
     out->value        = s_tach_cache[slot].value;
-    out->valid        = s_tach_cache[slot].ever_seen;
     out->quality      = 0;
+    /* Actuators carry no staleness field; the HIL link delivers
+     * sensor + tach frames together, so the tach borrows sensor 0's
+     * max_staleness_ms as the link-liveness window. */
+    if (cfg->sensor_count > 0
+     && s_tach_cache[slot].ever_seen
+     && (now_ms - s_tach_cache[slot].recv_ts_ms)
+            <= cfg->sensors[0].max_staleness_ms) {
+        out->valid = 1;
+    }
     return 0;
 }
 
