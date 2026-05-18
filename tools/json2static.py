@@ -39,6 +39,7 @@ MAX_SENSORS_PER_ZONE    = 4
 MAX_ACTUATORS_PER_ZONE  = 2
 MAX_COOLING_STATES      = 5
 MAX_CURVE_POINTS        = 8
+MAX_FAN_HEALTH_POINTS   = 8
 MAX_TELEMETRY_SIGNALS   = 128
 NAME_MAX                = 24
 
@@ -87,14 +88,22 @@ FAULT_ACTION_MAP = {
     "request_shutdown":              0x05,
 }
 
+# Fan-health baseline provenance (mirror core/thermal_fan_health.h).
+FAN_BASELINE_SRC_MAP = {
+    "field":   0,
+    "factory": 1,
+    "model":   2,
+}
+
 # === Telemetry signal IDs (mirror core/thermal_signals.h) ===========
 
-TSIG_ZONE_BASE     = 0x0100
-TSIG_ACTUATOR_BASE = 0x0200
-TSIG_PID_BASE      = 0x0300
-TSIG_CONTEXT_BASE  = 0x0400
-TSIG_MODIFIER_BASE = 0x0500
-TSIG_FAULT_BASE    = 0x0600
+TSIG_ZONE_BASE       = 0x0100
+TSIG_ACTUATOR_BASE   = 0x0200
+TSIG_PID_BASE        = 0x0300
+TSIG_CONTEXT_BASE    = 0x0400
+TSIG_MODIFIER_BASE   = 0x0500
+TSIG_FAULT_BASE      = 0x0600
+TSIG_FAN_HEALTH_BASE = 0x0800
 
 def tsig_zone_temp(slot):              return TSIG_ZONE_BASE + 0x00 + slot
 def tsig_zone_cooling_state(slot):     return TSIG_ZONE_BASE + 0x10 + slot
@@ -107,6 +116,10 @@ def tsig_fault_stall(slot):            return TSIG_FAULT_BASE + 0x00 + slot
 def tsig_fault_stuck_sensor(slot):     return TSIG_FAULT_BASE + 0x10 + slot
 def tsig_fault_runaway(slot):          return TSIG_FAULT_BASE + 0x20 + slot
 def tsig_fault_stale_context(slot):    return TSIG_FAULT_BASE + 0x30 + slot
+def tsig_fan_health_delta(slot):           return TSIG_FAN_HEALTH_BASE + 0x00 + slot
+def tsig_fan_health_severity(slot):        return TSIG_FAN_HEALTH_BASE + 0x10 + slot
+def tsig_fan_health_baseline_source(slot): return TSIG_FAN_HEALTH_BASE + 0x20 + slot
+def tsig_fan_health_confidence(slot):      return TSIG_FAN_HEALTH_BASE + 0x30 + slot
 
 # === Errors ==========================================================
 
@@ -150,7 +163,17 @@ ACTUATOR_ALLOWED = {
     "id", "name", "pwm_min", "pwm_max", "slew_per_tick",
     "spinup_pwm", "spinup_ms", "state_pwm",
     "pwm", "tach", "pwm_freq_hz", "tach_pulses_per_rev",   # platform-only
+    "fan_health",                       # Stage 17, --enable-fan-health only
 }
+
+FAN_HEALTH_ALLOWED = {
+    "enable", "fan_model", "baseline_source", "baseline",
+    "stable_pwm_ticks", "stable_pwm_tolerance",
+    "stable_rpm_ticks", "stable_rpm_tolerance_pct",
+    "min_points_observed", "severity_pct",
+}
+
+SEVERITY_PCT_ALLOWED = {"aging", "degraded", "failing"}
 
 ZONE_ALLOWED = {
     "name", "sensors", "sensor_weights_q16", "aggregation",
@@ -197,9 +220,122 @@ def reject_unknown(obj, allowed, where):
     if extras:
         raise ConfigError(f"{where}: unknown key(s) {sorted(extras)}")
 
+
+# Zeroed fan-health block -- emitted for an actuator with no (or a
+# disabled) fan_health block. Matches config_jsmn's parse_fan_health,
+# which memsets the block to zero when it is absent or disabled.
+FAN_HEALTH_ZEROED = {
+    "enable": 0, "baseline_source": 0, "baseline": [], "baseline_count": 0,
+    "stable_pwm_ticks": 0, "stable_pwm_tolerance": 0,
+    "stable_rpm_ticks": 0, "stable_rpm_tolerance_pct": 0,
+    "min_points_observed": 0,
+    "aging_pct": 0, "degraded_pct": 0, "failing_pct": 0,
+}
+
+
+def normalise_fan_health(fh_raw, actuator_raw, idx):
+    """Parse + validate a per-actuator fan_health block (Stage 17, PRD
+    Appendix C). Returns a normalised dict; a zeroed block when the
+    section is absent or disabled. Raises ConfigError on any malformed
+    or physically implausible baseline -- mirrors config_jsmn.c
+    parse_fan_health plus thermal_core_validate_config."""
+    if fh_raw is None:
+        return dict(FAN_HEALTH_ZEROED)
+    where = f"actuators[{idx}].fan_health"
+    reject_unknown(fh_raw, FAN_HEALTH_ALLOWED, where)
+    if not fh_raw.get("enable", False):
+        return dict(FAN_HEALTH_ZEROED)
+
+    for key in ("baseline_source", "baseline", "stable_pwm_ticks",
+                "stable_pwm_tolerance", "stable_rpm_ticks",
+                "stable_rpm_tolerance_pct", "min_points_observed",
+                "severity_pct"):
+        if key not in fh_raw:
+            raise ConfigError(f"{where}: missing required key '{key}'")
+    if "tach" not in actuator_raw:
+        raise ConfigError(f"{where}: enabled but actuator has no tach source")
+
+    src_name = fh_raw["baseline_source"]
+    if src_name not in FAN_BASELINE_SRC_MAP:
+        raise ConfigError(f"{where}.baseline_source: unknown value '{src_name}'")
+
+    base_raw = fh_raw["baseline"]
+    if not isinstance(base_raw, list):
+        raise ConfigError(f"{where}.baseline: expected array")
+    if not 2 <= len(base_raw) <= MAX_FAN_HEALTH_POINTS:
+        raise ConfigError(
+            f"{where}.baseline: needs 2..{MAX_FAN_HEALTH_POINTS} points")
+    baseline = []
+    for j, pt in enumerate(base_raw):
+        if not isinstance(pt, list) or len(pt) != 2:
+            raise ConfigError(f"{where}.baseline[{j}]: expected [pwm, rpm] pair")
+        pwm, rpm = int(pt[0]), int(pt[1])
+        if not 0 <= pwm <= 255:
+            raise ConfigError(f"{where}.baseline[{j}]: pwm out of [0, 255]")
+        if not 1 <= rpm <= 65535:
+            raise ConfigError(f"{where}.baseline[{j}]: rpm out of [1, 65535]")
+        if j > 0:
+            if pwm <= baseline[-1][0]:
+                raise ConfigError(
+                    f"{where}.baseline[{j}]: pwm not strictly ascending")
+            if rpm < baseline[-1][1]:
+                raise ConfigError(
+                    f"{where}.baseline[{j}]: rpm not monotonic non-decreasing")
+        baseline.append([pwm, rpm])
+
+    sev = fh_raw["severity_pct"]
+    reject_unknown(sev, SEVERITY_PCT_ALLOWED, f"{where}.severity_pct")
+    for key in ("aging", "degraded", "failing"):
+        if key not in sev:
+            raise ConfigError(f"{where}.severity_pct: missing '{key}'")
+    aging, degraded, failing = (int(sev["aging"]), int(sev["degraded"]),
+                                int(sev["failing"]))
+    for nm, v in (("aging", aging), ("degraded", degraded), ("failing", failing)):
+        if not -100 <= v <= -1:
+            raise ConfigError(f"{where}.severity_pct.{nm}: out of [-100, -1]")
+    if not 0 > aging > degraded > failing:
+        raise ConfigError(
+            f"{where}.severity_pct: must satisfy 0 > aging > degraded > failing")
+
+    spt = int(fh_raw["stable_pwm_ticks"])
+    if not 1 <= spt <= 65535:
+        raise ConfigError(f"{where}.stable_pwm_ticks: out of [1, 65535]")
+    sptol = int(fh_raw["stable_pwm_tolerance"])
+    if not 0 <= sptol <= 255:
+        raise ConfigError(f"{where}.stable_pwm_tolerance: out of [0, 255]")
+    srt = int(fh_raw["stable_rpm_ticks"])
+    if not 1 <= srt <= 65535:
+        raise ConfigError(f"{where}.stable_rpm_ticks: out of [1, 65535]")
+    srtol = int(fh_raw["stable_rpm_tolerance_pct"])
+    if not 0 <= srtol <= 100:
+        raise ConfigError(f"{where}.stable_rpm_tolerance_pct: out of [0, 100]")
+    mpo = int(fh_raw["min_points_observed"])
+    if not 1 <= mpo <= len(baseline):
+        raise ConfigError(
+            f"{where}.min_points_observed: out of [1, baseline point count]")
+
+    if "fan_model" in fh_raw and not isinstance(fh_raw["fan_model"], str):
+        raise ConfigError(f"{where}.fan_model: expected string")
+
+    return {
+        "enable": 1,
+        "baseline_source": FAN_BASELINE_SRC_MAP[src_name],
+        "baseline": baseline,
+        "baseline_count": len(baseline),
+        "stable_pwm_ticks": spt,
+        "stable_pwm_tolerance": sptol,
+        "stable_rpm_ticks": srt,
+        "stable_rpm_tolerance_pct": srtol,
+        "min_points_observed": mpo,
+        "aging_pct": aging,
+        "degraded_pct": degraded,
+        "failing_pct": failing,
+    }
+
+
 # === Loader (mirrors config_jsmn.c semantics) ========================
 
-def expand_signal(sel: str, cfg) -> list[int]:
+def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
     """Mirror telemetry_expand_one in config_jsmn.c."""
     actuator_count = len(cfg["actuators"])
     sensor_count   = len(cfg["sensors"])
@@ -232,6 +368,14 @@ def expand_signal(sel: str, cfg) -> list[int]:
         out += [tsig_fault_runaway(s) for s in range(zone_count)]
         out += [tsig_fault_stale_context(s) for s in range(context_count)]
         if not out: raise ConfigError("wildcard expanded to nothing")
+        return out
+    if enable_fan_health and sel == "fan_health_*":
+        if actuator_count == 0: raise ConfigError("wildcard expanded to nothing")
+        out = []
+        for s in range(actuator_count):
+            out += [tsig_fan_health_delta(s), tsig_fan_health_severity(s),
+                    tsig_fan_health_baseline_source(s),
+                    tsig_fan_health_confidence(s)]
         return out
 
     if sel == "speed_kmh":
@@ -269,11 +413,16 @@ def expand_signal(sel: str, cfg) -> list[int]:
     raise ConfigError(f"unknown telemetry selector '{sel}'")
 
 
-def normalise(raw: dict) -> dict:
+def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
     """Pull CORE-owned fields out of `raw` (the JSON document) into a
     normalised dict that mirrors thermal_config_t.  Platform-only
     fields are dropped (json2static is for CORE only; the daemon's
-    runtime cfg lives elsewhere)."""
+    runtime cfg lives elsewhere).
+
+    `enable_fan_health` mirrors the THERMALCORE_ENABLE_FAN_HEALTH
+    compile gate: when set, per-actuator `fan_health` blocks are
+    parsed and emitted; when unset, a `fan_health` block is a hard
+    error (the feature is not compiled in)."""
     reject_unknown(raw, TOP_LEVEL_ALLOWED, "$")
     if "config_version" not in raw:
         raise ConfigError("missing config_version")
@@ -309,6 +458,7 @@ def normalise(raw: dict) -> dict:
 
     actuators = []
     state_pwm_lens = []  # JSON-explicit length per actuator slot (for #6)
+    fan_health = []      # one entry per actuator (Stage 17); zeroed if absent
     for i, a in enumerate(raw.get("actuators", [])):
         reject_unknown(a, ACTUATOR_ALLOWED, f"actuators[{i}]")
         sp = a["state_pwm"]
@@ -325,6 +475,11 @@ def normalise(raw: dict) -> dict:
             "spinup_ms":      int(a.get("spinup_ms", 0)),
             "state_pwm":      [int(x) for x in sp] + [0] * (MAX_COOLING_STATES - len(sp)),
         })
+        if enable_fan_health:
+            fan_health.append(normalise_fan_health(a.get("fan_health"), a, i))
+        elif "fan_health" in a:
+            raise ConfigError(
+                f"actuators[{i}].fan_health: requires --enable-fan-health")
 
     def find_slot(arr, name, kind, where):
         for i, e in enumerate(arr):
@@ -509,7 +664,7 @@ def normalise(raw: dict) -> dict:
         reject_unknown(raw["control"], CONTROL_ALLOWED, "control")
     enabled_ids = []
     for sel in t_raw.get("signals", []):
-        enabled_ids.extend(expand_signal(sel, cfg_view))
+        enabled_ids.extend(expand_signal(sel, cfg_view, enable_fan_health))
     if len(enabled_ids) > MAX_TELEMETRY_SIGNALS:
         raise ConfigError("too many telemetry signals")
     telemetry = {
@@ -531,6 +686,8 @@ def normalise(raw: dict) -> dict:
         "faults":             faults,
         "telemetry":          telemetry,
         "mcu_pinmap":         pinmap,   # None if section omitted
+        # None when --enable-fan-health is off; else one block per actuator.
+        "fan_health":         fan_health if enable_fan_health else None,
     }
 
 
@@ -746,6 +903,25 @@ def emit_telemetry(t):
             "    }")
 
 
+def emit_fan_health(fh):
+    base_inner = ", ".join(
+        f"{{ .x = {p[0]}, .value0 = {p[1]} }}" for p in fh["baseline"])
+    base_lit = "{ " + base_inner + " }" if base_inner else "{0}"
+    return ("{ "
+            f".enable = {fh['enable']}, "
+            f".baseline_source = {fh['baseline_source']}, "
+            f".baseline = {base_lit}, "
+            f".baseline_count = {fh['baseline_count']}, "
+            f".stable_pwm_ticks = {fh['stable_pwm_ticks']}, "
+            f".stable_pwm_tolerance = {fh['stable_pwm_tolerance']}, "
+            f".stable_rpm_ticks = {fh['stable_rpm_ticks']}, "
+            f".stable_rpm_tolerance_pct = {fh['stable_rpm_tolerance_pct']}, "
+            f".min_points_observed = {fh['min_points_observed']}, "
+            f".aging_pct = {fh['aging_pct']}, "
+            f".degraded_pct = {fh['degraded_pct']}, "
+            f".failing_pct = {fh['failing_pct']} }}")
+
+
 def emit_pinmap(pinmap, prefix="esp32"):
     """Render the optional `<prefix>_pinmap_t G_<PREFIX>_PINMAP` block.
     Caller is responsible for emitting the matching `#include`.
@@ -831,6 +1007,12 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path="",
     out.append("    .telemetry =")
     out.append(emit_telemetry(cfg["telemetry"]) + ",")
 
+    if cfg.get("fan_health") is not None:
+        out.append("    .fan_health = {")
+        for fh in cfg["fan_health"]:
+            out.append("        " + emit_fan_health(fh) + ",")
+        out.append("    },")
+
     out.append("};")
     out.append("")
     if cfg.get("mcu_pinmap") is not None:
@@ -851,11 +1033,15 @@ def main(argv=None):
                    help="Platform prefix for the emitted mcu_pinmap struct, "
                         "symbol, and header (esp32 -> esp32_pinmap_t "
                         "G_ESP32_PINMAP / esp32_pinmap.h)")
+    p.add_argument("--enable-fan-health", action="store_true",
+                   help="Mirror the THERMALCORE_ENABLE_FAN_HEALTH compile "
+                        "gate: parse and emit per-actuator fan_health blocks "
+                        "(Stage 17, PRD Appendix C)")
     args = p.parse_args(argv)
 
     src = Path(args.config)
     raw = json.loads(src.read_text())
-    cfg = normalise(raw)
+    cfg = normalise(raw, enable_fan_health=args.enable_fan_health)
     if args.pinmap_prefix == "ch32":
         validate_ch32_pinmap(cfg.get("mcu_pinmap"))
     text = emit_static(cfg, symbol=args.symbol, source_path=str(src),

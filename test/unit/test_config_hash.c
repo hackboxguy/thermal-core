@@ -86,6 +86,12 @@ static void init_minimal_valid(thermal_config_t *cfg)
     cfg->modifier_count = 0;
     memset(&cfg->faults,   0, sizeof(cfg->faults));
     memset(&cfg->telemetry, 0, sizeof(cfg->telemetry));
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* Compound region the field-by-field init above does not cover;
+     * the canonical hash encodes fan_health for every active actuator
+     * slot, so zero it like faults/telemetry. */
+    memset(&cfg->fan_health, 0, sizeof(cfg->fan_health));
+#endif
 }
 
 TEST_CASE(config_hash) {

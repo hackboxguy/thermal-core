@@ -809,10 +809,69 @@ static int signal_id_is_supported(const thermal_config_t *cfg, uint16_t sig) {
         default: return 0;
         }
     }
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    if (sig >= TSIG_FAN_HEALTH_BASE && sig < TSIG_FAN_HEALTH_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_FAN_HEALTH_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_FAN_HEALTH_BASE) & 0x0Fu);
+        if (slot >= cfg->actuator_count) return 0;
+        return (sub == TSIG_FAN_HEALTH_SUB_DELTA ||
+                sub == TSIG_FAN_HEALTH_SUB_SEVERITY ||
+                sub == TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE ||
+                sub == TSIG_FAN_HEALTH_SUB_CONFIDENCE);
+    }
+#endif
     return 0;
 }
 
 /* === Public API === */
+
+#if THERMALCORE_ENABLE_FAN_HEALTH
+/* Stage 17 (PRD Appendix C): semantic validation of the per-actuator
+ * fan-health baseline. The Linux loader and json2static.py do the
+ * structural parsing; the monotonicity / ordering / count invariants
+ * live here so a hand-built thermal_config_t is caught too. */
+static thermal_status_t validate_fan_health(const thermal_config_t *cfg) {
+    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+        const thermal_fan_health_cfg_t *fh = &cfg->fan_health[a];
+        if (!fh->enable) continue;
+        if (fh->baseline_count < 2 ||
+            fh->baseline_count > THERMAL_MAX_FAN_HEALTH_POINTS) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        for (uint8_t p = 0; p < fh->baseline_count; p++) {
+            if (fh->baseline[p].x < 0 || fh->baseline[p].x > 255) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+            if (fh->baseline[p].value0 < 1 || fh->baseline[p].value0 > 65535) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+            if (p > 0) {
+                /* PWM strictly ascending; RPM monotonic non-decreasing. */
+                if (fh->baseline[p].x <= fh->baseline[p - 1].x) {
+                    return THERMAL_ERR_INVALID_CONFIG;
+                }
+                if (fh->baseline[p].value0 < fh->baseline[p - 1].value0) {
+                    return THERMAL_ERR_INVALID_CONFIG;
+                }
+            }
+        }
+        /* Signed severity thresholds: 0 > aging > degraded > failing. */
+        if (!(0 > fh->aging_pct &&
+              fh->aging_pct > fh->degraded_pct &&
+              fh->degraded_pct > fh->failing_pct)) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (fh->stable_pwm_ticks == 0 || fh->stable_rpm_ticks == 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (fh->min_points_observed < 1 ||
+            fh->min_points_observed > fh->baseline_count) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+    }
+    return THERMAL_OK;
+}
+#endif /* THERMALCORE_ENABLE_FAN_HEALTH */
 
 thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
     if (!cfg) return THERMAL_ERR_INVALID_ARG;
@@ -850,6 +909,10 @@ thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
     if ((s = validate_fault_detectors(cfg)) != THERMAL_OK) return s;
     if ((s = validate_state_pwm_references(cfg)) != THERMAL_OK) return s;
     if ((s = validate_telemetry(cfg)) != THERMAL_OK) return s;
+
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    if ((s = validate_fan_health(cfg)) != THERMAL_OK) return s;
+#endif
 
     return THERMAL_OK;
 }

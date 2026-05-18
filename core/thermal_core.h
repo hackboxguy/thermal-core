@@ -12,6 +12,7 @@
 #include "thermal_types.h"
 #include "thermal_platform.h"
 #include "thermal_commands.h"
+#include "thermal_fan_health.h"   /* compile-gated; empty when off */
 
 /* === Per-sensor config === */
 typedef struct {
@@ -131,6 +132,12 @@ typedef struct {
     uint8_t  modifier_count;
     thermal_fault_detection_cfg_t faults;
     thermal_telemetry_cfg_t telemetry;
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* Stage 17 (PRD Appendix C): per-actuator fan-health detector
+     * config, indexed by actuator slot. Compile-gated -- absent on
+     * MCU builds, which keeps the v1 thermal_config_t layout intact. */
+    thermal_fan_health_cfg_t fan_health[THERMAL_MAX_ACTUATORS];
+#endif
 } thermal_config_t;
 
 /* === v1 public API (PRD §4.3 lines 470-482) ===

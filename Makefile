@@ -263,6 +263,30 @@ build/test/test_json2static_roundtrip: \
 	    support/sha256.c support/thermal_config_hash.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Stage 17: fan-health config round-trip test ---
+# json2static.py --enable-fan-health emits the fan_health array; the
+# JSON loader parses the same config; both must hash byte-identical.
+build/test/generated/fan_health_static.c: \
+    configs/fan-health-demo.json tools/json2static.py
+	@mkdir -p build/test/generated
+	python3 tools/json2static.py --enable-fan-health -o $@ configs/fan-health-demo.json
+
+build/test/test_fan_health_roundtrip: \
+    test/unit/test_fan_health_roundtrip.c test/unit/harness.h \
+    build/test/generated/fan_health_static.c \
+    platform/linux/config_jsmn.c platform/linux/config_jsmn.h \
+    platform/linux/jsmn.c platform/linux/jsmn.h \
+    platform/linux/runtime_cfg.h \
+    support/sha256.c support/thermal_config_hash.c support/thermal_config_hash.h \
+    core/thermal_config.h $(CORE_ARCHIVE)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/linux -I support \
+	    -o $@ test/unit/test_fan_health_roundtrip.c \
+	    build/test/generated/fan_health_static.c \
+	    platform/linux/config_jsmn.c platform/linux/jsmn.c \
+	    support/sha256.c support/thermal_config_hash.c \
+	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
+
 # --- Smoke: spawn thermalcored + drive ticks + verify telemetry ---
 smoke: build test/smoke/test_thermalcored_smoke.py test/smoke/smoke-config.json
 	@python3 test/smoke/test_thermalcored_smoke.py

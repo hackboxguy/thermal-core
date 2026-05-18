@@ -458,4 +458,105 @@ TEST_CASE(config_jsmn) {
         }
     }
 #endif  /* Scenario 17 */
+
+    /* === Scenarios 18-23: per-actuator fan_health block (Stage 17) ===
+     * BASE has two %s slots: an optional ", \"tach\":..." key and an
+     * optional ", \"fan_health\":{...}" block on the single actuator. */
+    {
+        static const char *BASE =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\",\"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\",\"pwm_min\":80,"
+            "                  \"pwm_max\":255,\"state_pwm\":[0,100,160,220,255]"
+            "%s%s }],"
+            "  \"zones\":[{ \"name\":\"z\",\"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\",\"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\",\"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":90000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"critical\","
+            "                           \"cooling_state\":3}] }] }";
+        const char *TACH = ", \"tach\":\"/sys/x/fan1_input\"";
+        char buf[2048];
+
+        /* 18: a valid fan_health block loads cleanly. */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[128,1850],[255,2900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        {
+            thermal_status_t s = thermal_config_jsmn_parse(buf, strlen(buf),
+                                                           &cfg, NULL,
+                                                           err, sizeof(err));
+            if (s != THERMAL_OK) {
+                fprintf(stderr, "scenario 18: status=%d err='%s'\n", (int)s, err);
+            }
+            EXPECT_STATUS_OK(s);
+            EXPECT_EQ(cfg.fan_health[0].enable, 1);
+            EXPECT_EQ(cfg.fan_health[0].baseline_count, 3);
+        }
+
+        /* 19: a one-point baseline is rejected (needs >= 2 points). */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":1,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_CONFIG);
+
+        /* 20: baseline PWM values not strictly ascending (duplicate). */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[64,1850],[255,2900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_CONFIG);
+
+        /* 21: baseline RPM not monotonic non-decreasing. */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[128,800],[255,2900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_CONFIG);
+
+        /* 22: severity thresholds violate 0 > aging > degraded > failing. */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[128,1850],[255,2900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-20,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_CONFIG);
+
+        /* 23: an enabled fan_health block on a tachless actuator. */
+        snprintf(buf, sizeof(buf), BASE, "",   /* no tach key */
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[128,1850],[255,2900]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_ARG);
+    }
 }

@@ -563,4 +563,62 @@ TEST_CASE(validate_config) {
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
     #undef MAKE_MODIFIER_CONFIG
+
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* ====================================================================
+     * Fan-health rules (Stage 17, PRD Appendix C) -- validate_fan_health
+     * ==================================================================== */
+
+    #define MAKE_FAN_HEALTH_CONFIG(c) do {                                 \
+        make_valid_config(&(c));                                           \
+        thermal_fan_health_cfg_t *fh = &(c).fan_health[0];                 \
+        fh->enable = 1;                                                    \
+        fh->baseline_source = THERMAL_FAN_BASELINE_SRC_FIELD;              \
+        fh->baseline[0].x = 64;  fh->baseline[0].value0 = 900;             \
+        fh->baseline[1].x = 128; fh->baseline[1].value0 = 1850;            \
+        fh->baseline[2].x = 255; fh->baseline[2].value0 = 2900;            \
+        fh->baseline_count = 3;                                            \
+        fh->stable_pwm_ticks = 300;  fh->stable_pwm_tolerance = 2;         \
+        fh->stable_rpm_ticks = 50;   fh->stable_rpm_tolerance_pct = 5;     \
+        fh->min_points_observed = 2;                                       \
+        fh->aging_pct = -5; fh->degraded_pct = -15; fh->failing_pct = -30; \
+    } while (0)
+
+    /* Positive baseline: a valid fan_health block returns OK. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    /* A one-point baseline is rejected (needs >= 2 points). */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].baseline_count = 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Baseline PWM not strictly ascending. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].baseline[1].x = 64;        /* equals baseline[0].x */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Baseline RPM not monotonic non-decreasing. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].baseline[1].value0 = 800;  /* below baseline[0].value0 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Severity thresholds violate 0 > aging > degraded > failing. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].aging_pct = -20;           /* not > degraded (-15) */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* min_points_observed past the baseline point count. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].min_points_observed = 4;   /* baseline_count = 3 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* A disabled block carries no baseline and is not validated. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].enable = 0;
+    cfg.fan_health[0].baseline_count = 0;        /* would fail if validated */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    #undef MAKE_FAN_HEALTH_CONFIG
+#endif /* THERMALCORE_ENABLE_FAN_HEALTH */
 }

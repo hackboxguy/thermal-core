@@ -25,6 +25,10 @@
  *   9. telemetry: enable (u8), period_ticks (u16 LE),
  *      enabled_signal_ids[0..MAX-1] (each u16 LE),
  *      enabled_signal_count (u8)
+ *  10. fan_health[0..MAX_ACTUATORS-1] field-by-field, zero-filled
+ *      past actuator_count -- only when THERMALCORE_ENABLE_FAN_HEALTH
+ *      is defined (Stage 17, PRD Appendix C). Compiled out, this
+ *      stage is absent and the digest is unchanged from v1.
  */
 #include "thermal_config_hash.h"
 
@@ -253,6 +257,37 @@ static void w_fault_detector(sha256_ctx_t *s, const thermal_fault_detector_cfg_t
     w_u16(s, f->correlated_context_id);
 }
 
+#if THERMALCORE_ENABLE_FAN_HEALTH
+static void w_fan_health(sha256_ctx_t *s, const thermal_fan_health_cfg_t *f,
+                         int active)
+{
+    if (!active) {
+        w_u8(s, 0); w_u8(s, 0);
+        for (size_t i = 0; i < THERMAL_MAX_FAN_HEALTH_POINTS; i++) {
+            w_curve_point(s, NULL, 0);
+        }
+        w_u8(s, 0);
+        w_u16(s, 0); w_u8(s, 0); w_u16(s, 0); w_u8(s, 0);
+        w_u8(s, 0); w_u8(s, 0); w_u8(s, 0); w_u8(s, 0);
+        return;
+    }
+    w_u8(s, f->enable);
+    w_u8(s, f->baseline_source);
+    for (size_t i = 0; i < THERMAL_MAX_FAN_HEALTH_POINTS; i++) {
+        w_curve_point(s, &f->baseline[i], i < f->baseline_count);
+    }
+    w_u8 (s, f->baseline_count);
+    w_u16(s, f->stable_pwm_ticks);
+    w_u8 (s, f->stable_pwm_tolerance);
+    w_u16(s, f->stable_rpm_ticks);
+    w_u8 (s, f->stable_rpm_tolerance_pct);
+    w_u8 (s, f->min_points_observed);
+    w_u8 (s, (uint8_t)f->aging_pct);
+    w_u8 (s, (uint8_t)f->degraded_pct);
+    w_u8 (s, (uint8_t)f->failing_pct);
+}
+#endif /* THERMALCORE_ENABLE_FAN_HEALTH */
+
 /* === Public entry point ============================================ */
 
 void thermal_config_hash(const thermal_config_t *cfg,
@@ -300,6 +335,12 @@ void thermal_config_hash(const thermal_config_t *cfg,
                 cfg->telemetry.enabled_signal_count,
                 THERMAL_MAX_TELEMETRY_SIGNALS);
     w_u8(&s, cfg->telemetry.enabled_signal_count);
+
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    for (size_t i = 0; i < THERMAL_MAX_ACTUATORS; i++) {
+        w_fan_health(&s, &cfg->fan_health[i], i < cfg->actuator_count);
+    }
+#endif
 
     sha256_final(&s, out);
 }

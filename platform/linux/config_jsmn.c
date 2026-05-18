@@ -485,10 +485,223 @@ static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
     return THERMAL_OK;
 }
 
+#if THERMALCORE_ENABLE_FAN_HEALTH
+/* =============================================================== */
+/* Pass A — per-actuator fan-health block (Stage 17, PRD App C)      */
+/* =============================================================== */
+
+static const enum_map_t FAN_BASELINE_SRC_MAP[] = {
+    { "field",   THERMAL_FAN_BASELINE_SRC_FIELD   },
+    { "factory", THERMAL_FAN_BASELINE_SRC_FACTORY },
+    { "model",   THERMAL_FAN_BASELINE_SRC_MODEL   },
+    { NULL, 0 }
+};
+
+/* Parse the { "aging":, "degraded":, "failing": } severity-threshold
+ * object. Values are signed whole percent; the monotonic ordering
+ * (0 > aging > degraded > failing) is checked by validate_config. */
+static thermal_status_t parse_severity_pct(parse_ctx_t *ctx, int obj_idx,
+                                           thermal_fan_health_cfg_t *out,
+                                           const char *path)
+{
+    if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
+    }
+    unsigned int seen = 0;
+    enum { F_A = 1u << 0, F_D = 1u << 1, F_F = 1u << 2 };
+    int n = ctx->toks[obj_idx].size;
+    int k = obj_idx + 1;
+    for (int i = 0; i < n; i++) {
+        int v = k + 1;
+        char sub_path[PATH_MAX_LEN];
+        char key_str[64];   /* fan-health JSON keys exceed THERMAL_NAME_MAX */
+        if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
+        }
+        snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
+        long long val;
+        int8_t *dst = NULL;
+        if      (tok_str_eq(ctx, k, "aging"))    { dst = &out->aging_pct;    seen |= F_A; }
+        else if (tok_str_eq(ctx, k, "degraded")) { dst = &out->degraded_pct; seen |= F_D; }
+        else if (tok_str_eq(ctx, k, "failing"))  { dst = &out->failing_pct;  seen |= F_F; }
+        else {
+            return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                            "unknown key '%s'", key_str);
+        }
+        if (tok_parse_int_range(ctx, v, -100, -1, &val) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                           "expected integer in [-100, -1]");
+        }
+        *dst = (int8_t)val;
+        k = skip_token(ctx->toks, v);
+    }
+    if ((seen & (F_A | F_D | F_F)) != (F_A | F_D | F_F)) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "required field missing");
+    }
+    return THERMAL_OK;
+}
+
+/* Parse a per-actuator `fan_health` block. Structural parsing only:
+ * field types, ranges, and required keys. The semantic baseline
+ * invariants (monotonicity, threshold ordering, point count) are
+ * checked by thermal_core_validate_config. */
+static thermal_status_t parse_fan_health(parse_ctx_t *ctx, int obj_idx,
+                                         thermal_fan_health_cfg_t *out,
+                                         const char *path)
+{
+    if (ctx->toks[obj_idx].type != JSMN_OBJECT) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
+    }
+    memset(out, 0, sizeof(*out));
+
+    unsigned int seen = 0;
+    enum { F_SRC = 1u << 0, F_BASE = 1u << 1, F_PT = 1u << 2, F_PTOL = 1u << 3,
+           F_RT = 1u << 4, F_RTOL = 1u << 5, F_MIN = 1u << 6, F_SEV = 1u << 7 };
+    int saw_enable = 0, enable = 0;
+
+    int n = ctx->toks[obj_idx].size;
+    int k = obj_idx + 1;
+    for (int i = 0; i < n; i++) {
+        int v = k + 1;
+        char sub_path[PATH_MAX_LEN];
+        char key_str[64];   /* fan-health JSON keys exceed THERMAL_NAME_MAX */
+        if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
+        }
+        snprintf(sub_path, sizeof(sub_path), "%s.%s", path, key_str);
+
+        if (tok_str_eq(ctx, k, "enable")) {
+            if (tok_parse_bool(ctx, v, &enable) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected boolean");
+            }
+            saw_enable = 1;
+        } else if (tok_str_eq(ctx, k, "fan_model")) {
+            /* Tooling-only compatibility metadata (PRD C.3): validated
+             * as a string here, not carried into the core config. */
+            char nm[64];
+            if (tok_str_copy(ctx, v, nm, sizeof(nm)) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "string too long or wrong type");
+            }
+        } else if (tok_str_eq(ctx, k, "baseline_source")) {
+            int val;
+            if (enum_lookup(ctx, v, FAN_BASELINE_SRC_MAP, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "unknown enum");
+            }
+            out->baseline_source = (uint8_t)val;
+            seen |= F_SRC;
+        } else if (tok_str_eq(ctx, k, "baseline")) {
+            if (ctx->toks[v].type != JSMN_ARRAY) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected array");
+            }
+            int cn = ctx->toks[v].size;
+            if (cn > THERMAL_MAX_FAN_HEALTH_POINTS) {
+                return set_err(ctx, THERMAL_ERR_NO_SPACE, sub_path,
+                               "too many baseline points");
+            }
+            int ck = v + 1;
+            for (int j = 0; j < cn; j++) {
+                char elem_path[PATH_MAX_LEN + 32];
+                snprintf(elem_path, sizeof(elem_path), "%s[%d]", sub_path, j);
+                if (!tok_in_range(ctx, ck) ||
+                    ctx->toks[ck].type != JSMN_ARRAY ||
+                    ctx->toks[ck].size != 2) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                                   "expected [pwm, rpm] pair");
+                }
+                int p_pwm = ck + 1;
+                int p_rpm = skip_token(ctx->toks, p_pwm);
+                long long pwm_v, rpm_v;
+                if (tok_parse_int_range(ctx, p_pwm, 0, 255, &pwm_v) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                                   "pwm must be an integer in [0, 255]");
+                }
+                if (tok_parse_int_range(ctx, p_rpm, 1, 65535, &rpm_v) != 0) {
+                    return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                                   "rpm must be an integer in [1, 65535]");
+                }
+                out->baseline[j].x      = (int32_t)pwm_v;
+                out->baseline[j].value0 = (int32_t)rpm_v;
+                out->baseline[j].value1 = 0;
+                ck = skip_token(ctx->toks, ck);
+            }
+            out->baseline_count = (uint8_t)cn;
+            seen |= F_BASE;
+        } else if (tok_str_eq(ctx, k, "stable_pwm_ticks")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 1, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [1, 65535]");
+            }
+            out->stable_pwm_ticks = (uint16_t)val;
+            seen |= F_PT;
+        } else if (tok_str_eq(ctx, k, "stable_pwm_tolerance")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, 255, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [0, 255]");
+            }
+            out->stable_pwm_tolerance = (uint8_t)val;
+            seen |= F_PTOL;
+        } else if (tok_str_eq(ctx, k, "stable_rpm_ticks")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 1, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [1, 65535]");
+            }
+            out->stable_rpm_ticks = (uint16_t)val;
+            seen |= F_RT;
+        } else if (tok_str_eq(ctx, k, "stable_rpm_tolerance_pct")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, 100, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [0, 100]");
+            }
+            out->stable_rpm_tolerance_pct = (uint8_t)val;
+            seen |= F_RTOL;
+        } else if (tok_str_eq(ctx, k, "min_points_observed")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 1, THERMAL_MAX_FAN_HEALTH_POINTS,
+                                    &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [1, THERMAL_MAX_FAN_HEALTH_POINTS]");
+            }
+            out->min_points_observed = (uint8_t)val;
+            seen |= F_MIN;
+        } else if (tok_str_eq(ctx, k, "severity_pct")) {
+            thermal_status_t s = parse_severity_pct(ctx, v, out, sub_path);
+            if (s != THERMAL_OK) return s;
+            seen |= F_SEV;
+        } else {
+            return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                            "unknown key '%s'", key_str);
+        }
+        k = skip_token(ctx->toks, v);
+    }
+
+    out->enable = (uint8_t)(saw_enable && enable);
+    if (!out->enable) {
+        /* Disabled (or enable:false) -> no further fields required. */
+        return THERMAL_OK;
+    }
+
+    unsigned int required = F_SRC | F_BASE | F_PT | F_PTOL |
+                            F_RT | F_RTOL | F_MIN | F_SEV;
+    if ((seen & required) != required) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                       "required field missing");
+    }
+    return THERMAL_OK;
+}
+#endif /* THERMALCORE_ENABLE_FAN_HEALTH */
+
 static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                                        int obj_idx,
                                        uint8_t slot,
-                                       thermal_actuator_cfg_t *out,
+                                       thermal_config_t *cfg,
                                        runtime_actuator_cfg_t *r_out,
                                        const char *path)
 {
@@ -496,9 +709,15 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected object");
     }
 
+    thermal_actuator_cfg_t *out = &cfg->actuators[slot];
+
     unsigned int seen = 0;
     enum { F_ID = 1u << 0, F_NAME = 1u << 1, F_PMIN = 1u << 2,
            F_PMAX = 1u << 3, F_STATES = 1u << 4 };
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    int saw_tach = 0, saw_fan_health = 0;
+    memset(&cfg->fan_health[slot], 0, sizeof(cfg->fan_health[slot]));
+#endif
 
     int n = ctx->toks[obj_idx].size;
     int k = obj_idx + 1;
@@ -587,6 +806,9 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                 }
             }
         } else if (tok_str_eq(ctx, k, "tach")) {
+#if THERMALCORE_ENABLE_FAN_HEALTH
+            saw_tach = 1;
+#endif
             if (r_out) {
                 if (tok_str_copy(ctx, v, r_out->tach, sizeof(r_out->tach)) != 0) {
                     return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
@@ -607,6 +829,14 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                                "expected integer in [0, 65535]");
             }
             if (r_out) r_out->tach_pulses_per_rev = (uint16_t)val;
+#if THERMALCORE_ENABLE_FAN_HEALTH
+        } else if (tok_str_eq(ctx, k, "fan_health")) {
+            thermal_status_t s = parse_fan_health(ctx, v,
+                                                  &cfg->fan_health[slot],
+                                                  sub_path);
+            if (s != THERMAL_OK) return s;
+            saw_fan_health = 1;
+#endif
         } else {
             return set_errf(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
                             "unknown key '%s'", key_str);
@@ -618,6 +848,14 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
         (F_ID | F_NAME | F_PMIN | F_PMAX | F_STATES)) {
         return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "required field missing");
     }
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* PRD C.4: an enabled fan-health block needs a tach source to
+     * compare against -- reject it on a tachless actuator. */
+    if (saw_fan_health && cfg->fan_health[slot].enable && !saw_tach) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                       "fan_health enabled but actuator has no tach source");
+    }
+#endif
     return THERMAL_OK;
 }
 
@@ -1513,6 +1751,28 @@ static thermal_status_t telemetry_expand_one(parse_ctx_t *ctx,
         }
         return THERMAL_OK;
     }
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* fan_health_* expands to the four fan-health sub-signals per
+     * actuator slot (Stage 17, PRD Appendix C). */
+    if (strcmp(sel, "fan_health_*") == 0) {
+        if (cfg->actuator_count == 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                           "wildcard expanded to nothing");
+        }
+        for (uint8_t s = 0; s < cfg->actuator_count; s++) {
+            thermal_status_t r;
+            if ((r = telemetry_append(ctx, t, TSIG_FAN_HEALTH_DELTA(s),
+                                      path)) != THERMAL_OK) return r;
+            if ((r = telemetry_append(ctx, t, TSIG_FAN_HEALTH_SEVERITY(s),
+                                      path)) != THERMAL_OK) return r;
+            if ((r = telemetry_append(ctx, t, TSIG_FAN_HEALTH_BASELINE_SOURCE(s),
+                                      path)) != THERMAL_OK) return r;
+            if ((r = telemetry_append(ctx, t, TSIG_FAN_HEALTH_CONFIDENCE(s),
+                                      path)) != THERMAL_OK) return r;
+        }
+        return THERMAL_OK;
+    }
+#endif
 
     /* Named selectors -------------------------------------------- */
     if (strcmp(sel, "speed_kmh") == 0) {
@@ -1810,7 +2070,7 @@ static thermal_status_t pass_a_top_level(parse_ctx_t *ctx,
                 snprintf(elem_path, sizeof(elem_path), "actuators[%d]", j);
                 runtime_actuator_cfg_t *r = runtime ? &runtime->actuators[j] : NULL;
                 thermal_status_t s = parse_actuator(ctx, ak, (uint8_t)j,
-                                                    &cfg->actuators[j], r, elem_path);
+                                                    cfg, r, elem_path);
                 if (s != THERMAL_OK) return s;
                 ak = skip_token(ctx->toks, ak);
             }

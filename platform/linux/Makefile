@@ -2,8 +2,15 @@
 # Builds the thermalcored daemon.
 
 CC ?= gcc
+
+# Stage 17: the daemon must be built with the same fan-health compile
+# flag as the core archive it links (../../build/core/libthermal_core.a,
+# built by the root Makefile) -- otherwise thermal_config_t differs
+# between the two and the layouts disagree.
+FAN_HEALTH_FLAG = -DTHERMALCORE_ENABLE_FAN_HEALTH=1
+
 CFLAGS_BASE = -std=c99 -Wall -Wextra -Werror -pedantic \
-              -I ../../core -I ../../protocol -I . $(CFLAGS_EXTRA)
+              -I ../../core -I ../../protocol -I . $(FAN_HEALTH_FLAG) $(CFLAGS_EXTRA)
 
 BUILD_DIR  = ../../build/platform-linux
 CORE_ARCH  = ../../build/core/libthermal_core.a
