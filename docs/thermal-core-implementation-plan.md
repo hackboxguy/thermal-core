@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.11
+**Document status:** Draft v0.12
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.15)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.16)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -675,7 +675,7 @@ Open `test/replay/golden/<name>.csv.diff` (CI uploads the diff as a job artifact
 This is the principal regression-detection lever — the moment a math change has any unintended ripple, the diff makes it visible in the PR.
 
 ### 7.3 A scenario assertion failed
-The assertion text says what was expected. The scenario's telemetry CSV is in CI artifacts; open it in `thermalcore-probe --plot` to see the trajectory. Most scenario failures are simulator-plant interaction bugs that unit tests can't catch.
+The assertion text says what was expected. The scenario's telemetry CSV is in CI artifacts; open it to see the trajectory (the `docs/paper/figures/plots/` scripts render the canonical projection). Most scenario failures are simulator-plant interaction bugs that unit tests can't catch.
 
 ### 7.4 A determinism test failed
 The two telemetry CSVs have different SHA-256. Diff them with `csvdiff`. The first row where they diverge is the tick where nondeterminism crept in. Common causes: uninitialized memory (caught by ASan in a later CI job), accidental float math, hash-table iteration order.
@@ -759,4 +759,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.11*
+*End of implementation plan v0.12*
