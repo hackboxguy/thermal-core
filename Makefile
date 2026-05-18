@@ -45,7 +45,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 build-ch32 paper-figures clean
+.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 build-ch32 flash-ch32 paper-figures clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -814,6 +814,14 @@ build-ch32:
 	$(MAKE) -C platform/ch32v003 clean
 	$(MAKE) -C platform/ch32v003 build CH32_TELEMETRY=$(CH32_TELEMETRY)
 	python3 tools/check_ch32_size_budget.py platform/ch32v003/main.elf
+
+# Build + flash the CH32V003 firmware over a WCH-LinkE. Pass the
+# same CH32_TELEMETRY value you intend to run: ch32fun relinks the
+# firmware from source on every invocation, so `make flash-ch32`
+# alone would flash the default (non-telemetry) variant regardless
+# of an earlier `build-ch32 CH32_TELEMETRY=1`.
+flash-ch32:
+	$(MAKE) -C platform/ch32v003 flash CH32_TELEMETRY=$(CH32_TELEMETRY)
 
 # --- White-paper figure-regeneration pipeline (Stage 16) -------
 # Drives the canonical host scenarios that back the paper's

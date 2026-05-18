@@ -174,7 +174,7 @@ sudo apt-get install gcc-riscv64-unknown-elf            # RV32EC cross-toolchain
 git submodule update --init platform/ch32v003/ch32fun   # vendored ch32fun
 
 make build-ch32                                          # cross-compile + size-budget gate
-cd platform/ch32v003 && make flash                       # flash via WCH-LinkE
+make flash-ch32                                          # build + flash via WCH-LinkE
 ```
 
 `make build-ch32` cross-compiles the firmware and asserts the
@@ -202,15 +202,26 @@ the host scenario runner and determinism gate produce. Wire a
 USB-serial adapter to USART1 (PD5 TX / PD6 RX) and capture it:
 
 ```bash
-make build-ch32 CH32_TELEMETRY=1                   # telemetry build
-cd platform/ch32v003 && make flash
-tio /dev/ttyUSB0 -b 115200 -l /tmp/ch32-telemetry.csv   # or screen/cat
+make build-ch32 CH32_TELEMETRY=1                   # build + size gate
+make flash-ch32 CH32_TELEMETRY=1                   # build + flash via WCH-LinkE
+tio /dev/ttyUSB0 -b 115200 -l /tmp/ch32-telemetry.csv
 ```
+
+Pass `CH32_TELEMETRY=1` to **both** commands: ch32fun relinks the
+firmware from source on every invocation, so `make flash-ch32`
+without it would flash the default (non-telemetry) variant.
 
 The capture is a canonical CSV you can analyse exactly like the
 ESP32 bench captures. The tap is transmit-only (RX is wired and
 reserved); the SWIO status line above is independent and stays
 available.
+
+The live `tio` view may look stair-stepped — the canonical CSV
+uses `\n` line endings (no `\r`), and `tio`'s raw mode renders
+them without a carriage return. This is cosmetic: the logged
+`-l` file is correct, LF-only canonical CSV (confirm with
+`cat`). For a tidy live view, `tail -f` the log from a second
+terminal, where a normal terminal supplies the carriage return.
 
 **Status:** the firmware is verified to cross-compile, link, and
 fit the part -- both the default and `CH32_TELEMETRY=1` builds are
