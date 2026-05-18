@@ -5,10 +5,13 @@
  *
  * THERMALCORE_CH32_TELEMETRY (compile flag, default 0):
  *   0 -- ch32_log_event_cb is a no-op; telemetry is not emitted.
- *   1 -- ch32_log_event_cb / ch32_telemetry_emit_cb format one
- *        canonical CSV row each (test/parity/canonical.c, the same
- *        serializer the host parity binary and the scenario runner
- *        use) and push it over USART1 via bsp_ch32_uart.
+ *   1 -- ch32_log_event_cb / ch32_telemetry_emit_cb only *enqueue*
+ *        a compact record (they run inside thermal_core_step() and
+ *        must return promptly -- PRD callback contract).
+ *        ch32_telemetry_drain(), called from the main loop after
+ *        the core step, formats the queued records as canonical CSV
+ *        (test/parity/canonical.c) and pushes them over USART1, so
+ *        the blocking UART writes stay out of the core's work path.
  */
 #ifndef CH32_CALLBACKS_H
 #define CH32_CALLBACKS_H
@@ -28,6 +31,11 @@ void ch32_log_event_cb(uint32_t ts_ms, uint16_t code,
 /* thermal_core_callbacks_t.telemetry_emit (telemetry build only) */
 void ch32_telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
                             int32_t value);
+
+/* Drain queued telemetry records to USART1 as canonical CSV.
+ * Call once per tick from the main loop, after thermal_core_step()
+ * has returned -- never from inside a callback. */
+void ch32_telemetry_drain(void);
 #endif
 
 #endif /* CH32_CALLBACKS_H */

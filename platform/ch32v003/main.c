@@ -63,15 +63,24 @@ int main(void)
     SystemInit();
     Delay_Ms(100);
 
-    /* Bring up the BSPs from the JSON-driven pin map. */
+    /* Bring up the BSPs from the JSON-driven pin map.  A non-zero
+     * return is a slot or pin the BSP cannot honour -- halt rather
+     * than run a regulator that cannot drive its hardware. */
+    int bsp_status = 0;
     for (uint8_t i = 0; i < G_CH32_PINMAP.actuator_count; i++) {
-        bsp_ch32_pwm_init(i, G_CH32_PINMAP.actuators[i].pwm_gpio,
+        bsp_status |= bsp_ch32_pwm_init(i,
+                          G_CH32_PINMAP.actuators[i].pwm_gpio,
                           G_CH32_PINMAP.actuators[i].pwm_freq_hz);
-        bsp_ch32_tach_init(i, G_CH32_PINMAP.actuators[i].tach_gpio);
+        bsp_status |= bsp_ch32_tach_init(i,
+                          G_CH32_PINMAP.actuators[i].tach_gpio);
     }
     if (G_CH32_PINMAP.sensor_count > 0) {
-        bsp_ch32_sensor_init(G_CH32_PINMAP.sensors[0].onewire_gpio,
-                             G_CH32_PINMAP.sensor_count);
+        bsp_status |= bsp_ch32_sensor_init(
+                          G_CH32_PINMAP.sensors[0].onewire_gpio,
+                          G_CH32_PINMAP.sensor_count);
+    }
+    if (bsp_status != 0) {
+        for (;;) { }                 /* BSP init failed: halt */
     }
 
 #if THERMALCORE_CH32_TELEMETRY
@@ -165,6 +174,13 @@ int main(void)
                 }
             }
         }
+
+#if THERMALCORE_CH32_TELEMETRY
+        /* Drain the queued telemetry records to USART1 here --
+         * outside thermal_core_step(), so the blocking UART writes
+         * never inflate the core's bounded per-tick work. */
+        ch32_telemetry_drain();
+#endif
 
 #if THERMALCORE_CH32_STATUS
         if (temp0_valid) {

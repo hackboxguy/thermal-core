@@ -605,6 +605,34 @@ def normalise_pinmap(raw_pinmap, sensors, actuators):
     }
 
 
+# CH32V003 silicon-fixed pins (ch32fun pin id = (port_index << 4) | pin).
+# TIM2 channel 1 is hardwired to PD4; EXTI line 0 to PD0.  The PWM and
+# tach pins are not free choices -- a wrong pin still builds and fits
+# the part but flashes a firmware that cannot drive PWM or count tach.
+# The 1-Wire pin is bit-banged and therefore unconstrained.
+CH32_PWM_PIN_PD4  = 52
+CH32_TACH_PIN_PD0 = 48
+
+
+def validate_ch32_pinmap(pinmap):
+    """Reject CH32V003 pin assignments the silicon cannot honour.
+    Called for `--pinmap-prefix ch32` builds so a JSON pin typo
+    fails `make build-ch32` rather than flashing dead firmware."""
+    if pinmap is None:
+        return
+    for i, a in enumerate(pinmap["actuators"]):
+        if a["pwm_gpio"] != CH32_PWM_PIN_PD4:
+            raise ConfigError(
+                f"mcu_pinmap.actuators[{i}]: CH32V003 pwm_gpio must be "
+                f"PD4 ({CH32_PWM_PIN_PD4}) -- TIM2_CH1 is hardwired "
+                f"there; got {a['pwm_gpio']}")
+        if a["tach_gpio"] != CH32_TACH_PIN_PD0:
+            raise ConfigError(
+                f"mcu_pinmap.actuators[{i}]: CH32V003 tach_gpio must be "
+                f"PD0 ({CH32_TACH_PIN_PD0}) -- EXTI line 0 is hardwired "
+                f"there; got {a['tach_gpio']}")
+
+
 # === Emitter =========================================================
 
 def emit_name(s):
@@ -828,6 +856,8 @@ def main(argv=None):
     src = Path(args.config)
     raw = json.loads(src.read_text())
     cfg = normalise(raw)
+    if args.pinmap_prefix == "ch32":
+        validate_ch32_pinmap(cfg.get("mcu_pinmap"))
     text = emit_static(cfg, symbol=args.symbol, source_path=str(src),
                        pinmap_prefix=args.pinmap_prefix)
 
