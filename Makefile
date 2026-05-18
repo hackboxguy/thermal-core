@@ -812,16 +812,21 @@ build-ch32:
 	    exit 0; \
 	fi
 	$(MAKE) -C platform/ch32v003 clean
-	$(MAKE) -C platform/ch32v003 build CH32_TELEMETRY=$(CH32_TELEMETRY)
+	$(MAKE) -C platform/ch32v003 build \
+	    CH32_TELEMETRY=$(CH32_TELEMETRY) \
+	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
 	python3 tools/check_ch32_size_budget.py platform/ch32v003/main.elf
 
 # Build + flash the CH32V003 firmware over a WCH-LinkE. Pass the
 # same CH32_TELEMETRY value you intend to run: ch32fun relinks the
 # firmware from source on every invocation, so `make flash-ch32`
 # alone would flash the default (non-telemetry) variant regardless
-# of an earlier `build-ch32 CH32_TELEMETRY=1`.
+# of an earlier `build-ch32 CH32_TELEMETRY=1`. CH32_TELEMETRY_BAUD
+# overrides the default 9600 telemetry baud (e.g. =115200).
 flash-ch32:
-	$(MAKE) -C platform/ch32v003 flash CH32_TELEMETRY=$(CH32_TELEMETRY)
+	$(MAKE) -C platform/ch32v003 flash \
+	    CH32_TELEMETRY=$(CH32_TELEMETRY) \
+	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
 
 # --- White-paper figure-regeneration pipeline (Stage 16) -------
 # Drives the canonical host scenarios that back the paper's

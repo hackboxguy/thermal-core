@@ -44,9 +44,13 @@ EXTRA_CFLAGS += -I. -I../../core -I../../test/parity -Igenerated \
                 -include ../../core/thermal_profile_tiny.h
 
 # Stage 18e: CH32_TELEMETRY=1 builds the canonical-CSV telemetry tap
-# (USART1 PD5/PD6) into the firmware.
+# (USART1 PD5/PD6) into the firmware. CH32_TELEMETRY_BAUD overrides
+# the default 9600 telemetry baud (e.g. CH32_TELEMETRY_BAUD=115200).
 ifeq ($(CH32_TELEMETRY),1)
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1
+endif
+ifdef CH32_TELEMETRY_BAUD
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
 endif
 
 include $(CH32FUN)/ch32fun.mk
