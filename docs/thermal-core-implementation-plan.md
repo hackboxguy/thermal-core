@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.12
+**Document status:** Draft v0.13
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.16)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.17)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -562,7 +562,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 ### Stage 16 — White paper integration
 **Deliverable:** Figure regeneration pipeline. `make -C docs/paper figures` runs the canonical scenarios, regenerates every matplotlib plot from fresh telemetry CSVs, rebuilds the PDF. Bench-rig photo, BOM table, scenario plots, benchmark tables.
 
-**Benchmark manifest** (`docs/paper/figures/manifest.yaml`): the load-bearing record of what each figure depends on. Each entry contains: scenario name, telemetry-CSV SHA-256, config canonical-hash, source git SHA used to generate the underlying data, and tool versions. The figure caption cites the *data SHA* (from the manifest), not the current commit. This way:
+**Benchmark manifest** (`docs/paper/figures/manifest.yaml`): the load-bearing record of what each figure depends on. Each entry contains: scenario name, telemetry-CSV SHA-256, config-file SHA-256, source git SHA used to generate the underlying data, and tool versions. The figure caption cites the *data SHA* (from the manifest), not the current commit. This way:
 - text-only paper edits don't make every figure look stale.
 - benchmark regeneration produces a manifest update committed alongside the new data.
 - the release workflow verifies caption SHAs match manifest entries (not the current commit).
@@ -759,4 +759,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.12*
+*End of implementation plan v0.13*

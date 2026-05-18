@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.16
+**Document status:** Draft v0.17
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -1014,9 +1014,9 @@ assert eventually zone_temp soc < 80000 within 120000
 assert no_faults except stall
 ```
 
-The scenario runner stores the command log, telemetry CSV, assertion result, git SHA, config hash, platform target, and tool versions beside each benchmark artifact. `config_hash` is SHA-256 over a canonical post-validation config representation, not raw JSON bytes, so equivalent key ordering and whitespace produce the same benchmark identity.
+The scenario runner drives each scenario, captures its telemetry to a canonical CSV, and evaluates the assertions to a pass/fail result. Scenario reproducibility is enforced by the determinism gate (`make determinism`): the captured CSV must be byte-identical run-to-run and across the GCC and Clang toolchains, compared by SHA-256. A per-scenario provenance sidecar (command log, git SHA, tool versions) is not produced in v1.
 
-The canonical config representation packs all `thermal_config_t` fields in declaration order, with strings null-terminated and unused tail bytes zeroed before hashing. Platform-only runtime fields are excluded unless they affect deterministic control behavior.
+A canonical config-hash encoding — all `thermal_config_t` fields packed in declaration order, strings null-terminated, unused tail bytes zeroed before hashing — is implemented in `support/thermal_config_hash.c` and verified by the `json2static` round-trip test (the JSON-loader path and the static-config path must hash equal). It is not, in v1, stored beside scenario artifacts; the white-paper figure manifest records a config-file SHA-256 over the JSON bytes instead (§9.2).
 
 ## 8. Reference Bench Rig (pinned)
 
@@ -1597,4 +1597,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.16*
+*End of PRD v0.17*
