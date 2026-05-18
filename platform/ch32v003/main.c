@@ -22,6 +22,7 @@
 #include "thermal_core.h"
 #include "thermal_config.h"
 #include "ch32_pinmap.h"
+#include "ch32_callbacks.h"
 #include "bsp_ch32_pwm.h"
 #include "bsp_ch32_tach.h"
 #include "bsp_ch32_sensor.h"
@@ -37,19 +38,17 @@
 #include <stdio.h>
 #endif
 
+/* Optional canonical-CSV telemetry tap over USART1 (Stage 18e),
+ * compile-gated by THERMALCORE_CH32_TELEMETRY (ch32_callbacks.h).
+ * Independent of the SWIO status line above -- different transport. */
+#if THERMALCORE_CH32_TELEMETRY
+#include "bsp_ch32_uart.h"
+#include "canonical.h"
+#endif
+
 /* Emitted by json2static.py from configs/ch32v003-standalone.json. */
 extern const thermal_config_t G_THERMAL_CFG;
 extern const ch32_pinmap_t    G_CH32_PINMAP;
-
-/* Headless: discrete state-transition events are not surfaced on a
- * STANDALONE node. A no-op keeps the core's callback contract
- * satisfied; telemetry_emit is left NULL (the core skips emit). */
-static void log_event_cb(uint32_t ts_ms, uint16_t code,
-                          uint32_t a1, uint32_t a2,
-                          uint32_t a3, uint32_t a4)
-{
-    (void)ts_ms; (void)code; (void)a1; (void)a2; (void)a3; (void)a4;
-}
 
 int main(void)
 {
@@ -67,12 +66,23 @@ int main(void)
                              G_CH32_PINMAP.sensor_count);
     }
 
+#if THERMALCORE_CH32_TELEMETRY
+    /* Bring up the telemetry UART and emit the canonical CSV header
+     * once, before any data rows. */
+    bsp_ch32_uart_init(115200);
+    bsp_ch32_uart_puts(THERMALCORE_CANONICAL_HEADER);
+#endif
+
     /* thermal_core_t is large relative to the 2 KB SRAM; main()
      * never returns, so a static local keeps it out of the stack. */
     static thermal_core_t core;
     thermal_core_callbacks_t cb;
-    cb.log_event      = log_event_cb;
+    cb.log_event = ch32_log_event_cb;
+#if THERMALCORE_CH32_TELEMETRY
+    cb.telemetry_emit = ch32_telemetry_emit_cb;
+#else
     cb.telemetry_emit = 0;
+#endif
     if (thermal_core_init(&core, &G_THERMAL_CFG, &cb) != THERMAL_OK) {
         for (;;) { }                 /* config rejected: halt */
     }

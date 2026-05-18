@@ -19,20 +19,35 @@ TARGET_MCU := CH32V003
 
 CH32FUN := ch32fun/ch32fun
 
-# Portable core sources, the generated static config, and the BSP
-# wrappers all compile alongside main.c (ch32fun.mk's $(TARGET).c).
-# No protocol/ -- a STANDALONE node does no wire I/O.
+# Portable core sources, the generated static config, the BSP
+# wrappers, the callback glue, and the shared canonical-CSV
+# serializer all compile alongside main.c (ch32fun.mk's $(TARGET).c).
+# No protocol/ -- a STANDALONE node does no wire I/O; the telemetry
+# tap (Stage 18e) emits canonical CSV *text*, not binary frames.
 CORE_SRCS        := $(wildcard ../../core/*.c)
 GENERATED_CONFIG := generated/ch32_config.c
-BSP_SRCS         := bsp_ch32_pwm.c bsp_ch32_tach.c bsp_ch32_sensor.c
+BSP_SRCS         := bsp_ch32_pwm.c bsp_ch32_tach.c bsp_ch32_sensor.c \
+                    bsp_ch32_uart.c
+# ch32_callbacks.c + canonical.c carry the telemetry tap; with
+# CH32_TELEMETRY unset they link but --gc-sections strips the
+# unreferenced telemetry/UART code, so the default firmware is
+# unaffected.
+TELEMETRY_SRCS   := ch32_callbacks.c ../../test/parity/canonical.c
 
-ADDITIONAL_C_FILES := $(GENERATED_CONFIG) $(CORE_SRCS) $(BSP_SRCS)
+ADDITIONAL_C_FILES := $(GENERATED_CONFIG) $(CORE_SRCS) $(BSP_SRCS) \
+                      $(TELEMETRY_SRCS)
 
 # -include force-applies the tiny build profile (PRD Appendix D.3):
 # the core's THERMAL_MAX_* maxima collapse to the constrained values
 # without editing core/thermal_config.h.
-EXTRA_CFLAGS += -I. -I../../core -Igenerated \
+EXTRA_CFLAGS += -I. -I../../core -I../../test/parity -Igenerated \
                 -include ../../core/thermal_profile_tiny.h
+
+# Stage 18e: CH32_TELEMETRY=1 builds the canonical-CSV telemetry tap
+# (USART1 PD5/PD6) into the firmware.
+ifeq ($(CH32_TELEMETRY),1)
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1
+endif
 
 include $(CH32FUN)/ch32fun.mk
 

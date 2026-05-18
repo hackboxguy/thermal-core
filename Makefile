@@ -800,6 +800,8 @@ build-esp32:
 # SKIPs cleanly when the RISC-V cross-compiler or the ch32fun
 # submodule is absent, so Linux-only devs are unaffected (mirrors
 # build-esp32's ESP-IDF skip).
+# Stage 18e: `make build-ch32 CH32_TELEMETRY=1` builds the
+# canonical-CSV telemetry tap (USART1) into the firmware.
 build-ch32:
 	@if ! command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then \
 	    echo "SKIP: riscv64-unknown-elf-gcc not found; install the RISC-V toolchain to build the CH32V003 port"; \
@@ -810,7 +812,7 @@ build-ch32:
 	    exit 0; \
 	fi
 	$(MAKE) -C platform/ch32v003 clean
-	$(MAKE) -C platform/ch32v003 build
+	$(MAKE) -C platform/ch32v003 build CH32_TELEMETRY=$(CH32_TELEMETRY)
 	python3 tools/check_ch32_size_budget.py platform/ch32v003/main.elf
 
 # --- White-paper figure-regeneration pipeline (Stage 16) -------

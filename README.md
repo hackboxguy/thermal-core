@@ -193,11 +193,30 @@ An optional once-per-second status line is printed over the SWIO
 debug channel (`make monitor`; compile-gated by
 `THERMALCORE_CH32_STATUS`, on by default).
 
+### Telemetry tap over UART
+
+`make build-ch32 CH32_TELEMETRY=1` adds a USART1 telemetry tap:
+the regulator emits the **canonical 9-column telemetry CSV** --
+zone temperature, fan duty, fault events -- the same projection
+the host scenario runner and determinism gate produce. Wire a
+USB-serial adapter to USART1 (PD5 TX / PD6 RX) and capture it:
+
+```bash
+make build-ch32 CH32_TELEMETRY=1                   # telemetry build
+cd platform/ch32v003 && make flash
+tio /dev/ttyUSB0 -b 115200 -l /tmp/ch32-telemetry.csv   # or screen/cat
+```
+
+The capture is a canonical CSV you can analyse exactly like the
+ESP32 bench captures. The tap is transmit-only (RX is wired and
+reserved); the SWIO status line above is independent and stays
+available.
+
 **Status:** the firmware is verified to cross-compile, link, and
-fit the part -- gated in CI by `build-ch32`.  On-hardware
-bring-up, exercising the bench-derived TIM2 / EXTI / 1-Wire
-drivers through the control core on a real CH32V003, is
-follow-on bench work.
+fit the part -- both the default and `CH32_TELEMETRY=1` builds are
+gated in CI by `build-ch32`.  On-hardware bring-up, exercising the
+bench-derived TIM2 / EXTI / 1-Wire / USART drivers through the
+control core on a real CH32V003, is follow-on bench work.
 
 ## Build + test (host-side)
 

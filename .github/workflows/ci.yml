@@ -377,13 +377,19 @@ jobs:
           path: platform/esp32_idf/build/size-files.json
           if-no-files-found: error
 
-  # Stage 18 18d: CH32V003 STANDALONE firmware build gate.  Cross-
-  # compiles platform/ch32v003/ for RV32EC via the ch32fun submodule
-  # and enforces the whole-firmware flash/SRAM budget (PRD Appendix
-  # D.2) -- the portable core/ runs the control law on a ~10-cent
-  # MCU with no host, the portability thesis at the smallest target.
+  # Stage 18 18d/18e: CH32V003 STANDALONE firmware build gate.
+  # Cross-compiles platform/ch32v003/ for RV32EC via the ch32fun
+  # submodule and enforces the whole-firmware flash/SRAM budget (PRD
+  # Appendix D.2) -- the portable core/ runs the control law on a
+  # ~10-cent MCU with no host.  Two matrix legs: the default
+  # headless firmware and the 18e telemetry build (canonical-CSV
+  # tap over USART1), so neither variant can bitrot.
   build-ch32:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        telemetry: ['off', 'on']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -397,13 +403,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build CH32V003 firmware + enforce size budget
-        run: make build-ch32
+      - name: Build CH32V003 firmware (telemetry=${{ matrix.telemetry }}) + enforce size budget
+        run: make build-ch32 CH32_TELEMETRY=${{ matrix.telemetry == 'on' && '1' || '0' }}
       - name: Upload firmware linker map
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ch32v003-firmware-map
+          name: ch32v003-firmware-map-${{ matrix.telemetry }}
           path: platform/ch32v003/main.map
           if-no-files-found: warn
 

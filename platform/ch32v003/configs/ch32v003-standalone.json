@@ -48,9 +48,9 @@
   "fault_detection": {},
 
   "telemetry": {
-    "enable": false,
-    "period_ticks": 10,
-    "signals": [],
+    "enable": true,
+    "period_ticks": 1,
+    "signals": ["zone_temp_*", "actuator_pwm_*"],
     "transport": "uart:console"
   },
 
