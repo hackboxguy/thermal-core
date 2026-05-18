@@ -46,6 +46,7 @@ STUCK_SENSOR_REPLAY     = $(REPLAY_BIN_DIR)/stuck_sensor_replay
 RUNAWAY_REPLAY          = $(REPLAY_BIN_DIR)/runaway_replay
 STALE_CONTEXT_REPLAY    = $(REPLAY_BIN_DIR)/stale_context_replay
 FULL_STEP_REPLAY        = $(REPLAY_BIN_DIR)/full_step_replay
+FAN_HEALTH_REPLAY       = $(REPLAY_BIN_DIR)/fan_health_replay
 
 # --- Property tests ---
 PROPERTY_BIN_DIR   = build/property
@@ -502,6 +503,11 @@ $(FULL_STEP_REPLAY): test/replay/full_step_replay.c core/thermal_core.h \
 	@mkdir -p $(REPLAY_BIN_DIR)
 	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
 
+$(FAN_HEALTH_REPLAY): test/replay/fan_health_replay.c core/thermal_fan_health.h \
+                      $(CORE_ARCHIVE)
+	@mkdir -p $(REPLAY_BIN_DIR)
+	$(CC) $(CFLAGS_BASE) -o $@ $< $(CORE_ARCHIVE)
+
 # --- Stage 15 cross-platform parity: host replay binary ---
 # Host side of replay-parity.  Compiles the shared test/parity/
 # sources against the json2static-generated G_THERMAL_CFG of
@@ -562,7 +568,7 @@ replay-parity: $(PARITY_GOLDEN)
 
 replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
         $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \
-        $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY)
+        $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY) $(FAN_HEALTH_REPLAY)
 	@echo "--- Replay: curve_sweep (C) ---"
 	@$(CURVE_REPLAY) > $(REPLAY_BIN_DIR)/curve_sweep.csv
 	@diff -u $(REPLAY_GOLDEN_DIR)/curve_sweep.csv \
@@ -665,10 +671,22 @@ replay: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
 	         $(REPLAY_BIN_DIR)/full_step_sweep.csv \
 	  || { echo "FAIL: C output differs from golden"; exit 1; }
 	@echo "PASS: C == golden"
+	@echo "--- Replay: fan_health_drift (C) ---"
+	@$(FAN_HEALTH_REPLAY) > $(REPLAY_BIN_DIR)/fan_health_drift.csv
+	@diff -u $(REPLAY_GOLDEN_DIR)/fan_health_drift.csv \
+	         $(REPLAY_BIN_DIR)/fan_health_drift.csv \
+	  || { echo "FAIL: C output differs from golden"; exit 1; }
+	@echo "PASS: C == golden"
+	@echo "--- Replay: fan_health_drift (Python reference) ---"
+	@python3 test/reference/fan_health.py > $(REPLAY_BIN_DIR)/fan_health_drift.py.csv
+	@diff -u $(REPLAY_BIN_DIR)/fan_health_drift.csv \
+	         $(REPLAY_BIN_DIR)/fan_health_drift.py.csv \
+	  || { echo "FAIL: Python reference differs from C output"; exit 1; }
+	@echo "PASS: Python ref == C"
 
 regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPLAY) \
                       $(STALL_REPLAY) $(STUCK_SENSOR_REPLAY) $(RUNAWAY_REPLAY) \
-                      $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY)
+                      $(STALE_CONTEXT_REPLAY) $(FULL_STEP_REPLAY) $(FAN_HEALTH_REPLAY)
 	@mkdir -p $(REPLAY_GOLDEN_DIR)
 	$(CURVE_REPLAY) > $(REPLAY_GOLDEN_DIR)/curve_sweep.csv
 	$(FILTER_REPLAY) > $(REPLAY_GOLDEN_DIR)/filter_sweep.csv
@@ -679,6 +697,7 @@ regen-replay-goldens: $(CURVE_REPLAY) $(FILTER_REPLAY) $(ZONE_REPLAY) $(PID_REPL
 	$(RUNAWAY_REPLAY) > $(REPLAY_GOLDEN_DIR)/runaway_sweep.csv
 	$(STALE_CONTEXT_REPLAY) > $(REPLAY_GOLDEN_DIR)/stale_context_sweep.csv
 	$(FULL_STEP_REPLAY) > $(REPLAY_GOLDEN_DIR)/full_step_sweep.csv
+	$(FAN_HEALTH_REPLAY) > $(REPLAY_GOLDEN_DIR)/fan_health_drift.csv
 	@echo "Regenerated goldens. Review the diff (git diff $(REPLAY_GOLDEN_DIR)/) before committing."
 
 # --- Property test: validate_config across random configs ---

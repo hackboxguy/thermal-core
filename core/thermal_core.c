@@ -111,6 +111,11 @@ typedef struct {
     thermal_fault_runaway_state_t        runaway_states[THERMAL_MAX_ZONES];
     thermal_fault_stale_context_state_t  stale_context_states[THERMAL_MAX_CONTEXT_SIGNALS];
 
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* Stage 17 (PRD Appendix C): per-actuator fan-health detector. */
+    thermal_fan_health_state_t           fan_health_states[THERMAL_MAX_ACTUATORS];
+#endif
+
     /* Stage 7c: edge memory for event emission */
     uint8_t                   prev_zone_max_severity[THERMAL_MAX_ZONES];
 
@@ -752,6 +757,27 @@ static int dispatch_signal_value(const thermal_core_internal_t *core,
             return 0;
         }
     }
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* Fan-health range 0x0800..0x08FF (Stage 17, PRD Appendix C). */
+    if (sig >= TSIG_FAN_HEALTH_BASE && sig < TSIG_FAN_HEALTH_BASE + TSIG_RANGE_SIZE) {
+        uint8_t sub  = (uint8_t)((sig - TSIG_FAN_HEALTH_BASE) & 0xF0u);
+        uint8_t slot = (uint8_t)((sig - TSIG_FAN_HEALTH_BASE) & 0x0Fu);
+        if (slot >= cfg->actuator_count) return 0;
+        const thermal_fan_health_state_t *fh = &core->fan_health_states[slot];
+        switch (sub) {
+        case TSIG_FAN_HEALTH_SUB_DELTA:
+            *out = (int32_t)fh->health_delta_pct; return 1;
+        case TSIG_FAN_HEALTH_SUB_SEVERITY:
+            *out = (int32_t)fh->severity; return 1;
+        case TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE:
+            *out = (int32_t)cfg->fan_health[slot].baseline_source; return 1;
+        case TSIG_FAN_HEALTH_SUB_CONFIDENCE:
+            *out = (int32_t)fh->confidence; return 1;
+        default:
+            return 0;
+        }
+    }
+#endif
     return 0;
 }
 
@@ -969,6 +995,11 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
     for (uint8_t i = 0; i < THERMAL_MAX_CONTEXT_SIGNALS; i++) {
         thermal_fault_stale_context_reset(&core->stale_context_states[i]);
     }
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    for (uint8_t i = 0; i < THERMAL_MAX_ACTUATORS; i++) {
+        thermal_fan_health_reset(&core->fan_health_states[i]);
+    }
+#endif
 
     return THERMAL_OK;
 }
@@ -1559,6 +1590,31 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                (uint32_t)actuator_max_zone_sev[a], 0u, 0u);
         }
     }
+
+#if THERMALCORE_ENABLE_FAN_HEALTH
+    /* Stage 17 (PRD Appendix C): advisory fan-health detector. Runs
+     * after the fault detectors -- so it sees this tick's force-max /
+     * shutdown overrides -- and before step 10, while actuator_prev_duty
+     * and actuator_prev_slew_limited still hold the *previous* tick's
+     * applied values: the drive that produced this tick's tach sample
+     * (PRD C.2). Telemetry only; never touches arb_pwm. */
+    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+        uint16_t fh_spinup_ticks = (cfg->control_period_ms > 0)
+            ? (uint16_t)((cfg->actuators[a].spinup_ms +
+                          cfg->control_period_ms - 1) /
+                         cfg->control_period_ms)
+            : 0;
+        thermal_fan_health_step(&core->fan_health_states[a],
+                                &cfg->fan_health[a],
+                                core->actuator_prev_duty[a],
+                                core->actuator_tach_rpm[a],
+                                core->actuator_tach_valid[a],
+                                core->actuator_prev_slew_limited[a],
+                                (uint8_t)(force_pwm_max[a] ||
+                                          shutdown_action[a]),
+                                fh_spinup_ticks);
+    }
+#endif
 
     /* === §4.6 step 10: slew + final clamp + write output frame === */
     out->actuator_cmd_count = cfg->actuator_count;
