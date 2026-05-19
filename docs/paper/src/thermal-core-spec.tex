@@ -51,7 +51,7 @@
 
 % Define footer content
 \fancyfoot[C]{\thepage}
-\fancyfoot[L]{Draft 0.5 -- May 2026}
+\fancyfoot[L]{Draft 0.6 -- May 2026}
 \fancyfoot[R]{}
 
 % Header/footer lines
@@ -95,7 +95,7 @@
     {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
     {\Large Design \& Implementation}\\[2ex]
     {\large Author: Albert David}\\[2ex]
-    {\large Draft 0.5}\\[1ex]
+    {\large Draft 0.6}\\[1ex]
     May 2026\\[2ex]
     {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
 \end{center}
@@ -115,6 +115,8 @@
     0.4 & May 2026 & Albert David & Post-v1 CH32V003 STANDALONE port (Stage 18): the portable core cross-builds self-contained on a ten-cent RV32EC MCU; measured firmware footprint added to the Evaluation section \\
     \hline
     0.5 & May 2026 & Albert David & Post-v1 fan-health detector (Stage 17) folded into the Component Design section: an advisory tach-versus-baseline degradation monitor, compile-optional and safety-neutral; abstract and draft status refreshed for the two shipped post-v1 stages \\
+    \hline
+    0.6 & May 2026 & Albert David & Documentation-grounding pass: figure-provenance and determinism-harness wording corrected to match the implemented pipeline; the post-v1 fan-health step added to the control-loop listing; measured CH32 footprint, CI job count, and coverage figures refreshed \\
     \hline
 \end{longtable}
 

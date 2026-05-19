@@ -152,9 +152,11 @@ The ESP32 publishes sensor + tach as `TELEM_SAMPLE` TC frames on
 `/dev/ttyACM0`; the daemon ingests them, runs
 `thermal_core_step()`, and writes the duty back as
 `CMD_REQUEST(HIL_CMD_SET_PWM_DUTY = 0x8001)` on the same device.
-Status appears in the daemon's UDP telemetry (probe on port
-9030) and as `bsp_hil_serial: NACK ...` lines on the daemon's
-stderr.  Full walkthrough including frame anatomy:
+Normal status appears in the daemon's UDP telemetry (probe on
+port 9030); ACK/NACK accounting is printed when the daemon
+closes, and a `bsp_hil_serial: NACK ...` line appears on stderr
+only if the peripheral rejects a command -- an error signal, not
+routine output.  Full walkthrough including frame anatomy:
 [`docs/getting-started/hil-peripheral.md`](docs/getting-started/hil-peripheral.md).
 
 ## Quick start: CH32V003 STANDALONE (post-v1)
@@ -250,7 +252,7 @@ for the scenario / probe tooling.
 
 ```bash
 make build              # build daemon
-make test               # 200-ish unit tests
+make test               # host unit test suite
 make replay             # byte-equal replay against committed goldens
 make scenario           # 10 canonical PRD §9.1 scenarios on a sim plant
 make determinism        # same scenarios x2 + gcc-vs-clang SHA-256 parity

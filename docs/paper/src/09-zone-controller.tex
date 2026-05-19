@@ -19,6 +19,9 @@ thermal_core_step(ctx, snapshot, &out):
   // Step 9:  step each fault detector; derive safety_override_up;
   //            apply force_pwm_max actions; emit fault, safety,
   //            and shutdown events on rising edges
+  // Post-v1: advisory fan-health update -- compare tach against the
+  //            previous applied duty, skip non-steady / fault-
+  //            overridden windows; telemetry only, never alters arb_pwm
   // Step 10: slew per actuator (override bypasses upward only);
   //            final clamp to [pwm_min, pwm_max] with 0-stays-0
   // Step 11: emit telemetry signals on configured cadence
@@ -105,6 +108,6 @@ After arbitration and the optional modifier cap, fault actions may overwrite the
 
 \subsection{Verification}
 
-The control loop is verified at two levels. Per-module replay goldens cover curves, IIR filters, zone aggregation, the step-wise governor, the PID step, and each of the four fault detectors; every C golden is matched byte-for-byte by a Python reference under \texttt{test/reference/}. The full-loop golden \texttt{test/replay/golden/full\_step\_sweep.csv} drives \texttt{thermal\_core\_step} through a 600-tick scenario covering cold start, WARN under acoustic cap, speed ramp relaxing the cap, CRITICAL bypass, downward-slew recovery, runaway, and shutdown --- so any commit that changes loop behavior produces a CI-visible diff against this canary. Named safety-override unit cases (CRITICAL bypasses cap, SHUTDOWN bypasses cap and requests max PWM and emits the shutdown event once, slew obeyed on downward, slew bypassed on upward override) live in \texttt{test/unit/test\_core\_step.c}.
+The control loop is verified at two levels. Per-module replay goldens cover curves, IIR filters, zone aggregation, the step-wise governor, the PID step, and each of the four fault detectors; every C golden is matched byte-for-byte by a Python reference under \texttt{test/reference/}. The full-loop golden \texttt{test/replay/golden/full\_step\_sweep.csv} drives \texttt{thermal\_core\_step} through a 600-tick scenario covering cold start, WARN under acoustic cap, speed ramp relaxing the cap, CRITICAL bypass, downward-slew recovery, runaway, and shutdown --- so any commit that changes loop behavior produces a CI-visible diff against this canary. Named safety-override unit cases (CRITICAL bypasses cap, SHUTDOWN bypasses cap and requests max PWM and emits the shutdown event once, slew obeyed on downward, slew bypassed on upward override) live in \texttt{test/unit/test\_core\_step.c}. The post-v1 fan-health detector carries its own replay golden --- \texttt{test/replay/golden/fan\_health\_drift.csv}, a four-phase degradation drift matched byte-for-byte by \texttt{test/reference/fan\_health.py} --- and unit cases that it never perturbs an actuator command frame (\texttt{test\_fan\_health\_advisory.c}) and that its telemetry behaves as documented across skipped windows (\texttt{test\_fan\_health\_telemetry.c}).
 
 \endinput
