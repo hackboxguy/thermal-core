@@ -1,8 +1,9 @@
 /* platform/ch32v003/bsp_ch32_uart.c
  *
- * Stage 18e -- CH32V003 USART1 transmit BSP for the telemetry tap.
- * Register sequence per ch32fun's SetupUART (CH32V003 branch),
- * extended to also configure the RX pin.
+ * Stage 18e -- CH32V003 USART1 BSP for the telemetry tap. Register
+ * sequence per ch32fun's SetupUART (CH32V003 branch), extended to
+ * also configure the RX pin. Stage 19 added bsp_ch32_uart_getc()
+ * for the host-command channel.
  */
 #include "bsp_ch32_uart.h"
 
@@ -40,4 +41,13 @@ void bsp_ch32_uart_puts(const char *s)
         }
         USART1->DATAR = (uint16_t)(uint8_t)*s;
     }
+}
+
+int bsp_ch32_uart_getc(void)
+{
+    if (USART1->STATR & USART_FLAG_RXNE) {
+        /* Reading DATAR clears RXNE. */
+        return (int)(uint8_t)USART1->DATAR;
+    }
+    return -1;
 }

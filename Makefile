@@ -161,6 +161,18 @@ build/test/test_bsp_socketcan: \
 	    protocol/obd2.c \
 	    $(CORE_ARCHIVE) $(LDFLAGS_EXTRA)
 
+# --- Special: CH32 host-command parser test (Stage 19 19a) ---
+# platform/ch32v003/ch32_command.c is pure C99 with no ch32fun
+# dependency, so the parser compiles + runs on the host; the test
+# drives it directly and needs no core archive.
+build/test/test_ch32_command: \
+    test/unit/test_ch32_command.c test/unit/harness.h \
+    platform/ch32v003/ch32_command.c platform/ch32v003/ch32_command.h
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -I platform/ch32v003 \
+	    -o $@ test/unit/test_ch32_command.c \
+	    platform/ch32v003/ch32_command.c $(LDFLAGS_EXTRA)
+
 # --- Special: thermal-plant simulator unit test (Stage 12 12a) ---
 # Plant lives at tools/thermalcore-scenario/plant.{c,h}; depends on
 # core/thermal_curve.c (via thermal_curve_eval_y0) which is already

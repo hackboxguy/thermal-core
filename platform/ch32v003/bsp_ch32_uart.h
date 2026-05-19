@@ -6,9 +6,9 @@
  * transport (FUNCONF_USE_UARTPRINTF) so the SWIO debug channel
  * stays free for the THERMALCORE_CH32_STATUS status line.
  *
- * USART1 on PD5 (TX) / PD6 (RX), 8N1. The telemetry path is
- * transmit-only; RX is configured and reserved for a future
- * host->MCU channel.
+ * USART1 on PD5 (TX) / PD6 (RX), 8N1. The telemetry tap is
+ * transmit-only; Stage 19 added bsp_ch32_uart_getc() so the
+ * host-command channel can read the RX line.
  */
 #ifndef BSP_CH32_UART_H
 #define BSP_CH32_UART_H
@@ -21,5 +21,11 @@ int bsp_ch32_uart_init(uint32_t baud);
 /* Transmit the NUL-terminated string `s` verbatim (no added
  * newline), blocking until each byte has been shifted out. */
 void bsp_ch32_uart_puts(const char *s);
+
+/* Non-blocking single-byte read from USART1 RX. Returns the byte
+ * (0..255) when one is waiting in the RX register, or -1 when none
+ * is. Used by the Stage 19 host-command channel; unreferenced by --
+ * and so --gc-sections-stripped from -- the default firmware. */
+int bsp_ch32_uart_getc(void);
 
 #endif /* BSP_CH32_UART_H */

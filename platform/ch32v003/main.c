@@ -35,6 +35,16 @@
 #define THERMALCORE_CH32_STATUS 1
 #endif
 
+/* Optional host-command channel over USART1 RX (Stage 19, Makefile:
+ * CH32_COMMAND=1 -> -DTHERMALCORE_CH32_COMMAND). A line-based ASCII
+ * command parser plus a control-loop bypass mode, driven by the host
+ * tools/thermal-telemetry-tool -- the bench path that captures a
+ * PWM->RPM sweep. Default off; with it off this file is byte-for-byte
+ * the standard STANDALONE regulator. */
+#ifndef THERMALCORE_CH32_COMMAND
+#define THERMALCORE_CH32_COMMAND 0
+#endif
+
 /* Optional per-tick execution-time probe (Makefile: CH32_STEP_TIMING=1
  * -> -DTHERMALCORE_CH32_STEP_TIMING). Brackets thermal_core_step() with
  * a SysTick read and reports its microsecond cost as a `#`-comment
@@ -46,7 +56,8 @@
 #if THERMALCORE_CH32_STEP_TIMING && !THERMALCORE_CH32_TELEMETRY
 #error "CH32_STEP_TIMING needs CH32_TELEMETRY=1 (it reports over the telemetry UART)"
 #endif
-#if THERMALCORE_CH32_STATUS || THERMALCORE_CH32_STEP_TIMING
+#if THERMALCORE_CH32_STATUS || THERMALCORE_CH32_STEP_TIMING || \
+    THERMALCORE_CH32_COMMAND
 #include <stdio.h>
 #endif
 
@@ -66,9 +77,83 @@
 #endif
 #endif
 
+/* The command channel writes its responses over the telemetry UART,
+ * so it requires the telemetry tap; the Makefile's CH32_COMMAND=1
+ * forces CH32_TELEMETRY on, and this guards a hand-passed -D. */
+#if THERMALCORE_CH32_COMMAND
+#if !THERMALCORE_CH32_TELEMETRY
+#error "CH32_COMMAND needs CH32_TELEMETRY=1 (it shares the telemetry UART)"
+#endif
+#include "ch32_command.h"
+#endif
+
 /* Emitted by json2static.py from configs/ch32v003-standalone.json. */
 extern const thermal_config_t G_THERMAL_CFG;
 extern const ch32_pinmap_t    G_CH32_PINMAP;
+
+#if THERMALCORE_CH32_COMMAND
+/* Drain the USART1 RX register and execute any completed command
+ * lines, writing each command's response. `cur_duty` / `cur_rpm` are
+ * the most recent applied duty and measured RPM -- what pwmget /
+ * rpmget report. `loop_bypass` and `host_duty` are updated in place;
+ * the caller acts on `loop_bypass` to enter / leave the bypass loop. */
+static void ch32_command_poll(ch32_command_rx_t *rx,
+                              uint8_t  *loop_bypass,
+                              uint8_t  *host_duty,
+                              uint8_t   cur_duty,
+                              uint32_t  cur_rpm)
+{
+    int b;
+    while ((b = bsp_ch32_uart_getc()) >= 0) {
+        ch32_command_t cmd;
+        char           resp[20];
+        if (!ch32_command_feed(rx, (char)b, &cmd)) {
+            continue;
+        }
+        switch (cmd.type) {
+        case CH32_CMD_LOOP_ON:
+            *loop_bypass = 0;
+            bsp_ch32_uart_puts("+loop on\n");
+            break;
+        case CH32_CMD_LOOP_OFF:
+            *loop_bypass = 1;
+            bsp_ch32_uart_puts("+loop off\n");
+            break;
+        case CH32_CMD_PWMSET:
+            /* Manual duty only makes sense with the loop bypassed --
+             * otherwise the governor overwrites it next tick. */
+            if (*loop_bypass) {
+                *host_duty = (uint8_t)cmd.arg;
+                (void)snprintf(resp, sizeof resp, "+pwm %u\n",
+                               (unsigned)cmd.arg);
+                bsp_ch32_uart_puts(resp);
+            } else {
+                bsp_ch32_uart_puts("-err\n");
+            }
+            break;
+        case CH32_CMD_PWMGET:
+            (void)snprintf(resp, sizeof resp, "+pwm %u\n",
+                           (unsigned)cur_duty);
+            bsp_ch32_uart_puts(resp);
+            break;
+        case CH32_CMD_RPMGET:
+            (void)snprintf(resp, sizeof resp, "+rpm %lu\n",
+                           (unsigned long)cur_rpm);
+            bsp_ch32_uart_puts(resp);
+            break;
+        case CH32_CMD_PING:
+            bsp_ch32_uart_puts("+pong\n");
+            break;
+        case CH32_CMD_NONE:
+            break;                       /* blank line -- ignore */
+        case CH32_CMD_ERROR:
+        default:
+            bsp_ch32_uart_puts("-err\n");
+            break;
+        }
+    }
+}
+#endif /* THERMALCORE_CH32_COMMAND */
 
 int main(void)
 {
@@ -102,6 +187,18 @@ int main(void)
     bsp_ch32_uart_puts(THERMALCORE_CANONICAL_HEADER);
 #endif
 
+#if THERMALCORE_CH32_COMMAND
+    /* Host-command channel state: the RX-line accumulator, the bypass
+     * flag, the host-set manual duty, and the last published duty /
+     * RPM that pwmget / rpmget answer with. */
+    ch32_command_rx_t cmd_rx;
+    memset(&cmd_rx, 0, sizeof(cmd_rx));
+    uint8_t  loop_bypass = 0;
+    uint8_t  host_duty   = 0;
+    uint8_t  last_duty   = 0;
+    uint32_t last_rpm    = 0;
+#endif
+
     /* thermal_core_t is large relative to the 2 KB SRAM; main()
      * never returns, so a static local keeps it out of the stack. */
     static thermal_core_t core;
@@ -121,6 +218,32 @@ int main(void)
 
     for (;;) {
         uint32_t win_t0 = SysTick->CNT;
+
+#if THERMALCORE_CH32_COMMAND
+        /* Service the host-command channel. A `loop off` received
+         * here drops into the bypass loop below: manual PWM control
+         * with no sensor read and no thermal_core_step() -- the
+         * characterisation path the PWM->RPM sweep needs. Bypass also
+         * suspends thermal protection, so it is a bench mode, run
+         * with an operator present. */
+        ch32_command_poll(&cmd_rx, &loop_bypass, &host_duty,
+                          last_duty, last_rpm);
+        while (loop_bypass) {
+            uint32_t bypass_t0 = SysTick->CNT;
+            bsp_ch32_pwm_set_duty(0, host_duty);
+            last_duty = host_duty;
+            /* tach delta over the 1 s window * 30 = RPM (NF-A8: 2
+             * pulses/rev) -- the conversion the regulating tick uses.
+             * The duty is applied once at window start so each tach
+             * reading spans a single steady duty. */
+            last_rpm = bsp_ch32_tach_read_ticks_delta(0) * 30u;
+            while ((uint32_t)(SysTick->CNT - bypass_t0) <
+                   Ticks_from_Ms(dt_ms)) {
+                ch32_command_poll(&cmd_rx, &loop_bypass, &host_duty,
+                                  last_duty, last_rpm);
+            }
+        }
+#endif
 
         /* Build the input snapshot: one temperature sample per
          * sensor, one tach-RPM sample per actuator. */
@@ -226,9 +349,20 @@ int main(void)
         }
 #endif
 
+#if THERMALCORE_CH32_COMMAND
+        /* Publish this regulating tick's outputs so pwmget / rpmget
+         * answer with live governor values even outside bypass. */
+        last_duty = duty0;
+        last_rpm  = rpm0;
+#endif
+
         /* Hold the window open to the full control period. */
         while ((uint32_t)(SysTick->CNT - win_t0) <
                Ticks_from_Ms(dt_ms)) {
+#if THERMALCORE_CH32_COMMAND
+            ch32_command_poll(&cmd_rx, &loop_bypass, &host_duty,
+                              last_duty, last_rpm);
+#endif
         }
         now_ms += dt_ms;
     }
