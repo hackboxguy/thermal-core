@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.16
+**Document status:** Draft v0.17
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.19)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.20)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -768,4 +768,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.16*
+*End of implementation plan v0.17*

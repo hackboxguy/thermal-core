@@ -165,12 +165,16 @@ typedef uint16_t thermal_telemetry_signal_t;
  * The detector never commands an actuator; these are read-only health
  * indicators. 0x0700 is owned by HIL, so the range opens at 0x0800.
  *
- *   DELTA            signed health_delta_pct (negative = under baseline)
+ *   DELTA            health_delta_pct -- the negative-drift score,
+ *                    <= 0 (a point above baseline contributes zero)
  *   SEVERITY         HEALTHY / AGING / DEGRADED / FAILING (0..3)
- *   BASELINE_SOURCE  field / factory / model (0..2) -- so a consumer
- *                    knows whether it is reading unit-aging or
- *                    model-deviation
- *   CONFIDENCE       count of baseline points with observed samples
+ *   BASELINE_SOURCE  field / factory / model / none (0..3) -- so a
+ *                    consumer knows whether it is reading unit-aging
+ *                    or model-deviation. `none` is telemetry-only,
+ *                    reported for a disabled fan-health slot; it is
+ *                    never a config-authorable baseline source.
+ *   CONFIDENCE       count of baseline points with observed samples --
+ *                    coverage, not sample recency
  */
 #define TSIG_FAN_HEALTH_SUB_DELTA            0x00u
 #define TSIG_FAN_HEALTH_SUB_SEVERITY         0x10u

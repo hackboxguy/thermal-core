@@ -232,11 +232,14 @@ def require_int(v, where):
 
 
 def require_bool(v, where):
-    """Strict boolean: the Linux loader requires a JSON boolean here."""
-    if not isinstance(v, bool):
-        raise ConfigError(f"{where}: expected a boolean, got "
-                           f"{type(v).__name__}")
-    return v
+    """Accept a JSON boolean or the integers 0/1 -- mirroring the Linux
+    loader's tok_parse_bool, which takes both. Rejects floats, strings,
+    and ints other than 0/1."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v in (0, 1):
+        return bool(v)
+    raise ConfigError(f"{where}: expected a boolean (true/false or 0/1)")
 
 
 # Zeroed fan-health block -- emitted for an actuator with no (or a

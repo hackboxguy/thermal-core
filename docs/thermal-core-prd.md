@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.19
+**Document status:** Draft v0.20
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -1552,7 +1552,7 @@ Per-fan signals in a dedicated namespace, **`TSIG_FAN_HEALTH_BASE = 0x0800`** �
 - `TSIG_FAN_HEALTH_DELTA(slot)` — the signed `health_delta_pct`.
 - `TSIG_FAN_HEALTH_SEVERITY(slot)` — HEALTHY / AGING / DEGRADED / FAILING.
 - `TSIG_FAN_HEALTH_BASELINE_SOURCE(slot)` — `field` / `factory` / `model` for an enabled detector, or `none` when fan-health is disabled for that actuator (so a consumer never mistakes a zeroed slot for a real `field` baseline). It tells the consumer whether it is reading unit-aging or model-deviation.
-- `TSIG_FAN_HEALTH_CONFIDENCE(slot)` — the observed-coverage figure, which makes the opportunistic, slowly-accumulating nature of the detector legible to host tools (a low-confidence HEALTHY is "not enough evidence yet", not "verified healthy").
+- `TSIG_FAN_HEALTH_CONFIDENCE(slot)` — the observed-coverage figure, which makes the opportunistic, slowly-accumulating nature of the detector legible to host tools (a low-confidence HEALTHY is "not enough evidence yet", not "verified healthy"). It counts *how many* baseline points have accumulated samples — it is **coverage, not recency**: because a skipped tick leaves the published result standing (§C.3), a confident `severity` can persist unchanged through an arbitrarily long off / tach-invalid period, and a consumer must not read `confidence` as a freshness or staleness indicator.
 
 ### C.6 Scope boundary — what is NOT in the slice
 
@@ -1625,4 +1625,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.19*
+*End of PRD v0.20*
