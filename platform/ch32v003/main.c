@@ -37,9 +37,9 @@
 
 /* Optional per-tick execution-time probe (Makefile: CH32_STEP_TIMING=1
  * -> -DTHERMALCORE_CH32_STEP_TIMING). Brackets thermal_core_step() with
- * a SysTick read and reports its core-clock / microsecond cost as a
- * `#`-comment line on the telemetry UART -- so it lands in the same
- * host capture as the canonical CSV, with no SWIO console needed. It
+ * a SysTick read and reports its microsecond cost as a `#`-comment
+ * line on the telemetry UART -- so it lands in the same host capture
+ * as the canonical CSV, with no SWIO console needed. It
  * therefore requires the telemetry tap (CH32_TELEMETRY=1). Default
  * off -- a characterisation diagnostic; the basic firmware is
  * byte-for-byte unaffected. */
@@ -175,17 +175,20 @@ int main(void)
         (void)thermal_core_step(&core, &snap, &out);
 #if THERMALCORE_CH32_STEP_TIMING
         {
+            /* step_ticks is SysTick counts -- SysTick runs at HCLK/8
+             * on the CH32V003, NOT the core clock. Ticks_from_Ms(1) is
+             * SysTick counts per ms, so step_ticks*1000/that is the
+             * wall-clock cost in microseconds. Emitted as a `#` comment
+             * so canonical-CSV parsers skip it while the raw host
+             * capture still carries the number. */
             uint32_t step_ticks = (uint32_t)(SysTick->CNT - step_t0);
-            /* Ticks_from_Ms(1) is core clocks per ms; /1000 -> per us.
-             * Emitted as a `#` comment so canonical-CSV parsers skip
-             * it while the raw host capture still carries the number. */
+            uint32_t step_us = step_ticks * 1000u / Ticks_from_Ms(1);
             char tbuf[64];
             (void)snprintf(tbuf, sizeof(tbuf),
-                           "# thermal_core_step: %lu core-clocks "
-                           "(~%lu us)\n",
-                           (unsigned long)step_ticks,
-                           (unsigned long)(step_ticks /
-                                           (Ticks_from_Ms(1) / 1000u)));
+                           "# thermal_core_step: %lu us "
+                           "(%lu SysTick ticks)\n",
+                           (unsigned long)step_us,
+                           (unsigned long)step_ticks);
             bsp_ch32_uart_puts(tbuf);
         }
 #endif
