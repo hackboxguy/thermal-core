@@ -55,7 +55,9 @@ endif
 
 # CH32_STEP_TIMING=1 compiles in the per-tick execution-time probe
 # (main.c): thermal_core_step() is bracketed by a SysTick read and its
-# cost printed over SWIO. A characterisation diagnostic, default off.
+# cost emitted as a `#`-comment line on the telemetry UART, so it
+# lands in the same host capture as the canonical CSV. It therefore
+# requires CH32_TELEMETRY=1. A characterisation diagnostic, default off.
 ifeq ($(CH32_STEP_TIMING),1)
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_STEP_TIMING=1
 endif

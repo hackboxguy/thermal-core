@@ -37,9 +37,15 @@
 
 /* Optional per-tick execution-time probe (Makefile: CH32_STEP_TIMING=1
  * -> -DTHERMALCORE_CH32_STEP_TIMING). Brackets thermal_core_step() with
- * a SysTick read and prints its core-clock / microsecond cost over the
- * SWIO channel. Default off -- a characterisation diagnostic, not a
- * runtime feature; the basic firmware is byte-for-byte unaffected. */
+ * a SysTick read and reports its core-clock / microsecond cost as a
+ * `#`-comment line on the telemetry UART -- so it lands in the same
+ * host capture as the canonical CSV, with no SWIO console needed. It
+ * therefore requires the telemetry tap (CH32_TELEMETRY=1). Default
+ * off -- a characterisation diagnostic; the basic firmware is
+ * byte-for-byte unaffected. */
+#if THERMALCORE_CH32_STEP_TIMING && !THERMALCORE_CH32_TELEMETRY
+#error "CH32_STEP_TIMING needs CH32_TELEMETRY=1 (it reports over the telemetry UART)"
+#endif
 #if THERMALCORE_CH32_STATUS || THERMALCORE_CH32_STEP_TIMING
 #include <stdio.h>
 #endif
@@ -168,12 +174,20 @@ int main(void)
 #endif
         (void)thermal_core_step(&core, &snap, &out);
 #if THERMALCORE_CH32_STEP_TIMING
-        uint32_t step_ticks = (uint32_t)(SysTick->CNT - step_t0);
-        /* Ticks_from_Ms(1) is core clocks per ms; /1000 -> per us. */
-        printf("thermal_core_step: %lu core-clocks (~%lu us)\n",
-               (unsigned long)step_ticks,
-               (unsigned long)(step_ticks /
-                               (Ticks_from_Ms(1) / 1000u)));
+        {
+            uint32_t step_ticks = (uint32_t)(SysTick->CNT - step_t0);
+            /* Ticks_from_Ms(1) is core clocks per ms; /1000 -> per us.
+             * Emitted as a `#` comment so canonical-CSV parsers skip
+             * it while the raw host capture still carries the number. */
+            char tbuf[64];
+            (void)snprintf(tbuf, sizeof(tbuf),
+                           "# thermal_core_step: %lu core-clocks "
+                           "(~%lu us)\n",
+                           (unsigned long)step_ticks,
+                           (unsigned long)(step_ticks /
+                                           (Ticks_from_Ms(1) / 1000u)));
+            bsp_ch32_uart_puts(tbuf);
+        }
 #endif
 
         /* Apply actuator commands (resolve actuator_id -> slot). */
