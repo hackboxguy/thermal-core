@@ -104,13 +104,26 @@ TEST_CASE(fan_health) {
     EXPECT_EQ(s.severity, THERMAL_FAN_HEALTH_DEGRADED);
     c.baseline_source = THERMAL_FAN_BASELINE_SRC_FIELD;
 
-    /* === Negative control: a positive delta never escalates === */
+    /* === Negative control: a positive delta never escalates ===
+     * Positive per-point drift is clamped out of the aggregate, so the
+     * health score is 0 (not +20) and severity stays HEALTHY. */
     thermal_fan_health_reset(&s);
     drive_point(&s, &c, 120, 2880, 8);     /* +20% */
     drive_point(&s, &c, 180, 4320, 8);     /* +20% */
     EXPECT_EQ(s.confidence, 2);
-    EXPECT_EQ(s.health_delta_pct, 20);
+    EXPECT_EQ(s.health_delta_pct, 0);
     EXPECT_EQ(s.severity, THERMAL_FAN_HEALTH_HEALTHY);
+
+    /* === Negative control: a positive point cannot cancel a negative
+     * one. Point 1 reads -20%, point 2 reads +20%; the +20 is clamped
+     * to 0 in the aggregate, so the -20 still surfaces (would average
+     * to 0 -> HEALTHY without the clamp). */
+    thermal_fan_health_reset(&s);
+    drive_point(&s, &c, 120, 1920, 8);     /* -20% */
+    drive_point(&s, &c, 180, 4320, 8);     /* +20% */
+    EXPECT_EQ(s.confidence, 2);
+    EXPECT_EQ(s.health_delta_pct, -10);
+    EXPECT_EQ(s.severity, THERMAL_FAN_HEALTH_AGING);
 
     /* === Off-baseline interpolation: PWM 90 -> expected 1800 === */
     thermal_fan_health_reset(&s);

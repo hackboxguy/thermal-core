@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.18
+**Document status:** Draft v0.19
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -1479,7 +1479,7 @@ This appendix sketches a **post-v1** feature: a fan-health (fan-aging / contamin
 
 A 4-wire fan's RPM at a given PWM duty drifts predictably as the fan ages. Bearing wear, lubricant breakdown, and motor degradation add mechanical or electrical load and so **lower RPM** at a fixed PWM; blade and heatsink dust that loads the fan aerodynamically does the same. Capturing a known-good **PWM-to-RPM baseline** once — at the factory, at first boot, or at a service event — and comparing in-field operation against it detects this **negative RPM drift** *weeks or months before stall*, while service is convenient rather than urgent.
 
-The slice detects negative drift only. Restricted or blocked airflow is deliberately **not** in scope: it does not reliably lower RPM — depending on where the restriction sits, it can *unload* the fan aerodynamically and *raise* RPM at the same PWM — so blocked-intake diagnosis is a separate positive-delta-plus-temperature feature, deferred (§C.6). A positive delta is still emitted as a raw telemetry value, but it is never read as "health improvement" and never folded into the negative aging ladder.
+The slice detects negative drift only. Restricted or blocked airflow is deliberately **not** in scope: it does not reliably lower RPM — depending on where the restriction sits, it can *unload* the fan aerodynamically and *raise* RPM at the same PWM — so blocked-intake diagnosis is a separate positive-delta-plus-temperature feature, deferred (§C.6). A positive delta — RPM *above* baseline — is therefore never read as "health improvement": it is clamped to zero in the aggregate (§C.3), so it can neither raise the health score nor cancel a negative-drift reading at another operating point.
 
 This is a **predictive-maintenance** feature, not a safety feature. It is **advisory-only**: it emits health telemetry and never commands an actuator. Thermal safety remains entirely with the v1 stall and runaway detectors.
 
@@ -1501,10 +1501,10 @@ A baseline is also only comparable to runtime under matching electrical and mech
 
 **Per-tick behavior (opportunistic monitoring).** No active fan cycling, no governor override:
 
-1. **Gate the tick.** Skip this actuator's update entirely when the sample is not representative of free-running steady operation: `tach_valid` is 0, no tach source is configured, the applied PWM is below the baseline's lowest point, a spin-up grace window is active, the slew limiter was active over the sample window, or a fault force-max/shutdown override was active. A skipped tick updates no state and emits no health telemetry — it is simply not evidence about aging.
+1. **Gate the tick.** Skip this actuator's update entirely when the sample is not representative of free-running steady operation: `tach_valid` is 0, no tach source is configured, the applied PWM is below the baseline's lowest point, a spin-up grace window is active, the slew limiter was active over the sample window, or a fault force-max/shutdown override was active. A skipped tick updates no detector state — it is simply not evidence about aging. The previously published `health_delta_pct` / `severity` / `confidence` stand until the next steady sample refreshes them: telemetry, like the v1 fault-state signals, has no per-tick suppression, so a consumer reads `confidence` to judge how much evidence the current result rests on.
 2. **Require a steady window.** Track whether the applied PWM has held within `stable_pwm_tolerance` for `stable_pwm_ticks`, and the tach RPM within `stable_rpm_tolerance_pct` for the (shorter) `stable_rpm_ticks`. Only a tick that clears both windows yields a delta; the applied PWM used is the one that produced the current tach sample (the previous tick's final `duty_0_255` — see §C.2).
 3. **Compute the per-point delta by interpolation.** Linearly interpolate the *expected* RPM for the current applied PWM between the two adjacent baseline points — the same integer-interpolation discipline as `thermal_curve.c`, with endpoint clamping — so an arbitrary steady governor duty still yields a delta rather than only the exact baseline PWMs. Then `delta_pct = (measured − expected) × 100 / expected`: a **signed whole percent**, negative meaning under baseline, rounded half-away-from-zero, saturated to a documented range. This delta updates the nearest baseline point's accumulator.
-4. **Fold into per-point confidence.** Each baseline point carries a fixed-size EMA accumulator and an observed-sample count. A new delta updates the accumulator for its nearest point; stale observations decay naturally through the EMA, so no explicit per-observation TTL is needed. The aggregate `health_delta_pct` is the confidence-weighted mean of the per-point accumulators, mid-range PWM points weighted most heavily — that is where signal-to-noise is best (near stall the fan is noisy; at 100% it is voltage-limited). Sign convention is identical to `delta_pct`.
+4. **Fold into per-point confidence.** Each baseline point carries a fixed-size EMA accumulator and an observed-sample count. A new delta updates the accumulator for its nearest point; while the fan keeps being sampled, stale per-point observations decay naturally through the EMA, so no explicit per-observation TTL is needed. The aggregate `health_delta_pct` is the confidence-weighted mean of the per-point accumulators **clamped to their non-positive part** — a point reading *above* baseline contributes zero, never a positive offset, so positive drift can neither raise the score nor cancel negative drift at another point (§C.1). `health_delta_pct` is therefore a negative-drift score, ≤ 0. Mid-range PWM points are weighted most heavily — that is where signal-to-noise is best (near stall the fan is noisy; at 100% it is voltage-limited).
 5. **Classify severity.** Map `health_delta_pct` to a `severity` — HEALTHY / AGING / DEGRADED / FAILING — through configurable signed thresholds, but report nothing stronger than HEALTHY until at least `min_points_observed` baseline points have each accumulated enough samples: an opportunistic detector must not escalate on one lucky reading. Resolution is further gated by baseline provenance (below).
 6. **Emit.** `health_delta_pct`, `severity`, `baseline_source`, and a `confidence` figure per fan through the existing telemetry callback. No actuator command is ever produced.
 
@@ -1540,8 +1540,9 @@ A per-actuator `fan_health` block, optional (absent → the detector is disabled
 - The baseline point count is between 2 and `THERMAL_MAX_FAN_HEALTH_POINTS`.
 - PWM values are sorted strictly ascending, unique, and within `0..255`; RPM values are positive and within `uint16_t`.
 - The baseline is monotonic non-decreasing in RPM (RPM rises with PWM).
+- The baseline's highest PWM point reaches at least the actuator's `pwm_max`, so high-duty operation is never scored against a clamped (below-range) expected RPM.
 - `severity_pct` thresholds are strictly monotonic and within the signed-percent range: `0 > aging > degraded > failing`.
-- Stability tick counts are non-zero; tolerance fields are present (no silent defaulting of a value that changes detector behavior).
+- Stability tick counts are non-zero; tolerance fields are present (no silent defaulting of a value that changes detector behavior) and in range — `stable_rpm_tolerance_pct` is `0..100`, `stable_pwm_tolerance` is `0..255`.
 - A `fan_health` block on a tachless actuator is rejected — the detector has no RPM to compare.
 
 ### C.5 Telemetry signals
@@ -1550,7 +1551,7 @@ Per-fan signals in a dedicated namespace, **`TSIG_FAN_HEALTH_BASE = 0x0800`** �
 
 - `TSIG_FAN_HEALTH_DELTA(slot)` — the signed `health_delta_pct`.
 - `TSIG_FAN_HEALTH_SEVERITY(slot)` — HEALTHY / AGING / DEGRADED / FAILING.
-- `TSIG_FAN_HEALTH_BASELINE_SOURCE(slot)` — `field` / `factory` / `model`, so a consumer always knows whether it is reading unit-aging or model-deviation.
+- `TSIG_FAN_HEALTH_BASELINE_SOURCE(slot)` — `field` / `factory` / `model` for an enabled detector, or `none` when fan-health is disabled for that actuator (so a consumer never mistakes a zeroed slot for a real `field` baseline). It tells the consumer whether it is reading unit-aging or model-deviation.
 - `TSIG_FAN_HEALTH_CONFIDENCE(slot)` — the observed-coverage figure, which makes the opportunistic, slowly-accumulating nature of the detector legible to host tools (a low-confidence HEALTHY is "not enough evidence yet", not "verified healthy").
 
 ### C.6 Scope boundary — what is NOT in the slice
@@ -1624,4 +1625,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.18*
+*End of PRD v0.19*

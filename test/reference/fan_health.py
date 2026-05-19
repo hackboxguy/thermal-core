@@ -98,8 +98,11 @@ def recompute(s, cfg):
         sc = min(s["sample_count"][p], 16)
         emph = 1 if (p == 0 or p == cfg["baseline_count"] - 1) else 2
         w = sc * emph
+        # Positive drift is not health improvement (PRD C.1): clamp each
+        # point to its non-positive part before folding into the score.
+        ema = min(s["ema_x256"][p], 0)
         sum_w += w
-        sum_wx += w * s["ema_x256"][p]
+        sum_wx += w * ema
     s["confidence"] = conf
     s["health_delta_pct"] = (div_round_half_away(sum_wx, sum_w * 256)
                              if sum_w > 0 else 0)

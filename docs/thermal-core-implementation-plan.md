@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.15
+**Document status:** Draft v0.16
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.18)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.19)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -635,7 +635,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 - **Shipped 18d:** the CI gates + Stage close. A `build-ch32` CI job (apt-installs `gcc-riscv64-unknown-elf`, builds through the ch32fun submodule, enforces the budget, uploads the linker map) and a `unit-tiny-profile` job (the unit suite under the tiny profile). `ci/tool-versions.md` records the RISC-V toolchain and the ch32fun submodule pin. The white paper's Evaluation section gains a measured CH32V003 footprint paragraph (Draft 0.4).
 - **Shipped 18e:** a canonical-CSV telemetry tap (post-close enhancement). `bsp_ch32_uart.{c,h}` is a direct-register USART1 driver (PD5 TX / PD6 RX, 8N1) in the BSP style; `ch32_callbacks.{c,h}` routes the core's `telemetry_emit` / `log_event` through `test/parity/canonical.c` — the same serializer the scenario runner and determinism gate use — and out the UART, so a bench capture is a canonical CSV. Compile-gated by `THERMALCORE_CH32_TELEMETRY` (`make build-ch32 CH32_TELEMETRY=1`), off by default and independent of the SWIO status line; `build-ch32` is now a 2-leg matrix so both variants stay built + size-budgeted. No `protocol/` — the canonical projection is plain text. Cross-build footprint: flash 12 220 B (default) / 12 688 B (telemetry) of 16 KB; on-hardware UART capture is bench follow-on.
 
-**Stage 18 status:** the tiny profile, the `platform/ch32v003/` STANDALONE port, and the `build-ch32` + `unit-tiny-profile` CI gates are shipped; Stage 18 is closed. The CH32V003 firmware is verified to cross-compile, link, and fit the part (flash 74 %, SRAM 51 %). **On-hardware regulation has not been verified** — the BSP drivers are lifted from Albert's proven bench firmware, but their integration with `thermal_core_step()` is exercised only on the bench; on-device bring-up is the documented follow-on. Remaining post-v1 work is Stage 17 (fan-health detector), independent of Stage 18 and not yet started.
+**Stage 18 status:** the tiny profile, the `platform/ch32v003/` STANDALONE port, and the `build-ch32` + `unit-tiny-profile` CI gates are shipped; Stage 18 is closed. The CH32V003 firmware is verified to cross-compile, link, and fit the part (flash 74 %, SRAM 51 %). **On-hardware regulation has not been verified** — the BSP drivers are lifted from Albert's proven bench firmware, but their integration with `thermal_core_step()` is exercised only on the bench; on-device bring-up is the documented follow-on. Stage 17 (the fan-health detector) is independent of Stage 18 and is now closed.
 
 ---
 
@@ -768,4 +768,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.15*
+*End of implementation plan v0.16*

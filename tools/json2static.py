@@ -221,6 +221,24 @@ def reject_unknown(obj, allowed, where):
         raise ConfigError(f"{where}: unknown key(s) {sorted(extras)}")
 
 
+def require_int(v, where):
+    """Strict integer: rejects bool, float, and numeric strings. The
+    Linux loader (config_jsmn.c) rejects all three for these fields, so
+    the static path must not silently coerce them (e.g. 64.9 -> 64)."""
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ConfigError(f"{where}: expected an integer, got "
+                           f"{type(v).__name__}")
+    return v
+
+
+def require_bool(v, where):
+    """Strict boolean: the Linux loader requires a JSON boolean here."""
+    if not isinstance(v, bool):
+        raise ConfigError(f"{where}: expected a boolean, got "
+                           f"{type(v).__name__}")
+    return v
+
+
 # Zeroed fan-health block -- emitted for an actuator with no (or a
 # disabled) fan_health block. Matches config_jsmn's parse_fan_health,
 # which memsets the block to zero when it is absent or disabled.
@@ -243,6 +261,8 @@ def normalise_fan_health(fh_raw, actuator_raw, idx):
         return dict(FAN_HEALTH_ZEROED)
     where = f"actuators[{idx}].fan_health"
     reject_unknown(fh_raw, FAN_HEALTH_ALLOWED, where)
+    if "enable" in fh_raw:
+        require_bool(fh_raw["enable"], f"{where}.enable")
     if not fh_raw.get("enable", False):
         return dict(FAN_HEALTH_ZEROED)
 
@@ -269,7 +289,8 @@ def normalise_fan_health(fh_raw, actuator_raw, idx):
     for j, pt in enumerate(base_raw):
         if not isinstance(pt, list) or len(pt) != 2:
             raise ConfigError(f"{where}.baseline[{j}]: expected [pwm, rpm] pair")
-        pwm, rpm = int(pt[0]), int(pt[1])
+        pwm = require_int(pt[0], f"{where}.baseline[{j}].pwm")
+        rpm = require_int(pt[1], f"{where}.baseline[{j}].rpm")
         if not 0 <= pwm <= 255:
             raise ConfigError(f"{where}.baseline[{j}]: pwm out of [0, 255]")
         if not 1 <= rpm <= 65535:
@@ -283,13 +304,22 @@ def normalise_fan_health(fh_raw, actuator_raw, idx):
                     f"{where}.baseline[{j}]: rpm not monotonic non-decreasing")
         baseline.append([pwm, rpm])
 
+    # PRD C.4: the baseline must reach the actuator's pwm_max so
+    # high-duty operation is never scored against a clamped expected RPM.
+    pwm_max = require_int(actuator_raw["pwm_max"], f"actuators[{idx}].pwm_max")
+    if baseline[-1][0] < pwm_max:
+        raise ConfigError(
+            f"{where}.baseline: highest PWM point {baseline[-1][0]} is "
+            f"below the actuator's pwm_max {pwm_max}")
+
     sev = fh_raw["severity_pct"]
     reject_unknown(sev, SEVERITY_PCT_ALLOWED, f"{where}.severity_pct")
     for key in ("aging", "degraded", "failing"):
         if key not in sev:
             raise ConfigError(f"{where}.severity_pct: missing '{key}'")
-    aging, degraded, failing = (int(sev["aging"]), int(sev["degraded"]),
-                                int(sev["failing"]))
+    aging   = require_int(sev["aging"],    f"{where}.severity_pct.aging")
+    degraded = require_int(sev["degraded"], f"{where}.severity_pct.degraded")
+    failing = require_int(sev["failing"],  f"{where}.severity_pct.failing")
     for nm, v in (("aging", aging), ("degraded", degraded), ("failing", failing)):
         if not -100 <= v <= -1:
             raise ConfigError(f"{where}.severity_pct.{nm}: out of [-100, -1]")
@@ -297,19 +327,22 @@ def normalise_fan_health(fh_raw, actuator_raw, idx):
         raise ConfigError(
             f"{where}.severity_pct: must satisfy 0 > aging > degraded > failing")
 
-    spt = int(fh_raw["stable_pwm_ticks"])
+    spt = require_int(fh_raw["stable_pwm_ticks"], f"{where}.stable_pwm_ticks")
     if not 1 <= spt <= 65535:
         raise ConfigError(f"{where}.stable_pwm_ticks: out of [1, 65535]")
-    sptol = int(fh_raw["stable_pwm_tolerance"])
+    sptol = require_int(fh_raw["stable_pwm_tolerance"],
+                        f"{where}.stable_pwm_tolerance")
     if not 0 <= sptol <= 255:
         raise ConfigError(f"{where}.stable_pwm_tolerance: out of [0, 255]")
-    srt = int(fh_raw["stable_rpm_ticks"])
+    srt = require_int(fh_raw["stable_rpm_ticks"], f"{where}.stable_rpm_ticks")
     if not 1 <= srt <= 65535:
         raise ConfigError(f"{where}.stable_rpm_ticks: out of [1, 65535]")
-    srtol = int(fh_raw["stable_rpm_tolerance_pct"])
+    srtol = require_int(fh_raw["stable_rpm_tolerance_pct"],
+                        f"{where}.stable_rpm_tolerance_pct")
     if not 0 <= srtol <= 100:
         raise ConfigError(f"{where}.stable_rpm_tolerance_pct: out of [0, 100]")
-    mpo = int(fh_raw["min_points_observed"])
+    mpo = require_int(fh_raw["min_points_observed"],
+                      f"{where}.min_points_observed")
     if not 1 <= mpo <= len(baseline):
         raise ConfigError(
             f"{where}.min_points_observed: out of [1, baseline point count]")

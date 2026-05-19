@@ -38,10 +38,14 @@
 
 /* Baseline provenance -- gates severity resolution (PRD C.3): a
  * model-generic baseline conflates aging with unit-to-unit variance,
- * so it asserts only DEGRADED/FAILING and suppresses AGING. */
+ * so it asserts only DEGRADED/FAILING and suppresses AGING. NONE is
+ * not config-authorable -- it is the telemetry value reported for an
+ * actuator whose fan-health detector is disabled (PRD C.5), so a
+ * consumer never mistakes a zeroed slot for a real `field` baseline. */
 #define THERMAL_FAN_BASELINE_SRC_FIELD    0u
 #define THERMAL_FAN_BASELINE_SRC_FACTORY  1u
 #define THERMAL_FAN_BASELINE_SRC_MODEL    2u
+#define THERMAL_FAN_BASELINE_SRC_NONE     3u
 
 /* Per-actuator configuration -- const, supplied by the platform.
  * The baseline reuses thermal_curve_point_t: x = PWM (0..255),

@@ -770,7 +770,11 @@ static int dispatch_signal_value(const thermal_core_internal_t *core,
         case TSIG_FAN_HEALTH_SUB_SEVERITY:
             *out = (int32_t)fh->severity; return 1;
         case TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE:
-            *out = (int32_t)cfg->fan_health[slot].baseline_source; return 1;
+            /* A disabled slot reports `none`, not a zeroed `field`. */
+            *out = cfg->fan_health[slot].enable
+                       ? (int32_t)cfg->fan_health[slot].baseline_source
+                       : (int32_t)THERMAL_FAN_BASELINE_SRC_NONE;
+            return 1;
         case TSIG_FAN_HEALTH_SUB_CONFIDENCE:
             *out = (int32_t)fh->confidence; return 1;
         default:
@@ -860,8 +864,19 @@ static thermal_status_t validate_fan_health(const thermal_config_t *cfg) {
     for (uint8_t a = 0; a < cfg->actuator_count; a++) {
         const thermal_fan_health_cfg_t *fh = &cfg->fan_health[a];
         if (!fh->enable) continue;
+        if (fh->baseline_source > THERMAL_FAN_BASELINE_SRC_MODEL) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (fh->stable_rpm_tolerance_pct > 100) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
         if (fh->baseline_count < 2 ||
             fh->baseline_count > THERMAL_MAX_FAN_HEALTH_POINTS) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        /* The baseline must reach the actuator's pwm_max so high-duty
+         * operation is never scored against a clamped expected RPM. */
+        if (fh->baseline[fh->baseline_count - 1].x < cfg->actuators[a].pwm_max) {
             return THERMAL_ERR_INVALID_CONFIG;
         }
         for (uint8_t p = 0; p < fh->baseline_count; p++) {

@@ -558,5 +558,19 @@ TEST_CASE(config_jsmn) {
         EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
                                             err, sizeof(err)),
                   THERMAL_ERR_INVALID_ARG);
+
+        /* 24: baseline's highest PWM point below the actuator pwm_max
+         * (255) -- high-duty operation would score against a clamped
+         * expected RPM. */
+        snprintf(buf, sizeof(buf), BASE, TACH,
+            ", \"fan_health\":{ \"enable\":true, \"baseline_source\":\"field\","
+            " \"baseline\":[[64,900],[128,1850],[192,2400]],"
+            " \"stable_pwm_ticks\":300, \"stable_pwm_tolerance\":2,"
+            " \"stable_rpm_ticks\":50, \"stable_rpm_tolerance_pct\":5,"
+            " \"min_points_observed\":2,"
+            " \"severity_pct\":{\"aging\":-5,\"degraded\":-15,\"failing\":-30} }");
+        EXPECT_EQ(thermal_config_jsmn_parse(buf, strlen(buf), &cfg, NULL,
+                                            err, sizeof(err)),
+                  THERMAL_ERR_INVALID_CONFIG);
     }
 }

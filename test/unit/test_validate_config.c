@@ -619,6 +619,21 @@ TEST_CASE(validate_config) {
     cfg.fan_health[0].baseline_count = 0;        /* would fail if validated */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
+    /* baseline_source outside FIELD/FACTORY/MODEL. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].baseline_source = 99;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* stable_rpm_tolerance_pct above 100. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].stable_rpm_tolerance_pct = 150;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Baseline's highest PWM point below the actuator's pwm_max. */
+    MAKE_FAN_HEALTH_CONFIG(cfg);
+    cfg.fan_health[0].baseline[2].x = 200;       /* pwm_max is 255 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
     #undef MAKE_FAN_HEALTH_CONFIG
 #endif /* THERMALCORE_ENABLE_FAN_HEALTH */
 }

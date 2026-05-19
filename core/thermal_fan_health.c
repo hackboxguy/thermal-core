@@ -59,8 +59,16 @@ static void recompute(thermal_fan_health_state_t *s,
         int32_t emph = (p == 0 || p == (uint8_t)(cfg->baseline_count - 1))
                            ? 1 : 2;
         int32_t w = (int32_t)sc * emph;
+        /* Positive drift -- RPM above baseline -- is not health
+         * improvement (PRD C.1): clamp each point to its non-positive
+         * part so it can neither raise the score nor cancel a
+         * negative-drift reading at another point. */
+        int32_t ema = s->ema_x256[p];
+        if (ema > 0) {
+            ema = 0;
+        }
         sum_w  += w;
-        sum_wx += w * s->ema_x256[p];
+        sum_wx += w * ema;
     }
 
     s->confidence = conf;
