@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.14
+**Document status:** Draft v0.15
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.18)
 
@@ -602,6 +602,13 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Follow-on (not yet staged):** the full predictive-maintenance feature — baseline capture sweep plus scenario directives, NVS/JSON baseline persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection (positive-delta cross-correlated with rising zone temperature), the 2D temperature-compensated baseline, and the bench dust-loading experiments plus white-paper supplement — is a separate effort, scoped when Stage 17 lands.
 
+- **Shipped 17a:** `core/thermal_fan_health.{c,h}` — the advisory-only fan-health detector. Compile-gated by `THERMALCORE_ENABLE_FAN_HEALTH` (the first feature gate inside `core/`; zero `.text` when off). Reuses `thermal_curve_eval_y0()` for PWM-to-RPM baseline interpolation; signed whole-percent `delta_pct` (round-half-away-from-zero, saturated ±127); per-baseline-point integer EMA accumulators (×256 fixed scale, 1/8 weight); confidence-weighted `health_delta_pct`; steady-window gating with self-tracked spin-up grace and skip windows (tach-invalid / slew-limited / fault-override). `THERMAL_MAX_FAN_HEALTH_POINTS` (8) and `TSIG_FAN_HEALTH_BASE = 0x0800` reserved. `test/unit/test_fan_health.c` covers the delta/severity math, the skip windows, interpolation, provenance gating, and the negative controls (positive delta and low confidence both stay HEALTHY).
+- **Shipped 17b:** the config pipeline. `thermal_config_t` gains a compile-gated `fan_health[]` member, indexed by actuator slot (parallel to `faults`; the frozen v1 `thermal_actuator_cfg_t` is untouched). `config_jsmn.c` parses the per-actuator `fan_health` JSON block and rejects an enabled block on a tachless actuator; `json2static.py --enable-fan-health` mirrors it for MCU codegen; the `fan_health_*` telemetry wildcard expands in both. `thermal_core_validate_config` gains `validate_fan_health` — the semantic invariants (baseline count 2..MAX, strictly-ascending PWM, monotonic RPM, `0 > aging > degraded > failing`). `configs/fan-health-demo.json` + `test_fan_health_roundtrip` prove json2static and the loader agree byte-for-byte; six malformed-block scenarios land in `test_config_jsmn`, the `validate_fan_health` rules in `test_validate_config`.
+- **Shipped 17c:** core integration + the golden replay. `thermal_core_step` runs the detector after the fault detectors and before the slew stage — aligned to the previous tick's applied duty, the drive that produced this tick's tach sample (PRD C.2); `dispatch_signal_value` serves the `0x0800` telemetry range from the detector state. `test/replay/fan_health_replay.c` + `test/replay/golden/fan_health_drift.csv` capture the severity escalation HEALTHY → AGING → DEGRADED → FAILING through a four-phase drift; `test/reference/fan_health.py` cross-checks the integer math bit-for-bit. `test_fan_health_advisory.c` locks the load-bearing invariant — output actuator frames are byte-identical with the detector enabled vs. disabled on the same inputs.
+- **Shipped 17d:** the detector is picked up by the existing `unit`, `replay`, and `no-heap-no-syscall` CI jobs with no new workflow leg — `make test` / `make replay` auto-discover the new tests and `make verify-portability` scans the whole core archive. `README.md` gains a fan-health subsection: the per-actuator `fan_health` config block and the `fan_health_*` telemetry selector.
+
+**Stage 17 status:** the advisory-only fan-health detector — core module, config pipeline (Linux loader + MCU codegen), control-loop integration, the golden replay, and the bit-exact Python reference — is shipped behind the `THERMALCORE_ENABLE_FAN_HEALTH` compile gate (host-on, MCU-off, so the shipped ESP32/CH32 images are byte-for-byte unchanged). Stage 17 is closed. The full predictive-maintenance feature (Follow-on above) remains deferred.
+
 ---
 
 ### Stage 18 — CH32V003 STANDALONE port (post-v1)
@@ -761,4 +768,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.14*
+*End of implementation plan v0.15*

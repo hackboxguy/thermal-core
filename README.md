@@ -292,6 +292,16 @@ Recent stages:
   manifest, a `figure-freshness` PR gate, and a `release.yml`
   that builds the paper PDF on `v*` tags.  Closes the v1
   implementation plan (Stages 0-16).
+- **Stage 17** (post-v1) — fan-health detector: an
+  advisory-only `core/` module that grades fan bearing wear /
+  contamination by comparing measured tach RPM against a
+  per-actuator PWM-to-RPM baseline, emitting `fan_health_*`
+  telemetry (delta / severity / baseline-source / confidence).
+  It never commands an actuator.  Compile-gated by
+  `THERMALCORE_ENABLE_FAN_HEALTH` (host-on, MCU-off, so the
+  ESP32/CH32 images are unchanged); enabled per actuator via a
+  `fan_health` JSON block — see
+  [`configs/fan-health-demo.json`](configs/fan-health-demo.json).
 - **Stage 18** (post-v1) — CH32V003 STANDALONE port: the
   portable `core/` cross-builds self-contained on a ~10-cent
   RV32EC MCU, gated by `build-ch32` + `unit-tiny-profile`.
