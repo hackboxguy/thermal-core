@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.17
+**Document status:** Draft v0.18
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.20)
 
@@ -600,7 +600,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Exit gate:** all previous green, plus the new unit + negative-control + config-validation + replay + reference cross-check tests, and `no-heap-no-syscall` green with the feature compiled in.
 
-**Follow-on (not yet staged):** the full predictive-maintenance feature — baseline capture sweep plus scenario directives, NVS/JSON baseline persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection (positive-delta cross-correlated with rising zone temperature), the 2D temperature-compensated baseline, and the bench dust-loading experiments plus white-paper supplement — is a separate effort, scoped when Stage 17 lands.
+**Follow-on (not yet staged):** the full predictive-maintenance feature — baseline capture sweep plus scenario directives, NVS/JSON baseline persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection (positive-delta cross-correlated with rising zone temperature), the 2D temperature-compensated baseline, and the bench dust-loading experiments plus white-paper supplement — is a separate effort, scoped when Stage 17 lands. *(Stages 19–20 stage the first slice — a host-tool PWM-to-RPM baseline-capture sweep and the fan-health enablement on the CH32V003; the remainder stays deferred.)*
 
 - **Shipped 17a:** `core/thermal_fan_health.{c,h}` — the advisory-only fan-health detector. Compile-gated by `THERMALCORE_ENABLE_FAN_HEALTH` (the first feature gate inside `core/`; zero `.text` when off). Reuses `thermal_curve_eval_y0()` for PWM-to-RPM baseline interpolation; signed whole-percent `delta_pct` (round-half-away-from-zero, saturated ±127); per-baseline-point integer EMA accumulators (×256 fixed scale, 1/8 weight); confidence-weighted `health_delta_pct`; steady-window gating with self-tracked spin-up grace and skip windows (tach-invalid / slew-limited / fault-override). `THERMAL_MAX_FAN_HEALTH_POINTS` (8) and `TSIG_FAN_HEALTH_BASE = 0x0800` reserved. `test/unit/test_fan_health.c` covers the delta/severity math, the skip windows, interpolation, provenance gating, and the negative controls (positive delta and low confidence both stay HEALTHY).
 - **Shipped 17b:** the config pipeline. `thermal_config_t` gains a compile-gated `fan_health[]` member, indexed by actuator slot (parallel to `faults`; the frozen v1 `thermal_actuator_cfg_t` is untouched). `config_jsmn.c` parses the per-actuator `fan_health` JSON block and rejects an enabled block on a tachless actuator; `json2static.py --enable-fan-health` mirrors it for MCU codegen; the `fan_health_*` telemetry wildcard expands in both. `thermal_core_validate_config` gains `validate_fan_health` — the semantic invariants (baseline count 2..MAX, strictly-ascending PWM, monotonic RPM, `0 > aging > degraded > failing`). `configs/fan-health-demo.json` + `test_fan_health_roundtrip` prove json2static and the loader agree byte-for-byte; six malformed-block scenarios land in `test_config_jsmn`, the `validate_fan_health` rules in `test_validate_config`.
@@ -639,6 +639,41 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 ---
 
+### Stage 19 — CH32V003 host-command channel + `thermal-telemetry-tool` (post-v1)
+**Post-v1 stage. Do not start until Stage 18 is closed. Picks up the *baseline-capture sweep* deferred in the Stage 17 follow-on, adapted to the CH32V003 STANDALONE port.**
+
+**Deliverable:** a host-driven characterisation path for the CH32V003 — a separate, compile-gated *bench* build of the firmware that accepts commands over the USART1 RX line, plus a C++ host tool that drives it. Its purpose is to capture a real PWM-to-RPM sweep table on the actual fan; Stage 20 reduces that table to the fan-health baseline. The shipping STANDALONE firmware is **byte-for-byte unchanged** — the regulation-disable command exists only in the bench build. Two pieces:
+
+1. **The firmware command channel.** A new `CH32_COMMAND=1` Makefile gate (`-DTHERMALCORE_CH32_COMMAND`), in the same style as `CH32_TELEMETRY` / `CH32_STEP_TIMING`; it implies `CH32_TELEMETRY=1` (the command channel shares USART1 with the telemetry tap), enforced by a `#error`. `bsp_ch32_uart.{c,h}` gains a non-blocking `bsp_ch32_uart_getc()` — the RX pin (PD6) was already configured and reserved at Stage 18e for exactly this. A new `ch32_command.{c,h}` is a line-buffered ASCII command parser; `main.c` polls RX each tick and, in bypass mode, skips `thermal_core_step()` and drives the host-set duty directly while still reading tach and streaming telemetry. The firmware boots regulating normally; bypass is entered only by an explicit `loop off`. Commands: `loop on|off`, `pwmset <0-255>`, `pwmget`, `rpmget`, `ping`; responses are `+`/`-`-prefixed so canonical-CSV parsers skip them in a mixed capture.
+2. **`tools/thermal-telemetry-tool/`** — a C++17 host tool, termios serial, no external dependencies; built by a new root-Makefile `telemetry-tool` target. Actions: `log` (passive canonical-CSV capture, works against any telemetry firmware), `pwmset` / `pwmget` / `rpmget`, `loop on|off`, and `pwmsweep` — which orchestrates `loop off`, then steps the duty across 1–100 %, dwells for the fan to settle, reads `rpmget`, and writes a `pwm_pct,duty_0_255,rpm` CSV. That CSV is the sweep table Stage 20 consumes.
+
+**Tests added:**
+- **Build gate:** `build-ch32` gains a `CH32_COMMAND=1` matrix leg — the bench build stays cross-compiled and size-budgeted (it must still fit the 16 KB part).
+- **Host-tool build:** a CI leg compiles `thermal-telemetry-tool` with the host C++ compiler, so the tool cannot bitrot.
+- **Unit:** the command parser is pure logic (line buffer in, parsed command out) and is host-unit-tested directly — each command, malformed input, an over-long line, and a partial/split line.
+
+**Regression value:** Locks the bench-build command protocol and the parser, and proves the shipping firmware is untouched — the default `make build-ch32` image is byte-for-byte identical with the `CH32_COMMAND` gate off. The tool is the reproducible, documented path from "an unknown fan" to "a baseline table".
+
+**Exit gate:** all previous green, plus `build-ch32 CH32_COMMAND=1` green and within budget, the `thermal-telemetry-tool` CI build green, the parser unit test green, and the default CH32 firmware byte-for-byte unchanged.
+
+---
+
+### Stage 20 — Fan-health enabled on the CH32V003 STANDALONE firmware (post-v1)
+**Post-v1 stage. Do not start until Stage 19 is closed *and* a real PWM-to-RPM sweep has been captured on hardware** with `thermal-telemetry-tool --action=pwmsweep`. The sweep table is the input this stage cannot synthesise.
+
+**Deliverable:** the Stage 17 fan-health detector, enabled in the CH32V003 STANDALONE firmware. Fan-health produces telemetry-only output, so it is meaningful only with the tap — it is enabled together with `CH32_TELEMETRY=1` and rides the same UART; the default no-telemetry image stays **byte-for-byte unchanged**. The Stage 19 sweep CSV is reduced to a ≤8-point (`THERMAL_MAX_FAN_HEALTH_POINTS`) PWM-to-RPM baseline and authored into `configs/ch32v003-standalone.json` as a per-actuator `fan_health` block, tagged `factory` provenance. The CH32 Makefile defines `THERMALCORE_ENABLE_FAN_HEALTH` and passes `--enable-fan-health` to `json2static.py` (supported since Stage 17b); the `0x0800` `fan_health_*` signal range rides the existing telemetry tap. The detector stays advisory — it never commands the fan. This is the **first MCU build to compile the fan-health gate on**; the ESP32 build keeps it off.
+
+**Tests added:**
+- **Build gate:** `build-ch32` with `THERMALCORE_ENABLE_FAN_HEALTH` compiled in still cross-builds and **fits the 16 KB part** — the size-budget check is the load-bearing assertion (the PRD estimates the module at ~1–2 KB `.text`).
+- **Roundtrip:** the json2static ↔ Linux-loader roundtrip check covers the updated `ch32v003-standalone.json`, so the MCU codegen and the host loader agree on the new `fan_health` block.
+- The advisory-only invariant is already locked by `test_fan_health_advisory.c` (Stage 17) — no actuator frame changes with the detector on.
+
+**Regression value:** Proves the fan-health detector — written and gated host-only at Stage 17 — actually compiles, links, and fits on the smallest target, with a baseline measured from a real fan rather than hand-authored. Closes the loop from the Stage 17 follow-on.
+
+**Exit gate:** all previous green, plus `build-ch32` green with fan-health compiled in and within the 16 KB budget, and the config roundtrip green.
+
+---
+
 ## 6. Paper update cadence
 
 The white paper is not a Stage-16-only deliverable. Conceptual sections draft in parallel with code; results-bearing sections fill in as benchmarks land. This table maps stages to paper sections that can credibly advance once that stage lands.
@@ -660,6 +695,8 @@ The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 
 | Stage 16 | §1 Abstract, §11 Honest limitations, §13 Conclusions, §12 Future work; tighten + final prose pass | Everything else; written when the paper knows what it's saying |
 | Stage 17 (post-v1) | A new fan-health subsection — predictive-maintenance concept + degradation-drift results — as a post-v1 paper supplement | Fan-health detector module + golden replay green |
 | Stage 18 (post-v1) | §6 Portability strategy — a 10-cent-MCU paragraph: the core running self-contained on the CH32V003, with the measured size budget | `build-ch32` green + measured budget |
+| Stage 19 (post-v1) | §8 Bench rig — the host-tool characterisation path: the UART command channel + the PWM-to-RPM sweep procedure | `build-ch32 CH32_COMMAND` leg green + `thermal-telemetry-tool` compiles |
+| Stage 20 (post-v1) | The fan-health subsection — a measured CH32 PWM-to-RPM baseline + on-hardware fan-health telemetry | `build-ch32` fan-health leg green + a bench sweep captured |
 
 **Rules of thumb:**
 
@@ -754,6 +791,8 @@ This is the load-bearing simulator code; it gets the same review scrutiny as the
 | 16 | White paper figures + benchmark manifest | (release workflow) | PDF builds + manifest consistent |
 | 17 | **(post-v1)** Fan-health detector — advisory PWM→RPM drift module | — | fan-health module golden + reference cross-check green |
 | 18 | **(post-v1)** CH32V003 STANDALONE port — tiny profile + platform/ch32v003/ | build-ch32 | tiny-profile build + unit suite + size budget green |
+| 19 | **(post-v1)** CH32 host-command channel + `thermal-telemetry-tool` | build-ch32 (`CH32_COMMAND` leg) | bench-build + tool compile + size budget green |
+| 20 | **(post-v1)** Fan-health enabled on the CH32 STANDALONE firmware | — | build-ch32 fan-health leg within 16 KB + config roundtrip green |
 
 ---
 
@@ -768,4 +807,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.17*
+*End of implementation plan v0.18*
