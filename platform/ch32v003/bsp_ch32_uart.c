@@ -29,12 +29,23 @@ static volatile uint8_t rx_tail;            /* getc advances */
 void USART1_IRQHandler(void) __attribute__((interrupt));
 void USART1_IRQHandler(void)
 {
-    /* Drain every byte the receiver holds. Reading DATAR clears RXNE
-     * (and, after the STATR read, any overrun flag). A byte that
-     * would overflow the ring is dropped rather than wrapping over
-     * unread data. */
-    while (USART1->STATR & USART_STATR_RXNE) {
-        uint8_t b    = (uint8_t)USART1->DATAR;
+    /* Drain every byte the receiver holds. Reading STATR then DATAR
+     * clears RXNE plus the error flags. A byte that arrived with a
+     * framing / noise / parity / overrun error is line noise -- on an
+     * idle RX line that is typically crosstalk coupling the adjacent
+     * TX pin in -- so it is dropped rather than fed to the command
+     * parser as garbage. A byte that would overflow the ring is
+     * dropped too. */
+    for (;;) {
+        uint16_t st = USART1->STATR;
+        if (!(st & USART_STATR_RXNE)) {
+            break;
+        }
+        uint8_t b = (uint8_t)USART1->DATAR;
+        if (st & (USART_STATR_FE | USART_STATR_NE |
+                  USART_STATR_PE | USART_STATR_ORE)) {
+            continue;                       /* corrupt byte -- drop */
+        }
         uint8_t next = (uint8_t)((rx_head + 1u) % UART_RX_RING_SZ);
         if (next != rx_tail) {
             rx_ring[rx_head] = b;
