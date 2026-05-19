@@ -34,7 +34,13 @@
 #ifndef THERMALCORE_CH32_STATUS
 #define THERMALCORE_CH32_STATUS 1
 #endif
-#if THERMALCORE_CH32_STATUS
+
+/* Optional per-tick execution-time probe (Makefile: CH32_STEP_TIMING=1
+ * -> -DTHERMALCORE_CH32_STEP_TIMING). Brackets thermal_core_step() with
+ * a SysTick read and prints its core-clock / microsecond cost over the
+ * SWIO channel. Default off -- a characterisation diagnostic, not a
+ * runtime feature; the basic firmware is byte-for-byte unaffected. */
+#if THERMALCORE_CH32_STATUS || THERMALCORE_CH32_STEP_TIMING
 #include <stdio.h>
 #endif
 
@@ -157,7 +163,18 @@ int main(void)
         /* Tick the core. */
         thermal_output_frame_t out;
         memset(&out, 0, sizeof(out));
+#if THERMALCORE_CH32_STEP_TIMING
+        uint32_t step_t0 = SysTick->CNT;
+#endif
         (void)thermal_core_step(&core, &snap, &out);
+#if THERMALCORE_CH32_STEP_TIMING
+        uint32_t step_ticks = (uint32_t)(SysTick->CNT - step_t0);
+        /* Ticks_from_Ms(1) is core clocks per ms; /1000 -> per us. */
+        printf("thermal_core_step: %lu core-clocks (~%lu us)\n",
+               (unsigned long)step_ticks,
+               (unsigned long)(step_ticks /
+                               (Ticks_from_Ms(1) / 1000u)));
+#endif
 
         /* Apply actuator commands (resolve actuator_id -> slot). */
         uint8_t duty0 = 0;

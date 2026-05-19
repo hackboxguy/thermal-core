@@ -864,7 +864,8 @@ build-ch32:
 	$(MAKE) -C platform/ch32v003 clean
 	$(MAKE) -C platform/ch32v003 build \
 	    CH32_TELEMETRY=$(CH32_TELEMETRY) \
-	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
+	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD) \
+	    CH32_STEP_TIMING=$(CH32_STEP_TIMING)
 	python3 tools/check_ch32_size_budget.py platform/ch32v003/main.elf
 
 # Build + flash the CH32V003 firmware over a WCH-LinkE. Pass the
@@ -876,7 +877,8 @@ build-ch32:
 flash-ch32:
 	$(MAKE) -C platform/ch32v003 flash \
 	    CH32_TELEMETRY=$(CH32_TELEMETRY) \
-	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
+	    CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD) \
+	    CH32_STEP_TIMING=$(CH32_STEP_TIMING)
 
 # --- White-paper figure-regeneration pipeline (Stage 16) -------
 # Drives the canonical host scenarios that back the paper's

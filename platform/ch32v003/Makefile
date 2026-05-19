@@ -53,6 +53,13 @@ ifdef CH32_TELEMETRY_BAUD
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
 endif
 
+# CH32_STEP_TIMING=1 compiles in the per-tick execution-time probe
+# (main.c): thermal_core_step() is bracketed by a SysTick read and its
+# cost printed over SWIO. A characterisation diagnostic, default off.
+ifeq ($(CH32_STEP_TIMING),1)
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_STEP_TIMING=1
+endif
+
 include $(CH32FUN)/ch32fun.mk
 
 # Generate the static thermal_config_t (+ ch32 pinmap) from JSON --

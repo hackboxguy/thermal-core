@@ -45,12 +45,22 @@
 
   "policy_modifiers": [],
 
-  "fault_detection": {},
+  "fault_detection": {
+    "stall": {
+      "enabled": true,
+      "severity": "critical",
+      "action": "force_pwm_max_until_recovered",
+      "persist_ticks": 3,
+      "recovery_ticks": 3,
+      "stall_rpm": 100,
+      "stall_pwm_threshold": 200
+    }
+  },
 
   "telemetry": {
     "enable": true,
     "period_ticks": 1,
-    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*"],
+    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*", "fault_*"],
     "transport": "uart:console"
   },
 
