@@ -51,7 +51,7 @@
 
 % Define footer content
 \fancyfoot[C]{\thepage}
-\fancyfoot[L]{Draft 0.4 -- May 2026}
+\fancyfoot[L]{Draft 0.5 -- May 2026}
 \fancyfoot[R]{}
 
 % Header/footer lines
@@ -95,7 +95,7 @@
     {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
     {\Large Design \& Implementation}\\[2ex]
     {\large Author: Albert David}\\[2ex]
-    {\large Draft 0.4}\\[1ex]
+    {\large Draft 0.5}\\[1ex]
     May 2026\\[2ex]
     {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
 \end{center}
@@ -114,18 +114,20 @@
     \hline
     0.4 & May 2026 & Albert David & Post-v1 CH32V003 STANDALONE port (Stage 18): the portable core cross-builds self-contained on a ten-cent RV32EC MCU; measured firmware footprint added to the Evaluation section \\
     \hline
+    0.5 & May 2026 & Albert David & Post-v1 fan-health detector (Stage 17) folded into the Component Design section: an advisory tach-versus-baseline degradation monitor, compile-optional and safety-neutral; abstract and draft status refreshed for the two shipped post-v1 stages \\
+    \hline
 \end{longtable}
 
 \section*{Abstract}
 
 \texttt{thermal-core} is a protocol-agnostic thermal-control core with an automotive IVI reference application. It separates deterministic control policy from platform I/O so the same zone, governor, fault, and policy logic can run on Linux, ESP-IDF, and future MCU targets. The first reference policy demonstrates acoustic-aware fan control using vehicle speed as a reproducible context signal.
 
-This draft reflects the implementation as shipped through Stage~16, the final v1 stage: the protocol-agnostic core, the Linux \texttt{thermalcored} daemon, three ESP32-C3 firmware build modes, a hardware-in-the-loop bench bring-up, deterministic cross-platform replay parity, and the figure-regeneration pipeline that renders the scenario plots in the Evaluation section. The conceptual and implementation sections are written against the real code. The formal hardware benchmark sweep --- calibrated acoustic and timing measurement on instrumented hardware --- is still pending, so the Evaluation section is marked preliminary and reports only measured results.
+This draft reflects the implementation as shipped through Stage~16, the final v1 stage: the protocol-agnostic core, the Linux \texttt{thermalcored} daemon, three ESP32-C3 firmware build modes, a hardware-in-the-loop bench bring-up, deterministic cross-platform replay parity, and the figure-regeneration pipeline that renders the scenario plots in the Evaluation section. Two post-v1 stages are folded in as well: the CH32V003 \texttt{STANDALONE} port, whose measured firmware footprint is reported in the Evaluation section, and an advisory fan-health detector described in the Component Design section. The conceptual and implementation sections are written against the real code. The formal hardware benchmark sweep --- calibrated acoustic and timing measurement on instrumented hardware --- is still pending, so the Evaluation section is marked preliminary and reports only measured results.
 
 \section*{Draft Status}
 
 \begin{itemize}[leftmargin=*]
-    \item Scaffold prose has been replaced with implementation detail through Stage~16; the remaining ``to fill in'' items are genuine measurement gaps, not unwritten text.
+    \item Scaffold prose has been replaced with implementation detail through Stage~16 and the two shipped post-v1 stages (the CH32V003 port and the fan-health detector); the remaining ``to fill in'' items are genuine measurement gaps, not unwritten text.
     \item The figure-regeneration pipeline is in place: the Evaluation section's scenario plots are rendered from telemetry CSVs and their captions carry data SHA-256 tags. The hardware benchmark tables still await the instrumented sweep.
     \item Keep protocol-specific details in platform/tooling sections, not in the core architecture.
 \end{itemize}

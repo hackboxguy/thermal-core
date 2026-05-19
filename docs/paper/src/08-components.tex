@@ -23,6 +23,12 @@ Initial fault detectors:
     \item stale context input --- for example a speed-source timeout, which drives acoustic-mask fail-safe behavior.
 \end{itemize}
 
+\subsection{Fan-Health Detector (Post-v1)}
+
+A post-v1 addition extends the fault family with an \emph{advisory} counterpart: a fan-health detector that grades bearing wear and contamination before they become a stall. Where the stall detector raises a binary fault at the terminal failure --- tachometer near zero while PWM is high --- fan-health grades the slow approach to it, comparing measured fan RPM against a known-good PWM-to-RPM baseline captured once at the factory, at first boot, or at a service event.
+
+It is deliberately not a fifth fault detector: it has no action and no fault state machine. It only emits health telemetry --- a signed drift figure, a severity grade, the baseline provenance, and a confidence figure --- and never commands an actuator, so thermal safety stays entirely with the v1 stall and runaway detectors. The module is compile-optional and contributes no code when built out, leaving constrained MCU targets unaffected. Only the minimal core-resident slice is implemented --- the steady-state comparison, the per-baseline-point drift accumulators, and the severity grading; baseline capture, persistence, and host tooling are deliberately deferred, as is the controlled dust-loading measurement a quantitative evaluation would need.
+
 \subsection{Numeric Identity}
 
 Every entity the core manipulates is addressed by a small integer, never a string: sensors, actuators, zones, and context signals carry numeric IDs assigned at configuration load. Telemetry signal IDs are partitioned into fixed namespaces --- zone temperatures, actuator outputs, PID terms, context values, modifier outputs, and fault counters --- so a decoder can classify a signal from its ID alone. Fault detectors instantiate per target: one stall detector per actuator, one stuck-sensor detector per sensor, one runaway detector per zone, one stale-context detector per context signal. Each detector runs a common state machine --- normal, then degraded or critical or latched, then recovering --- with per-detector severity, action, and persistence and recovery tick counts. The exact struct layouts, enum values, and the signal-ID and event-code tables are project header artefacts and are catalogued in the appendix reference rather than transcribed here, so the paper cannot drift out of sync with the code.
