@@ -377,19 +377,20 @@ jobs:
           path: platform/esp32_idf/build/size-files.json
           if-no-files-found: error
 
-  # Stage 18 18d/18e: CH32V003 STANDALONE firmware build gate.
-  # Cross-compiles platform/ch32v003/ for RV32EC via the ch32fun
-  # submodule and enforces the whole-firmware flash/SRAM budget (PRD
-  # Appendix D.2) -- the portable core/ runs the control law on a
-  # ~10-cent MCU with no host.  Two matrix legs: the default
-  # headless firmware and the 18e telemetry build (canonical-CSV
-  # tap over USART1), so neither variant can bitrot.
+  # Stage 18 18d/18e + Stage 19 19a: CH32V003 STANDALONE firmware
+  # build gate.  Cross-compiles platform/ch32v003/ for RV32EC via the
+  # ch32fun submodule and enforces the whole-firmware flash/SRAM
+  # budget (PRD Appendix D.2) -- the portable core/ runs the control
+  # law on a ~10-cent MCU with no host.  Three matrix legs: the
+  # default headless firmware, the 18e telemetry build (canonical-CSV
+  # tap over USART1), and the 19a host-command bench build, so no
+  # variant can bitrot.
   build-ch32:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        telemetry: ['off', 'on']
+        variant: ['default', 'telemetry', 'command']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -403,13 +404,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build CH32V003 firmware (telemetry=${{ matrix.telemetry }}) + enforce size budget
-        run: make build-ch32 CH32_TELEMETRY=${{ matrix.telemetry == 'on' && '1' || '0' }}
+      - name: Build CH32V003 firmware (${{ matrix.variant }}) + enforce size budget
+        run: |
+          case "${{ matrix.variant }}" in
+            default)   make build-ch32 ;;
+            telemetry) make build-ch32 CH32_TELEMETRY=1 ;;
+            command)   make build-ch32 CH32_COMMAND=1 ;;
+          esac
       - name: Upload firmware linker map
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ch32v003-firmware-map-${{ matrix.telemetry }}
+          name: ch32v003-firmware-map-${{ matrix.variant }}
           path: platform/ch32v003/main.map
           if-no-files-found: warn
 
@@ -427,3 +433,13 @@ jobs:
           python-version: '3.12'
       - name: Run the unit suite under the tiny profile
         run: make test-tiny-profile
+
+  # Stage 19 19b: the thermal-telemetry-tool host tool -- the C++
+  # driver for the CH32V003 host-command channel.  A compile gate so
+  # the tool cannot bitrot; pure C++17 + termios, no external deps.
+  telemetry-tool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build thermal-telemetry-tool
+        run: make telemetry-tool

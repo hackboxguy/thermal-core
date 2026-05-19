@@ -21,6 +21,7 @@ not a production deliverable.  It is **not** ASIL-rated and
 | CH32V003 firmware| [`platform/ch32v003/`](platform/ch32v003) | STANDALONE port on a ~10-cent RV32EC MCU (post-v1)          |
 | Scenario harness | [`tools/thermalcore-scenario/`](tools/thermalcore-scenario) | Plant simulator + Python runner + determinism gate          |
 | Probe            | [`tools/thermalcore_probe.py`](tools/thermalcore_probe.py) | UDP -> CSV telemetry recorder for plots and SHA-256 gates  |
+| Telemetry tool   | [`tools/thermal-telemetry-tool/`](tools/thermal-telemetry-tool) | C++ host driver for the CH32 command channel + PWM->RPM sweep (post-v1) |
 | Reference docs   | [`docs/`](docs)                     | PRD (`thermal-core-prd.md`) + implementation plan + paper   |
 | Getting started  | [`docs/getting-started/`](docs/getting-started) | Full deployment writeups for the three demo topologies      |
 
@@ -226,8 +227,9 @@ firmware from source on every invocation, so `make flash-ch32`
 without it would flash the default (non-telemetry) variant.
 
 The capture is a canonical CSV you can analyse exactly like the
-ESP32 bench captures. The tap is transmit-only (RX is wired and
-reserved); the SWIO status line above is independent and stays
+ESP32 bench captures. The telemetry tap itself is transmit-only;
+the RX line carries the host-command channel of the bench build
+(below). The SWIO status line above is independent and stays
 available.
 
 The live `tio` view may look stair-stepped — the canonical CSV
@@ -238,12 +240,49 @@ them without a carriage return. This is cosmetic: the logged
 terminal, where a normal terminal supplies the carriage return.
 
 **Status:** the firmware is verified to cross-compile, link, and
-fit the part -- both the default and `CH32_TELEMETRY=1` builds are
-gated in CI by `build-ch32` -- and has been brought up on real
-hardware: a heat/cool capture of the regulator running standalone
-on a CH32V003 (DS18B20 + Noctua NF-A8 fan) is in the white paper's
-Evaluation section.  A calibrated benchmark sweep is still
-follow-on bench work.
+fit the part -- the default, `CH32_TELEMETRY=1`, and `CH32_COMMAND=1`
+builds are gated in CI by `build-ch32` -- and has been brought up on
+real hardware: a heat/cool capture of the regulator running
+standalone on a CH32V003 (DS18B20 + Noctua NF-A8 fan) is in the
+white paper's Evaluation section.  A calibrated benchmark sweep is
+still follow-on bench work.
+
+### Bench characterisation: host-command channel (post-v1)
+
+`make build-ch32 CH32_COMMAND=1` builds a **bench variant** of the
+firmware that accepts host commands over the USART1 RX line: a host
+PC can read PWM duty and tach RPM, and switch the control loop off
+to drive the fan manually. This is the characterisation path for a
+fan's PWM-to-RPM curve -- the baseline the fan-health detector needs.
+
+It is a bench / characterisation build, **not** shipping firmware:
+the regulation-disable command is absent from the default image,
+which stays byte-for-byte unchanged with the gate off. `CH32_COMMAND=1`
+forces `CH32_TELEMETRY=1` on -- command responses share the USART1 tap.
+
+The host side is [`thermal-telemetry-tool`](tools/thermal-telemetry-tool),
+a self-contained C++ tool:
+
+```bash
+make flash-ch32 CH32_COMMAND=1 CH32_TELEMETRY_BAUD=115200   # bench firmware
+make telemetry-tool                                         # build the host tool
+cd tools/thermal-telemetry-tool
+
+./thermal-telemetry-tool --device=/dev/ttyUSB0 --baud=115200 --action=ping
+./thermal-telemetry-tool --device=/dev/ttyUSB0 --baud=115200 --action=pwmsweep \
+    --value=/tmp/nf-a8-sweep-table.csv      # sweep duty 1-100%, log PWM->RPM
+```
+
+`pwmsweep` switches the control loop off, steps the duty across
+1-100 %, records the settled tach RPM at each point, and writes a
+`pwm_pct,duty_0_255,rpm` table -- then resumes regulation. Other
+actions: `log` (stream telemetry to a file), `pwmset` / `pwmget`,
+`rpmget`, `loop on|off`.
+
+**Bench mode:** `loop off` suspends thermal regulation -- the fan
+obeys `pwmset`, not the temperature. Run it with an operator
+present; `loop on` (or `pwmsweep`, which restores it) re-arms the
+regulator.
 
 ## Build + test (host-side)
 
@@ -264,6 +303,7 @@ make build-esp32        # ESP32-C3 STANDALONE + REPLAY firmware builds
                         # (auto-SKIPs if ESP-IDF isn't installed)
 make build-ch32         # CH32V003 STANDALONE firmware cross-build
                         # (auto-SKIPs if the RISC-V toolchain is absent)
+make telemetry-tool     # CH32 command-channel host tool (C++17)
 ```
 
 PR CI runs the full gate set on every push; see
@@ -313,6 +353,14 @@ Recent stages:
   regulator running standalone on the chip is in the white
   paper's Evaluation section. A calibrated benchmark sweep is
   still follow-on bench work.
+- **Stage 19** (post-v1) — CH32V003 host-command channel: a
+  compile-gated bench build (`CH32_COMMAND=1`) that accepts host
+  commands over USART1 RX, plus
+  [`thermal-telemetry-tool`](tools/thermal-telemetry-tool), a C++
+  host tool that drives a PWM-to-RPM sweep — the characterisation
+  path for a fan-health baseline. The shipping firmware is
+  byte-for-byte unchanged; the bench build is gated by a third
+  `build-ch32` matrix leg.
 
 ## Documentation
 

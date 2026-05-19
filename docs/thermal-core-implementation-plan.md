@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.18
+**Document status:** Draft v0.19
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.20)
 
@@ -656,6 +656,12 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Exit gate:** all previous green, plus `build-ch32 CH32_COMMAND=1` green and within budget, the `thermal-telemetry-tool` CI build green, the parser unit test green, and the default CH32 firmware byte-for-byte unchanged.
 
+- **Shipped 19a:** the CH32V003 host-command channel firmware. `bsp_ch32_uart.c` gained a non-blocking `bsp_ch32_uart_getc()` on the USART1 RX line (PD6, configured since 18e). `ch32_command.{c,h}` is a pure-C99 line-buffered ASCII parser -- `loop on|off`, `pwmset <0-255>`, `pwmget`, `rpmget`, `ping` -- with no ch32fun dependency, so it host-unit-tests directly (`test/unit/test_ch32_command.c`). `main.c` polls RX under `#if THERMALCORE_CH32_COMMAND`; a `loop off` drops into a bypass loop -- manual PWM, tach readback, no `thermal_core_step()`. The `CH32_COMMAND=1` Makefile gate forces `CH32_TELEMETRY=1` on (responses share the UART). With the gate off the firmware is byte-for-byte unchanged (verified: sha256-identical default `main.bin`, 12 220 B); the `CH32_COMMAND` build links and fits at 13 724 B of 16 KB.
+- **Shipped 19b:** `tools/thermal-telemetry-tool/` -- the C++17 host driver, pure POSIX termios, no external dependency, with its own Makefile and a root `telemetry-tool` target. Actions: `log` (stream the canonical CSV to a file), `pwmset` / `pwmget`, `rpmget`, `loop on|off`, `ping`, and `pwmsweep` -- which bypasses the loop, steps the duty 1--100 %, and writes the `pwm_pct,duty_0_255,rpm` baseline table Stage 20 consumes. `send_command` retries through the regulating firmware's ~0.8 s DS18B20 conversion blackout; command responses are demultiplexed from the interleaved telemetry stream by their `+`/`-` line prefix. The protocol round-trip was verified against a PTY-backed firmware emulator.
+- **Shipped 19c:** the CI gates + docs. `build-ch32` is restructured to a three-leg `variant` matrix -- default / telemetry / command -- so the bench firmware is cross-compiled and size-budgeted on every PR; a new `telemetry-tool` CI job compiles the host tool. `README.md` gains a "Bench characterisation" subsection -- the `CH32_COMMAND` build, the tool, and the `loop off` bench-mode caveat.
+
+**Stage 19 status:** the CH32V003 host-command channel -- the `CH32_COMMAND` bench firmware, the `thermal-telemetry-tool` host driver, and the three-leg `build-ch32` + `telemetry-tool` CI gates -- is shipped; Stage 19 is closed. The shipping STANDALONE firmware is byte-for-byte unchanged. Stage 20 (fan-health on the CH32) follows once a PWM-to-RPM sweep has been captured on hardware with the tool.
+
 ---
 
 ### Stage 20 — Fan-health enabled on the CH32V003 STANDALONE firmware (post-v1)
@@ -807,4 +813,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.18*
+*End of implementation plan v0.19*
