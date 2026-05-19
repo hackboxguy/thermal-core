@@ -53,7 +53,7 @@ PROPERTY_BIN_DIR   = build/property
 PROPERTY_BIN          = $(PROPERTY_BIN_DIR)/property_config
 PROPERTY_COMMAND_BIN  = $(PROPERTY_BIN_DIR)/property_command
 
-.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 build-ch32 flash-ch32 paper-figures clean
+.PHONY: all test test-tiny-profile build verify-portability replay replay-parity replay-parity-host regen-replay-goldens property property-command asan clang-tidy cppcheck smoke integration integration-can scenario determinism fuzz-json fuzz-wire coverage build-esp32 build-ch32 flash-ch32 telemetry-tool paper-figures clean
 
 all: test build verify-portability replay property property-command smoke integration
 
@@ -924,6 +924,14 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
 	@python3 docs/paper/figures/plots/render_ch32_capture.py
 	@echo "paper-figures: ALL FIGURES WRITTEN"
 
+# --- Stage 19 19b: thermal-telemetry-tool (C++ host tool) ---
+# The host side of the CH32V003 command channel: streams telemetry,
+# drives PWM / tach, and runs the PWM->RPM sweep. Self-contained
+# C++17; delegates to the tool's own Makefile.
+telemetry-tool:
+	$(MAKE) -C tools/thermal-telemetry-tool
+
 clean:
 	rm -rf build
 	$(MAKE) -C platform/linux clean
+	$(MAKE) -C tools/thermal-telemetry-tool clean

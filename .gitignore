@@ -2,3 +2,4 @@ tmp*/
 docs/latex-artifacts/
 build/
 __pycache__/
+tools/thermal-telemetry-tool/thermal-telemetry-tool
