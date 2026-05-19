@@ -51,7 +51,7 @@
 
 % Define footer content
 \fancyfoot[C]{\thepage}
-\fancyfoot[L]{Draft 0.7 -- May 2026}
+\fancyfoot[L]{Draft 0.8 -- May 2026}
 \fancyfoot[R]{}
 
 % Header/footer lines
@@ -95,7 +95,7 @@
     {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
     {\Large Design \& Implementation}\\[2ex]
     {\large Author: Albert David}\\[2ex]
-    {\large Draft 0.7}\\[1ex]
+    {\large Draft 0.8}\\[1ex]
     May 2026\\[2ex]
     {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
 \end{center}
@@ -119,6 +119,8 @@
     0.6 & May 2026 & Albert David & Documentation-grounding pass: figure-provenance and determinism-harness wording corrected to match the implemented pipeline; the post-v1 fan-health step added to the control-loop listing; measured CH32 footprint, CI job count, and coverage figures refreshed \\
     \hline
     0.7 & May 2026 & Albert David & CH32V003 on-hardware bring-up added to the Evaluation section: a bench-setup photograph and a heat/cool telemetry capture (temperature, fan duty, tachometer RPM) of the regulator running standalone on the chip; the ``on-hardware bring-up is follow-on'' caveat retired \\
+    \hline
+    0.8 & May 2026 & Albert David & CH32V003 on-hardware evidence extended: a manual fan-stall capture showing the stall fault firing and the regulator auto-recovering on the chip, and a per-tick \texttt{thermal\_core\_step()} execution-time measurement (134--159\,$\mu$s); the ``per-tick execution time not instrumented'' gap narrowed accordingly \\
     \hline
 \end{longtable}
 

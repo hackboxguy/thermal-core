@@ -126,14 +126,25 @@ Figure~\ref{fig:ch32-capture} is a telemetry capture of that rig over three hand
 \label{fig:ch32-capture}
 \end{figure}
 
-Like the HIL bring-up above, this is a functional demonstration, not a calibrated benchmark --- heat was applied by hand and ambient was not regulated. What it establishes is that the same \texttt{core/} source exercised by the simulation gates runs its full closed loop on-chip on a ten-cent part: sensing, the governor, the fault trips, and actuator drive, with no host involved.
+With the stall detector enabled in the configuration, the same firmware was run through a second heat/cool exercise --- and at each heat peak the fan rotor was stopped by hand (Figure~\ref{fig:ch32-stall}). At both stalls the measured RPM collapses and the firmware's stall detector catches it: the shaded bands are the fault lifecycle the firmware logged --- a \texttt{FAULT\_ENTER} event once the stall persisted past the configured window, then \texttt{RECOVERING} and \texttt{FAULT\_CLEAR} once the fan was released and spun back up. The detector's force-to-maximum-duty action fired as well, though it is not visually distinct here: the chip was already at its hottest, so the governor was commanding full duty regardless. The erratic RPM inside the second band is the tachometer reading a hand-gripped rotor. The whole fault subsystem --- detection, the \texttt{NORMAL}\,$\rightarrow$\,\texttt{CRITICAL}\,$\rightarrow$\,\texttt{RECOVERING}\,$\rightarrow$\,\texttt{NORMAL} state machine, the safety action, and recovery --- thus runs on the chip, with no host involved.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{ch32v003-stall}
+\caption{CH32V003 \texttt{STANDALONE} fan-stall fault: the fan rotor was stopped by hand near each heat peak. The shaded bands are the stall-fault lifecycle (\texttt{FAULT\_ENTER} to \texttt{FAULT\_CLEAR}) recorded in the firmware's event log; the measured RPM collapses inside them. The raw capture is committed at \texttt{docs/paper/data/ch32v003-stall-capture.csv}.}
+\label{fig:ch32-stall}
+\end{figure}
+
+That same capture also carries the per-tick execution time. A compile-time probe brackets each \texttt{thermal\_core\_step()} call with a SysTick read and logs the cost; across the 340 ticks of the capture the step ran in 134--159\,$\mu$s, median 142\,$\mu$s, on the 48\,MHz core --- about 0.014\,\% of the 1\,s control period. The remainder of each period is the blocking DS18B20 conversion and the idle wait; the control law itself is a vanishingly small slice even on this part.
+
+Like the HIL bring-up above, this is a functional demonstration, not a calibrated benchmark --- the heat and the stalls were both applied by hand and ambient was not regulated. What it establishes is that the same \texttt{core/} source exercised by the simulation gates runs its full closed loop on-chip on a ten-cent part: sensing, the governor, fault detection and recovery, and actuator drive, with no host involved.
 
 \subsection{What This Section Does Not Yet Claim}\label{sec:eval-gaps}
 
 To keep the evidence trail honest, the following are explicitly \emph{not} claimed here and await the formal benchmark sweep:
 
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Per-tick execution time.} The step function has not been instrumented on any target; the timing budget in Table~\ref{tab:timing-budget} remains a set of goals.
+    \item \textbf{Per-tick execution time.} The step function is now instrumented on one target --- the CH32V003 figure of 134--159\,$\mu$s reported in Section~\ref{sec:eval-ch32-hw} --- but the ESP32-C3 has not been measured, and neither figure has been compared against the timing budget in Table~\ref{tab:timing-budget} under controlled conditions.
     \item \textbf{Acoustic results.} No calibrated sound-pressure-level measurement has been taken; PWM-seconds with and without acoustic masking are not yet reported.
     \item \textbf{Quantitative control metrics.} Settling time, overshoot, and fault-detection latency are listed as evaluation targets in Section~6 but are not yet measured.
     \item \textbf{Cross-platform parity table.} Host-side replay parity is gated in CI --- the host replay binary reproduces a committed golden telemetry CSV byte-for-byte --- but the full host-versus-target byte comparison runs on the bench and is not yet reported here as a table.
