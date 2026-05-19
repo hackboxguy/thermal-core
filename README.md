@@ -239,9 +239,11 @@ terminal, where a normal terminal supplies the carriage return.
 
 **Status:** the firmware is verified to cross-compile, link, and
 fit the part -- both the default and `CH32_TELEMETRY=1` builds are
-gated in CI by `build-ch32`.  On-hardware bring-up, exercising the
-bench-derived TIM2 / EXTI / 1-Wire / USART drivers through the
-control core on a real CH32V003, is follow-on bench work.
+gated in CI by `build-ch32` -- and has been brought up on real
+hardware: a heat/cool capture of the regulator running standalone
+on a CH32V003 (DS18B20 + Noctua NF-A8 fan) is in the white paper's
+Evaluation section.  A calibrated benchmark sweep is still
+follow-on bench work.
 
 ## Build + test (host-side)
 
@@ -306,9 +308,11 @@ Recent stages:
   [`configs/fan-health-demo.json`](configs/fan-health-demo.json).
 - **Stage 18** (post-v1) — CH32V003 STANDALONE port: the
   portable `core/` cross-builds self-contained on a ~10-cent
-  RV32EC MCU, gated by `build-ch32` + `unit-tiny-profile`.
-  Cross-build verified; on-hardware bring-up is follow-on
-  bench work.
+  RV32EC MCU, gated by `build-ch32` + `unit-tiny-profile`, and
+  is brought up on real hardware — a heat/cool capture of the
+  regulator running standalone on the chip is in the white
+  paper's Evaluation section. A calibrated benchmark sweep is
+  still follow-on bench work.
 
 ## Documentation
 

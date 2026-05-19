@@ -894,6 +894,7 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
                tools/thermalcore-scenario/plant_ffi.py \
                tools/thermalcore-scenario/scenario.py \
                tools/thermalcore-probe \
+               docs/paper/data/ch32v003-capture.csv \
                $(wildcard docs/paper/figures/plots/*.py)
 	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
 	    echo "=== scenario: $$s ==="; \
@@ -903,6 +904,10 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
 	    python3 docs/paper/figures/plots/plot_$$s.py; \
 	done
 	@python3 tools/figure_manifest.py
+	@# Captured-artifact figure (CH32V003 on-hardware bring-up): not a
+	@# regenerable scenario, so it is rendered from its committed CSV
+	@# outside the scenario loop and the figure-freshness manifest.
+	@python3 docs/paper/figures/plots/render_ch32_capture.py
 	@echo "paper-figures: ALL FIGURES WRITTEN"
 
 clean:
