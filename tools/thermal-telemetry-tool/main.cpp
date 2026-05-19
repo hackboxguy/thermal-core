@@ -224,6 +224,16 @@ std::optional<std::string> send_command(SerialPort& port,
     return std::nullopt;
 }
 
+/* Printed when the firmware does not answer -- the usual causes. */
+void print_link_hint()
+{
+    std::cerr <<
+"  check: the firmware is a CH32_COMMAND=1 build; --baud matches its\n"
+"  CH32_TELEMETRY_BAUD; and the USB-serial adapter's TX is wired to\n"
+"  the CH32 PD6 (RX) pin, with a common ground. The telemetry tap\n"
+"  only needs the TX direction, so PD6 is easy to leave unwired.\n";
+}
+
 /* --- actions ---------------------------------------------------- */
 
 int action_ping(SerialPort& port)
@@ -233,8 +243,8 @@ int action_ping(SerialPort& port)
         std::cout << "ok: firmware responding\n";
         return 0;
     }
-    std::cerr << "error: no +pong -- check the baud rate, and that "
-                 "the firmware is a CH32_COMMAND=1 build\n";
+    std::cerr << "error: no `+pong` from the firmware.\n";
+    print_link_hint();
     return 1;
 }
 
@@ -341,7 +351,9 @@ int action_pwmsweep(SerialPort& port, const std::string& path,
     std::cerr << "sweep: bypassing the control loop...\n";
     auto r = send_command(port, "loop off");
     if (!r || *r != "+loop off") {
-        std::cerr << "error: could not enter bypass mode -- aborting\n";
+        std::cerr << "error: could not enter bypass mode -- no "
+                     "`+loop off` from the firmware.\n";
+        print_link_hint();
         return 1;
     }
 

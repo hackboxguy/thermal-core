@@ -22,10 +22,11 @@ int bsp_ch32_uart_init(uint32_t baud);
  * newline), blocking until each byte has been shifted out. */
 void bsp_ch32_uart_puts(const char *s);
 
-/* Non-blocking single-byte read from USART1 RX. Returns the byte
- * (0..255) when one is waiting in the RX register, or -1 when none
- * is. Used by the Stage 19 host-command channel; unreferenced by --
- * and so --gc-sections-stripped from -- the default firmware. */
+/* Non-blocking single-byte read for the Stage 19 host-command
+ * channel. In the command build it pops the interrupt-fed RX ring;
+ * otherwise it is a direct polled read, unreferenced by -- and so
+ * --gc-sections-stripped from -- the default firmware. Returns the
+ * byte (0..255), or -1 when none is waiting. */
 int bsp_ch32_uart_getc(void);
 
 #endif /* BSP_CH32_UART_H */
