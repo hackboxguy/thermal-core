@@ -23,6 +23,43 @@ Initial fault detectors:
     \item stale context input --- for example a speed-source timeout, which drives acoustic-mask fail-safe behavior.
 \end{itemize}
 
+All four detectors share one state machine (Figure~\ref{fig:fault-fsm}), anchored on the configured \texttt{persist\_ticks} (how long the condition must hold before the detector raises) and \texttt{recovery\_ticks} (how long it must be clear before auto-recovery). The CH32 fan-stall capture in the Evaluation section traces this lifecycle on real hardware: the shaded bands there are exactly the \textsc{Active} $\rightarrow$ \textsc{Recovering} $\rightarrow$ \textsc{Normal} traversal logged as \texttt{FAULT\_ENTER} / \texttt{FAULT\_RECOVERING} / \texttt{FAULT\_CLEAR} events.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    node distance=3.5cm,
+    state/.style={draw, rounded corners=2pt, align=center,
+                  minimum height=1.15cm, minimum width=2.4cm},
+    normal/.style={state, fill=green!12},
+    active/.style={state, fill=red!12},
+    recover/.style={state, fill=yellow!18},
+    edge/.style={->, thick},
+    elabel/.style={font=\footnotesize, align=center}
+]
+    \node[normal] (n) {\textsc{Normal}};
+    \node[active, right=of n] (a)
+        {\textsc{Active}\\\scriptsize(degraded /\\\scriptsize critical)};
+    \node[recover, right=of a] (r) {\textsc{Recovering}};
+
+    \draw[edge] (n) -- (a)
+        node[midway, above, elabel]
+            {condition active\\for \texttt{persist\_ticks}};
+    \draw[edge] (a) -- (r)
+        node[midway, above, elabel] {condition\\clears};
+    \draw[edge, bend left=22] (r.south) to[bend left=22]
+        node[midway, below, elabel] {condition re-active}
+        (a.south);
+    \draw[edge, bend right=28] (r.north) to[bend right=28]
+        node[midway, above, elabel]
+            {clear for \texttt{recovery\_ticks}}
+        (n.north);
+\end{tikzpicture}
+\caption{Common fault-detector state machine shared by the stall, stuck-sensor, runaway, and stale-context detectors. \textsc{Active} is reported as either \texttt{DEGRADED} or \texttt{CRITICAL} per the detector's configured severity and is what triggers the configured safety action (e.g.\ \texttt{force\_pwm\_max\_until\_recovered}). A latching variant --- when the action is \texttt{force\_pwm\_max\_and\_latch} or \texttt{request\_shutdown} --- enters a fourth \textsc{Latched} state on the same persist trigger and never auto-clears; it is reset only by an explicit \texttt{apply\_command} once the condition has been inactive for \texttt{recovery\_ticks}.}
+\label{fig:fault-fsm}
+\end{figure}
+
 \subsection{Fan-Health Detector (Post-v1)}
 
 A post-v1 addition extends the fault family with an \emph{advisory} counterpart: a fan-health detector that grades bearing wear and contamination before they become a stall. Where the stall detector raises a binary fault at the terminal failure --- tachometer near zero while PWM is high --- fan-health grades the slow approach to it, comparing measured fan RPM against a known-good PWM-to-RPM baseline captured once at the factory, at first boot, or at a service event.
@@ -31,6 +68,6 @@ It is deliberately not a fifth fault detector: it has no action and no fault sta
 
 \subsection{Numeric Identity}
 
-Every entity the core manipulates is addressed by a small integer, never a string: sensors, actuators, zones, and context signals carry numeric IDs assigned at configuration load. Telemetry signal IDs are partitioned into fixed namespaces --- zone temperatures, actuator outputs, PID terms, context values, modifier outputs, and fault counters --- so a decoder can classify a signal from its ID alone. Fault detectors instantiate per target: one stall detector per actuator, one stuck-sensor detector per sensor, one runaway detector per zone, one stale-context detector per context signal. Each detector runs a common state machine --- normal, then degraded or critical or latched, then recovering --- with per-detector severity, action, and persistence and recovery tick counts. The exact struct layouts, enum values, and the signal-ID and event-code tables are project header artefacts and are catalogued in the appendix reference rather than transcribed here, so the paper cannot drift out of sync with the code.
+Every entity the core manipulates is addressed by a small integer, never a string: sensors, actuators, zones, and context signals carry numeric IDs assigned at configuration load. Telemetry signal IDs are partitioned into fixed namespaces --- zone temperatures, actuator outputs, PID terms, context values, modifier outputs, and fault counters --- so a decoder can classify a signal from its ID alone. Fault detectors instantiate per target: one stall detector per actuator, one stuck-sensor detector per sensor, one runaway detector per zone, one stale-context detector per context signal. Each detector runs the common state machine of Figure~\ref{fig:fault-fsm} with per-detector severity, action, and persistence and recovery tick counts. The exact struct layouts, enum values, and the signal-ID and event-code tables are project header artefacts and are catalogued in the appendix reference rather than transcribed here, so the paper cannot drift out of sync with the code.
 
 \endinput

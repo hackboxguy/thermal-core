@@ -71,6 +71,56 @@ Figure~\ref{fig:closed-loop-control} shows the same flow as a closed-loop contro
 \label{fig:closed-loop-control}
 \end{figure}
 
+Figure~\ref{fig:tick-pipeline} expands the same loop into its per-tick module pipeline. Where Figure~\ref{fig:closed-loop-control} captures the negative-feedback architecture, the pipeline view shows the eight stages \texttt{thermal\_core\_step} runs in order and where the fault detectors inject a safety override, the slew limiter clamps the rate of change, and the advisory fan-health detector taps the loop without ever touching the command path.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    node distance=0.30cm and 0.30cm,
+    stage/.style={draw, rounded corners=2pt, align=center,
+                  minimum height=1.1cm, minimum width=1.85cm,
+                  fill=blue!6},
+    side/.style={draw, rounded corners=2pt, align=center,
+                 minimum height=0.95cm, minimum width=2.4cm,
+                 fill=purple!8},
+    io/.style={align=center, font=\small\itshape},
+    arrow/.style={->, thick},
+    tap/.style={->, thick, dashed, gray}
+]
+    \node[io] (in) {input\\snapshot};
+    \node[stage, right=of in] (iir)   {IIR filter\\(per sensor)};
+    \node[stage, right=of iir] (agg)  {Zone\\aggregate};
+    \node[stage, right=of agg] (gov)  {Governor\\step-wise\\or PID};
+    \node[stage, right=of gov] (arb)  {Arbitrator\\(max-wins)};
+    \node[stage, right=of arb] (mod)  {Modifier\\cap};
+    \node[stage, right=of mod] (flt)  {Fault\\detectors};
+    \node[stage, right=of flt] (slew) {Slew\\\& clamp};
+    \node[io, right=of slew] (out) {actuator\\frame};
+
+    \draw[arrow] (in)  -- (iir);
+    \draw[arrow] (iir) -- (agg);
+    \draw[arrow] (agg) -- (gov);
+    \draw[arrow] (gov) -- (arb);
+    \draw[arrow] (arb) -- (mod);
+    \draw[arrow] (mod) -- (flt);
+    \draw[arrow] (flt) -- (slew);
+    \draw[arrow] (slew) -- (out);
+
+    \node[side, below=1.05cm of flt] (fh)
+        {Fan-health (advisory)\\\scriptsize\itshape{telemetry only}};
+    \draw[tap] (in.south)   |- (fh.west)
+        node[pos=0.93, above, font=\scriptsize\itshape] {tach + sensors};
+    \draw[tap] (slew.south) |- (fh.east)
+        node[pos=0.93, above, font=\scriptsize\itshape]
+            {prev applied duty};
+\end{tikzpicture}%
+}
+\caption{Per-tick module pipeline inside \texttt{thermal\_core\_step}. Each stage runs once per control period in this order; the fault detectors may overwrite the post-modifier duty upward on \texttt{force\_pwm\_max} / \texttt{shutdown}, the slew limiter then bounds the per-tick PWM step (override bypasses slew on upward moves only), and the post-v1 advisory fan-health detector reads the tach sample and the previous tick's applied duty without ever touching the command path (dashed taps).}
+\label{fig:tick-pipeline}
+\end{figure}
+
 \subsection{Governors}
 
 The step-wise governor maps active trips to discrete cooling states. Each trip carries a temperature threshold, a hysteresis band, a severity (\texttt{WARN}, \texttt{CRITICAL}, \texttt{SHUTDOWN}), and a cooling-state index. A trip is active when zone temperature crosses its threshold; it remains active until the temperature drops below \(\text{threshold} - \text{hysteresis}\). The zone's reported cooling state is the maximum cooling-state index over all active trips. Each actuator maps that index to a PWM value through its \texttt{state\_pwm[]} table, so per-actuator coupling stays at the configuration layer rather than the governor.
