@@ -37,7 +37,16 @@
 #define THERMAL_MAX_ACTUATORS_PER_ZONE     1
 #define THERMAL_MAX_COOLING_STATES         5
 #define THERMAL_MAX_CURVE_POINTS           8
+/* 8 covers the v1 signal set on a one-zone node (zone temp / actuator
+ * duty / actuator RPM / fault wildcard); 12 leaves room for the 4
+ * fan_health_* signals added by Stage 20, raised only for builds that
+ * compile the detector in so the default no-telemetry image is
+ * byte-for-byte unchanged. */
+#ifdef THERMALCORE_ENABLE_FAN_HEALTH
+#define THERMAL_MAX_TELEMETRY_SIGNALS     12
+#else
 #define THERMAL_MAX_TELEMETRY_SIGNALS      8
+#endif
 #define THERMAL_NAME_MAX                  24
 
 #define THERMAL_CORE_T_RESERVED_BYTES   1024

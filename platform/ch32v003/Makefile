@@ -47,11 +47,24 @@ ADDITIONAL_C_FILES := $(GENERATED_CONFIG) $(CORE_SRCS) $(BSP_SRCS) \
 EXTRA_CFLAGS += -I. -I../../core -I../../test/parity -Igenerated \
                 -include ../../core/thermal_profile_tiny.h
 
+# CH32_COMMAND=1 implies CH32_TELEMETRY=1 -- command responses share
+# the telemetry UART. Resolve the implication before the per-feature
+# gates below so they all see the unified flag.
+ifeq ($(CH32_COMMAND),1)
+CH32_TELEMETRY := 1
+endif
+
 # Stage 18e: CH32_TELEMETRY=1 builds the canonical-CSV telemetry tap
-# (USART1 PD5/PD6) into the firmware. CH32_TELEMETRY_BAUD overrides
-# the default 9600 telemetry baud (e.g. CH32_TELEMETRY_BAUD=115200).
+# (USART1 PD5/PD6) into the firmware. Stage 20 also enables the
+# advisory fan-health detector in this gate -- the detector produces
+# telemetry-only output, so it rides the tap, and json2static emits
+# the per-actuator fan_health baseline. The default (CH32_TELEMETRY
+# unset) firmware stays byte-for-byte unchanged.
+# CH32_TELEMETRY_BAUD= overrides the 9600 default baud (e.g. =115200).
 ifeq ($(CH32_TELEMETRY),1)
-EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1 \
+                -DTHERMALCORE_ENABLE_FAN_HEALTH=1
+JSON2STATIC_FLAGS += --enable-fan-health
 endif
 ifdef CH32_TELEMETRY_BAUD
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
@@ -69,12 +82,13 @@ endif
 # CH32_COMMAND=1 builds the Stage 19 host-command channel: a USART1-RX
 # command parser (ch32_command.c) + a control-loop bypass mode in
 # main.c, driven by tools/thermal-telemetry-tool to capture a PWM->RPM
-# sweep. Command responses share USART1 with the telemetry tap, so it
-# also forces CH32_TELEMETRY on. A bench/characterisation build, NOT
-# the shipping firmware -- default off; with it off the firmware is
-# byte-for-byte the standard STANDALONE regulator.
+# sweep. The implication block above turns CH32_TELEMETRY on (so the
+# telemetry block adds its defines and the fan-health detector). A
+# bench/characterisation build, NOT the shipping firmware -- default
+# off; with it off the firmware is byte-for-byte the standard
+# STANDALONE regulator.
 ifeq ($(CH32_COMMAND),1)
-EXTRA_CFLAGS += -DTHERMALCORE_CH32_COMMAND=1 -DTHERMALCORE_CH32_TELEMETRY=1
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_COMMAND=1
 endif
 
 include $(CH32FUN)/ch32fun.mk
@@ -86,7 +100,8 @@ $(GENERATED_CONFIG) : configs/ch32v003-standalone.json \
                       ../../tools/json2static.py
 	@mkdir -p generated
 	python3 ../../tools/json2static.py $< -o $@ \
-	    --symbol G_THERMAL_CFG --pinmap-prefix ch32
+	    --symbol G_THERMAL_CFG --pinmap-prefix ch32 \
+	    $(JSON2STATIC_FLAGS)
 
 clean : cv_clean
 	rm -rf generated

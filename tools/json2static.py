@@ -254,7 +254,7 @@ FAN_HEALTH_ZEROED = {
 }
 
 
-def normalise_fan_health(fh_raw, actuator_raw, idx):
+def normalise_fan_health(fh_raw, actuator_raw, idx, has_mcu_tach=False):
     """Parse + validate a per-actuator fan_health block (Stage 17, PRD
     Appendix C). Returns a normalised dict; a zeroed block when the
     section is absent or disabled. Raises ConfigError on any malformed
@@ -275,7 +275,10 @@ def normalise_fan_health(fh_raw, actuator_raw, idx):
                 "severity_pct"):
         if key not in fh_raw:
             raise ConfigError(f"{where}: missing required key '{key}'")
-    if "tach" not in actuator_raw:
+    # The actuator's tach lives either as a Linux-style file path
+    # (`actuator.tach`) or, on MCU targets (Stage 20 onward), as a
+    # `tach_gpio` in `mcu_pinmap.actuators[]`. Either counts.
+    if "tach" not in actuator_raw and not has_mcu_tach:
         raise ConfigError(f"{where}: enabled but actuator has no tach source")
 
     src_name = fh_raw["baseline_source"]
@@ -405,7 +408,12 @@ def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
         out += [tsig_fault_stale_context(s) for s in range(context_count)]
         if not out: raise ConfigError("wildcard expanded to nothing")
         return out
-    if enable_fan_health and sel == "fan_health_*":
+    if sel == "fan_health_*":
+        # When --enable-fan-health is off, expand to nothing -- the
+        # same MCU config can list fan_health_* signals and still be
+        # consumed by a no-fan-health build (Stage 20).
+        if not enable_fan_health:
+            return []
         if actuator_count == 0: raise ConfigError("wildcard expanded to nothing")
         out = []
         for s in range(actuator_count):
@@ -511,11 +519,17 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             "spinup_ms":      int(a.get("spinup_ms", 0)),
             "state_pwm":      [int(x) for x in sp] + [0] * (MAX_COOLING_STATES - len(sp)),
         })
+        # When --enable-fan-health is off, any fan_health block in
+        # the JSON is silently ignored: the same MCU config supports
+        # both the default no-telemetry build and the telemetry
+        # build (which adds the detector). config_jsmn already
+        # behaves this way on the Linux side.
         if enable_fan_health:
-            fan_health.append(normalise_fan_health(a.get("fan_health"), a, i))
-        elif "fan_health" in a:
-            raise ConfigError(
-                f"actuators[{i}].fan_health: requires --enable-fan-health")
+            has_mcu_tach = any(
+                mca.get("name") == a["name"] and "tach_gpio" in mca
+                for mca in raw.get("mcu_pinmap", {}).get("actuators", []))
+            fan_health.append(normalise_fan_health(
+                a.get("fan_health"), a, i, has_mcu_tach))
 
     def find_slot(arr, name, kind, where):
         for i, e in enumerate(arr):

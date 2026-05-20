@@ -22,7 +22,28 @@
       "slew_per_tick": 8,
       "spinup_pwm": 0,
       "spinup_ms": 0,
-      "state_pwm": [0, 100, 160, 220, 255]
+      "state_pwm": [0, 100, 160, 220, 255],
+      "fan_health": {
+        "enable": true,
+        "fan_model": "noctua-nf-a8-pwm",
+        "baseline_source": "field",
+        "baseline": [
+          [26,   210],
+          [51,   435],
+          [77,   705],
+          [100,  915],
+          [128, 1170],
+          [160, 1440],
+          [220, 1980],
+          [255, 2250]
+        ],
+        "stable_pwm_ticks": 30,
+        "stable_pwm_tolerance": 2,
+        "stable_rpm_ticks": 5,
+        "stable_rpm_tolerance_pct": 5,
+        "min_points_observed": 3,
+        "severity_pct": { "aging": -5, "degraded": -15, "failing": -30 }
+      }
     }
   ],
 
@@ -60,7 +81,8 @@
   "telemetry": {
     "enable": true,
     "period_ticks": 1,
-    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*", "fault_*"],
+    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*",
+                "fault_*", "fan_health_*"],
     "transport": "uart:console"
   },
 
