@@ -43,6 +43,30 @@ volatile std::sig_atomic_t g_stop = 0;
 void on_sigint(int) { g_stop = 1; }
 
 /* --- percent <-> raw 0..255 duty (the wire protocol carries raw) --- */
+/* Strict non-negative integer parse: returns nullopt on empty input,
+ * any non-digit char, or numeric overflow. Used for every numeric CLI
+ * option so a typo (`--dwell=oops`) fails loudly with exit 2 instead
+ * of silently becoming 0 -- which on the sweep path would record RPM
+ * with no settle time and quietly poison the fan-health baseline. */
+std::optional<long> parse_uint_strict(const std::string& s)
+{
+    if (s.empty()) {
+        return std::nullopt;
+    }
+    for (char c : s) {
+        if (c < '0' || c > '9') {
+            return std::nullopt;
+        }
+    }
+    errno = 0;
+    char* end = nullptr;
+    long v = std::strtol(s.c_str(), &end, 10);
+    if (errno == ERANGE || end != s.c_str() + s.size()) {
+        return std::nullopt;
+    }
+    return v;
+}
+
 int pct_to_duty(int pct)
 {
     if (pct < 0)   { pct = 0; }
@@ -365,15 +389,14 @@ int action_pwmsweep(SerialPort& port, const std::string& path,
     }
     out << "pwm_pct,duty_0_255,rpm\n";
 
-    int rc = 0;
-    for (int pct = step; pct <= 100 && !g_stop; pct += step) {
-        int  duty = pct_to_duty(pct);
+    /* One sample step: set duty, settle, read RPM, write a row. */
+    auto sample_one = [&](int pct) -> bool {
+        int duty = pct_to_duty(pct);
         auto sr = send_command(port, "pwmset " + std::to_string(duty));
         if (!sr || sr->rfind("+pwm", 0) != 0) {
             std::cerr << "error: pwmset " << duty
                       << " failed -- aborting sweep\n";
-            rc = 1;
-            break;
+            return false;
         }
         std::this_thread::sleep_for(std::chrono::seconds(dwell_s));
         auto rr  = send_command(port, "rpmget");
@@ -381,13 +404,27 @@ int action_pwmsweep(SerialPort& port, const std::string& path,
         if (!rr || rr->rfind("+rpm", 0) != 0 || !rpm) {
             std::cerr << "error: rpmget failed at " << pct
                       << "% -- aborting sweep\n";
-            rc = 1;
-            break;
+            return false;
         }
         out << pct << "," << duty << "," << *rpm << "\n";
         out.flush();
         std::cerr << "  " << pct << "% (duty " << duty << ") -> "
                   << *rpm << " rpm\n";
+        return true;
+    };
+
+    int rc       = 0;
+    int last_pct = 0;
+    for (int pct = step; pct <= 100 && !g_stop; pct += step) {
+        if (!sample_one(pct)) { rc = 1; break; }
+        last_pct = pct;
+    }
+    /* The baseline must reach the actuator's pwm_max -- always sample
+     * 100 % at the end when step doesn't land on it exactly (e.g.
+     * --step=7 stops at 98 %), so the resulting table is valid input
+     * for the Stage 20 fan_health.baseline. */
+    if (rc == 0 && !g_stop && last_pct != 100) {
+        if (!sample_one(100)) { rc = 1; }
     }
 
     /* Always restore regulation -- bypass leaves the fan unprotected. */
@@ -459,12 +496,33 @@ int main(int argc, char** argv)
     const std::string device = args.count("device") ? args["device"] : "";
     const std::string action = args.count("action") ? args["action"] : "";
     const std::string value  = args.count("value")  ? args["value"]  : "";
-    const int baud  = args.count("baud")  ? std::atoi(args["baud"].c_str())
-                                          : 115200;
-    const int dwell = args.count("dwell") ? std::atoi(args["dwell"].c_str())
-                                          : 4;
-    const int step  = args.count("step")  ? std::atoi(args["step"].c_str())
-                                          : 1;
+
+    /* Strictly parse + range-check each numeric option. A typo here
+     * (`--dwell=oops`) used to silently become 0 with std::atoi, which
+     * on the sweep path would record RPM with zero settle time and
+     * quietly produce a bad fan-health baseline. */
+    long baud  = 115200;
+    long dwell = 4;
+    long step  = 1;
+    auto require_uint = [&](const std::string& key,
+                            long min_v, long max_v, long& out) -> bool {
+        auto it = args.find(key);
+        if (it == args.end()) {
+            return true;                        /* not passed: keep default */
+        }
+        auto v = parse_uint_strict(it->second);
+        if (!v || *v < min_v || *v > max_v) {
+            std::cerr << "error: --" << key << "=" << it->second
+                      << " must be an integer in [" << min_v
+                      << ", " << max_v << "]\n";
+            return false;
+        }
+        out = *v;
+        return true;
+    };
+    if (!require_uint("baud",  1, 4000000, baud))  { return 2; }
+    if (!require_uint("dwell", 1, 60,      dwell)) { return 2; }
+    if (!require_uint("step",  1, 100,     step))  { return 2; }
 
     if (device.empty()) {
         std::cerr << "error: --device is required\n\n";
@@ -478,7 +536,7 @@ int main(int argc, char** argv)
     }
 
     SerialPort port;
-    if (!port.open_port(device, baud)) {
+    if (!port.open_port(device, static_cast<int>(baud))) {
         return 1;
     }
 
@@ -487,7 +545,13 @@ int main(int argc, char** argv)
     if (action == "rpmget") { return action_rpmget(port); }
     if (action == "loop")   { return action_loop(port, value); }
     if (action == "pwmset") {
-        return action_pwmset(port, std::atoi(value.c_str()));
+        auto v = parse_uint_strict(value);
+        if (!v || *v > 100) {
+            std::cerr << "error: pwmset --value must be a percent "
+                         "in [0, 100]\n";
+            return 2;
+        }
+        return action_pwmset(port, static_cast<int>(*v));
     }
     if (action == "log") {
         if (value.empty()) {
@@ -501,7 +565,9 @@ int main(int argc, char** argv)
             std::cerr << "error: pwmsweep needs --value=<output.csv>\n";
             return 2;
         }
-        return action_pwmsweep(port, value, dwell, step);
+        return action_pwmsweep(port, value,
+                               static_cast<int>(dwell),
+                               static_cast<int>(step));
     }
 
     std::cerr << "error: unknown action `" << action << "`\n\n";
