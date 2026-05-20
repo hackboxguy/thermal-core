@@ -390,7 +390,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ['default', 'telemetry', 'command']
+        variant: ['default', 'telemetry', 'command', 'arctic']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -410,6 +410,8 @@ jobs:
             default)   make build-ch32 ;;
             telemetry) make build-ch32 CH32_TELEMETRY=1 ;;
             command)   make build-ch32 CH32_COMMAND=1 ;;
+            arctic)    make build-ch32 CH32_TELEMETRY=1 \
+                           CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json ;;
           esac
       - name: Upload firmware linker map
         if: always()

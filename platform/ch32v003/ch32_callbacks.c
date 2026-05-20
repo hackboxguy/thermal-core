@@ -18,13 +18,26 @@
 
 #include "canonical.h"
 #include "bsp_ch32_uart.h"
+#include "thermal_config.h"
 
-/* Ring of pending telemetry records.  One tick emits 3 signal
- * samples plus the occasional event, and the main loop drains
- * every tick, so 8 slots (7 usable) never overflow in practice;
- * on overflow the incoming record is dropped (the PRD permits
- * coalesce/drop). */
-#define CH32_TELEM_RING 8
+/* Ring of pending telemetry records. thermal_core_step() emits every
+ * enabled telemetry signal in one in-step burst before returning, and
+ * this main-loop ring is the platform's buffer in front of the
+ * blocking UART. Sizing rule: the ring must hold the entire per-tick
+ * burst -- otherwise the tail signals (specifically the higher-id
+ * fan_health_* records under Stage 20's signal selector) get
+ * silently dropped before the post-step drain runs. 16 slots (15
+ * usable) covers the tiny-profile max of 12 enabled signals plus a
+ * small event-burst margin. The static assert below pins the
+ * invariant, and the platform's RAM headroom comfortably fits the
+ * record array. On overflow the incoming record is still dropped
+ * (the PRD permits coalesce/drop); the static assert just keeps the
+ * sized-for-the-config case overflow-free. */
+#define CH32_TELEM_RING 16
+_Static_assert(CH32_TELEM_RING > THERMAL_MAX_TELEMETRY_SIGNALS,
+               "CH32_TELEM_RING must hold the full per-tick signal "
+               "burst with room for events; raise it if you raise "
+               "THERMAL_MAX_TELEMETRY_SIGNALS");
 
 typedef struct {
     uint32_t ts_ms;
