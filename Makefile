@@ -910,6 +910,7 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
                tools/thermalcore-probe \
                docs/paper/data/ch32v003-capture.csv \
                docs/paper/data/ch32v003-nf-a8-sweep.csv \
+               docs/paper/data/ch32v003-arctic-p8-pst-sweep-run1.csv \
                $(wildcard docs/paper/figures/plots/*.py)
 	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
 	    echo "=== scenario: $$s ==="; \

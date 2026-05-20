@@ -293,9 +293,23 @@ RPM drift against a per-actuator PWM-to-RPM baseline and emits
 confidence). It never commands the fan -- it is observability, not
 control.
 
-The baseline lives in [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)
-as an 8-point `fan_health.baseline` table, captured on the deployed
-unit with the bench tool (the path from Stage 19 to a real baseline):
+Two reference fan baselines ship in this repo, each captured on a
+deployed unit with the bench tool:
+
+| Fan | Config | Sweep CSV(s) |
+|---|---|---|
+| Noctua NF-A8 (active) | [`ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json) | [`docs/paper/data/ch32v003-nf-a8-sweep.csv`](docs/paper/data/ch32v003-nf-a8-sweep.csv) (1 run) |
+| Arctic P8 PWM PST (alt) | [`ch32v003-standalone-arctic-p8.json`](platform/ch32v003/configs/ch32v003-standalone-arctic-p8.json) | `docs/paper/data/ch32v003-arctic-p8-pst-sweep-run{1,2,3}.csv` (3 runs) |
+
+Swap configs at build time with `CH32_CONFIG=`:
+
+```bash
+make build-ch32 CH32_TELEMETRY=1 \
+    CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json
+```
+
+Each baseline is an 8-point `fan_health.baseline` table, the path
+from Stage 19 to that data is:
 
 ```bash
 # 1. Flash the bench-channel firmware (Stage 19) on the target fan.

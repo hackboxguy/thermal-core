@@ -1,0 +1,102 @@
+{
+  "config_version": 1,
+  "control_period_ms": 1000,
+
+  "sensors": [
+    {
+      "id": 0,
+      "name": "soc",
+      "iir_alpha_q16": 16384,
+      "max_staleness_ms": 5000
+    }
+  ],
+
+  "context_signals": [],
+
+  "actuators": [
+    {
+      "id": 0,
+      "name": "main_fan",
+      "pwm_min": 0,
+      "pwm_max": 255,
+      "slew_per_tick": 8,
+      "spinup_pwm": 0,
+      "spinup_ms": 0,
+      "state_pwm": [0, 100, 160, 220, 255],
+      "fan_health": {
+        "enable": true,
+        "fan_model": "arctic-p8-pwm-pst",
+        "baseline_source": "field",
+        "baseline": [
+          [26,   370],
+          [51,   500],
+          [77,   850],
+          [100, 1170],
+          [128, 1540],
+          [160, 1950],
+          [220, 2670],
+          [255, 3070]
+        ],
+        "stable_pwm_ticks": 30,
+        "stable_pwm_tolerance": 2,
+        "stable_rpm_ticks": 5,
+        "stable_rpm_tolerance_pct": 5,
+        "min_points_observed": 3,
+        "severity_pct": { "aging": -5, "degraded": -15, "failing": -30 }
+      }
+    }
+  ],
+
+  "zones": [
+    {
+      "name": "soc_zone",
+      "sensors": ["soc"],
+      "aggregation": "max",
+      "fallback_temp_mc": 85000,
+      "governor": "step_wise",
+      "actuators": ["main_fan"],
+      "trips": [
+        { "temp_mc": 30000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 1 },
+        { "temp_mc": 45000, "hyst_mc": 2000, "severity": "warn",     "cooling_state": 2 },
+        { "temp_mc": 60000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 3 },
+        { "temp_mc": 85000, "hyst_mc": 2000, "severity": "critical", "cooling_state": 4 }
+      ]
+    }
+  ],
+
+  "policy_modifiers": [],
+
+  "fault_detection": {
+    "stall": {
+      "enabled": true,
+      "severity": "critical",
+      "action": "force_pwm_max_until_recovered",
+      "persist_ticks": 3,
+      "recovery_ticks": 3,
+      "stall_rpm": 100,
+      "stall_pwm_threshold": 200
+    }
+  },
+
+  "telemetry": {
+    "enable": true,
+    "period_ticks": 1,
+    "signals": ["zone_temp_*", "actuator_pwm_*", "actuator_rpm_*",
+                "fault_*", "fan_health_*"],
+    "transport": "uart:console"
+  },
+
+  "control": {
+    "listen": "",
+    "enable": false
+  },
+
+  "mcu_pinmap": {
+    "sensors": [
+      { "name": "soc", "onewire_gpio": 51 }
+    ],
+    "actuators": [
+      { "name": "main_fan", "pwm_gpio": 52, "tach_gpio": 48, "pwm_freq_hz": 25000 }
+    ]
+  }
+}

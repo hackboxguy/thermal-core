@@ -19,6 +19,13 @@ TARGET_MCU := CH32V003
 
 CH32FUN := ch32fun/ch32fun
 
+# Source JSON config for the firmware. Stage 20 added a second
+# reference fan baseline (Arctic P8 PWM PST) alongside the active
+# NF-A8 one -- swap by overriding this knob:
+#   make build-ch32 CH32_TELEMETRY=1 \
+#       CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json
+CH32_CONFIG ?= configs/ch32v003-standalone.json
+
 # Portable core sources, the generated static config, the BSP
 # wrappers, the callback glue, and the shared canonical-CSV
 # serializer all compile alongside main.c (ch32fun.mk's $(TARGET).c).
@@ -95,8 +102,9 @@ include $(CH32FUN)/ch32fun.mk
 
 # Generate the static thermal_config_t (+ ch32 pinmap) from JSON --
 # the same json2static.py path the ESP32 build uses, with the CH32
-# pinmap prefix so it emits ch32_pinmap_t G_CH32_PINMAP.
-$(GENERATED_CONFIG) : configs/ch32v003-standalone.json \
+# pinmap prefix so it emits ch32_pinmap_t G_CH32_PINMAP. The source
+# JSON is $(CH32_CONFIG) (see the knob near the top of this file).
+$(GENERATED_CONFIG) : $(CH32_CONFIG) \
                       ../../tools/json2static.py
 	@mkdir -p generated
 	python3 ../../tools/json2static.py $< -o $@ \

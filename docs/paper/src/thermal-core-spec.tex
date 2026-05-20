@@ -51,7 +51,7 @@
 
 % Define footer content
 \fancyfoot[C]{\thepage}
-\fancyfoot[L]{Draft 0.9 -- May 2026}
+\fancyfoot[L]{Draft 0.10 -- May 2026}
 \fancyfoot[R]{}
 
 % Header/footer lines
@@ -95,7 +95,7 @@
     {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
     {\Large Design \& Implementation}\\[2ex]
     {\large Author: Albert David}\\[2ex]
-    {\large Draft 0.9}\\[1ex]
+    {\large Draft 0.10}\\[1ex]
     May 2026\\[2ex]
     {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
 \end{center}
@@ -123,6 +123,8 @@
     0.8 & May 2026 & Albert David & CH32V003 on-hardware evidence extended: a manual fan-stall capture showing the stall fault firing and the regulator auto-recovering on the chip, and a per-tick \texttt{thermal\_core\_step()} execution-time measurement (134--159\,$\mu$s); the ``per-tick execution time not instrumented'' gap narrowed accordingly \\
     \hline
     0.9 & May 2026 & Albert David & Stage 20 folded in: the post-v1 fan-health detector is now enabled on the CH32V003 with a baseline measured on the deployed fan via the Stage~19 host-tool PWM-to-RPM sweep --- the first MCU build to compile the gate on; the Evaluation section's CH32 subsection gains the sweep figure and a fan-health paragraph \\
+    \hline
+    0.10 & May 2026 & Albert David & Second reference fan baseline added (Arctic P8 PWM PST), captured on the deployed unit across three sweep runs as a drop-in alt config; the Evaluation section's sweep figure now overlays both fans, demonstrating the same firmware and portable \texttt{core/} handle substantially different fan curves \\
     \hline
 \end{longtable}
 

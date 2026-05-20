@@ -1,14 +1,17 @@
-"""Render the CH32V003 NF-A8 PWM-to-RPM sweep figure.
+"""Render the CH32V003 PWM-to-RPM sweep figure for the two reference
+fans shipped in the repo.
 
-Stage 20 reads docs/paper/data/ch32v003-nf-a8-sweep.csv -- the raw
-100-point sweep captured on the deployed fan via
-thermal-telemetry-tool --action=pwmsweep -- and renders a duty-vs-RPM
-plot, highlighting the 8 baseline points that are authored into the
-firmware's fan_health block. Like the other ch32v003-*.pdf figures,
-the input CSV is a recorded bench artifact (not regenerable
-scenario data), so this script sits outside the `plot_*.py` glob the
-figure-freshness gate iterates -- `make paper-figures` invokes it
-explicitly.
+Each fan was swept on the deployed CH32V003 via thermal-telemetry-tool
+--action=pwmsweep (1 % steps, 1 .. 100 %, 4 s settle per step). Each
+fan also has an 8-point fan_health.baseline authored into a CH32
+config; this figure overlays the raw sweeps with their baselines so
+the same firmware/core can be seen handling fans with substantially
+different curves.
+
+Like the other ch32v003-*.pdf figures, the input CSVs are recorded
+bench artifacts (not regenerable scenario data), so this script sits
+outside the `plot_*.py` glob the figure-freshness gate iterates --
+`make paper-figures` invokes it explicitly.
 """
 import csv
 import os
@@ -22,20 +25,33 @@ REPO_ROOT = os.path.abspath(
 DATA_DIR = os.path.join(REPO_ROOT, "docs", "paper", "data")
 FIG_DIR  = os.path.join(REPO_ROOT, "docs", "paper", "figures")
 
-# The 8 baseline points authored into platform/ch32v003/configs/
-# ch32v003-standalone.json. The spin-up threshold + four governor-state
-# duties (100 / 160 / 220 / 255) -- keep these in sync with the JSON.
-BASELINE_POINTS = [(26, 210), (51, 435), (77, 705), (100, 915),
-                   (128, 1170), (160, 1440), (220, 1980), (255, 2250)]
+# Each entry: csv (run 1 -- the others are repeatability-only),
+# baseline (mirrors the firmware fan_health.baseline JSON block),
+# and a colour. Keep the baselines in sync with platform/ch32v003/
+# configs/ch32v003-standalone*.json.
+FANS = [
+    {
+        "name":     "Noctua NF-A8",
+        "csv":      "ch32v003-nf-a8-sweep.csv",
+        "color":    "#2c3e50",
+        "baseline": [(26,  210), (51,  435), (77,  705), (100,  915),
+                     (128, 1170), (160, 1440), (220, 1980), (255, 2250)],
+    },
+    {
+        "name":     "Arctic P8 PWM PST",
+        "csv":      "ch32v003-arctic-p8-pst-sweep-run1.csv",
+        "color":    "#d35400",
+        "baseline": [(26,  370), (51,  500), (77,  850), (100, 1170),
+                     (128, 1540), (160, 1950), (220, 2670), (255, 3070)],
+    },
+]
 
 
 def load(path):
-    """Parse a `pwm_pct,duty_0_255,rpm` CSV. Returns (duties, rpms)
-    arrays for all 100 sweep rows."""
     duties, rpms = [], []
     with open(path, newline="") as f:
         reader = csv.reader(f)
-        next(reader, None)                # skip header row
+        next(reader, None)                # skip header
         for row in reader:
             if len(row) < 3:
                 continue
@@ -48,30 +64,31 @@ def load(path):
 
 
 def render():
-    duties, rpms = load(os.path.join(DATA_DIR, "ch32v003-nf-a8-sweep.csv"))
+    fig, ax = plt.subplots(figsize=(7.2, 4.0))
 
-    fig, ax = plt.subplots(figsize=(7.2, 3.6))
+    # Both fans share the same spin-up dead zone (the first run of
+    # zero RPMs in each sweep ends at duty 23).
+    ax.axvspan(0, 23, color="0.88", alpha=0.6, zorder=0,
+               label="dead zone (fan does not spin)")
 
-    # Mark the spin-up dead zone (first run of zero RPMs) for context.
-    spin_up = next((d for d, r in zip(duties, rpms) if r > 0), duties[0])
-    ax.axvspan(0, spin_up, color="0.85", alpha=0.6, zorder=0,
-               label="fan does not spin")
-
-    ax.plot(duties, rpms, color="#2c3e50", linewidth=1.2,
-            marker=".", markersize=3, label="100-point sweep")
-    bx = [p[0] for p in BASELINE_POINTS]
-    by = [p[1] for p in BASELINE_POINTS]
-    ax.plot(bx, by, color="#c0392b", marker="o", linestyle="",
-            markersize=7, markerfacecolor="white",
-            markeredgewidth=1.6,
-            label="firmware fan\\_health baseline (8 points)")
+    for f in FANS:
+        duties, rpms = load(os.path.join(DATA_DIR, f["csv"]))
+        ax.plot(duties, rpms, color=f["color"], linewidth=1.1,
+                marker=".", markersize=2.5,
+                label=f"{f['name']} -- sweep")
+        bx = [p[0] for p in f["baseline"]]
+        by = [p[1] for p in f["baseline"]]
+        ax.plot(bx, by, color=f["color"], marker="o", linestyle="",
+                markersize=7, markerfacecolor="white",
+                markeredgewidth=1.6,
+                label=f"{f['name']} -- fan\\_health baseline")
 
     ax.set_xlabel("PWM duty (0--255)")
     ax.set_ylabel("fan RPM")
     ax.set_xlim(0, 260)
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
-    ax.set_title("CH32V003 STANDALONE: NF-A8 PWM-to-RPM sweep")
+    ax.set_title("CH32V003 STANDALONE: PWM-to-RPM sweep, two reference fans")
     ax.legend(loc="upper left", fontsize=8)
 
     fig.tight_layout()
