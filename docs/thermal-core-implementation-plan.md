@@ -1,6 +1,6 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.19
+**Document status:** Draft v0.20
 **Author:** Albert David
 **Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.20)
 
@@ -667,7 +667,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 ### Stage 20 — Fan-health enabled on the CH32V003 STANDALONE firmware (post-v1)
 **Post-v1 stage. Do not start until Stage 19 is closed *and* a real PWM-to-RPM sweep has been captured on hardware** with `thermal-telemetry-tool --action=pwmsweep`. The sweep table is the input this stage cannot synthesise.
 
-**Deliverable:** the Stage 17 fan-health detector, enabled in the CH32V003 STANDALONE firmware. Fan-health produces telemetry-only output, so it is meaningful only with the tap — it is enabled together with `CH32_TELEMETRY=1` and rides the same UART; the default no-telemetry image stays **byte-for-byte unchanged**. The Stage 19 sweep CSV is reduced to a ≤8-point (`THERMAL_MAX_FAN_HEALTH_POINTS`) PWM-to-RPM baseline and authored into `configs/ch32v003-standalone.json` as a per-actuator `fan_health` block, tagged `factory` provenance. The CH32 Makefile defines `THERMALCORE_ENABLE_FAN_HEALTH` and passes `--enable-fan-health` to `json2static.py` (supported since Stage 17b); the `0x0800` `fan_health_*` signal range rides the existing telemetry tap. The detector stays advisory — it never commands the fan. This is the **first MCU build to compile the fan-health gate on**; the ESP32 build keeps it off.
+**Deliverable:** the Stage 17 fan-health detector, enabled in the CH32V003 STANDALONE firmware. Fan-health produces telemetry-only output, so it is meaningful only with the tap — it is enabled together with `CH32_TELEMETRY=1` and rides the same UART; the default no-telemetry image stays **byte-for-byte unchanged**. The Stage 19 sweep CSV is reduced to a ≤8-point (`THERMAL_MAX_FAN_HEALTH_POINTS`) PWM-to-RPM baseline and authored into `configs/ch32v003-standalone.json` as a per-actuator `fan_health` block, tagged `field` provenance (the baseline was measured on the deployed unit on a stable rig). The CH32 Makefile defines `THERMALCORE_ENABLE_FAN_HEALTH` and passes `--enable-fan-health` to `json2static.py` (supported since Stage 17b); the `0x0800` `fan_health_*` signal range rides the existing telemetry tap. The detector stays advisory — it never commands the fan. This is the **first MCU build to compile the fan-health gate on**; the ESP32 build keeps it off.
 
 **Tests added:**
 - **Build gate:** `build-ch32` with `THERMALCORE_ENABLE_FAN_HEALTH` compiled in still cross-builds and **fits the 16 KB part** — the size-budget check is the load-bearing assertion (the PRD estimates the module at ~1–2 KB `.text`).
@@ -677,6 +677,11 @@ The canonical column projection and the row-ordering contract live in `tools/the
 **Regression value:** Proves the fan-health detector — written and gated host-only at Stage 17 — actually compiles, links, and fits on the smallest target, with a baseline measured from a real fan rather than hand-authored. Closes the loop from the Stage 17 follow-on.
 
 **Exit gate:** all previous green, plus `build-ch32` green with fan-health compiled in and within the 16 KB budget, and the config roundtrip green.
+
+- **Shipped 20a:** the fan-health detector enabled in the CH32V003 STANDALONE firmware. `configs/ch32v003-standalone.json` gains a per-actuator `fan_health` block — an 8-point PWM-to-RPM baseline measured on the deployed NF-A8 via `thermal-telemetry-tool --action=pwmsweep` and reduced to the spin-up threshold plus the four governor-state duties (100 / 160 / 220 / 255), tagged `field` provenance; the raw 100-point sweep CSV is committed at `docs/paper/data/ch32v003-nf-a8-sweep.csv` as the baseline's provenance. The CH32 `Makefile` enables `THERMALCORE_ENABLE_FAN_HEALTH` and passes `--enable-fan-health` to `json2static.py` together with `CH32_TELEMETRY=1` — fan-health is telemetry-only output, so it rides the existing tap. `tools/json2static.py` gained two relaxations for this MCU multi-variant use: the `fan_health` tach check accepts an `mcu_pinmap.actuators[].tach_gpio` (MCU configs don't carry the Linux-style `tach` file path), and a `fan_health` block present without `--enable-fan-health` is silently ignored, so one MCU config serves both the default and the telemetry-with-fan-health builds. `core/thermal_profile_tiny.h` raises `THERMAL_MAX_TELEMETRY_SIGNALS` from 8 to 12 only when `THERMALCORE_ENABLE_FAN_HEALTH` is defined, accommodating the 4 added `fan_health_*` signals without changing the default firmware. Build sizes: default 12 220 B (74.6 %, sha256-identical to pre-Stage-20), `CH32_TELEMETRY=1` 14 168 B (86.5 %), `CH32_COMMAND=1` 15 152 B (92.5 %). The existing `build-ch32` three-leg `variant` matrix already covers all three; the telemetry and command legs now exercise the detector.
+- **Shipped 20b:** docs catch-up. `README.md` Repository-status gains a Stage 20 bullet, and the CH32V003 STANDALONE quick-start gets a fan-health subsection (the per-actuator `fan_health` block + the sweep workflow). The white-paper Evaluation section's CH32 subsection gains a paragraph + a PWM-to-RPM sweep figure rendered from the committed sweep CSV, noting the post-v1 fan-health detector is now compiled into the chip with a baseline measured on the deployed unit — the first MCU build to compile the gate on.
+
+**Stage 20 status:** the Stage 17 fan-health detector is enabled in the CH32V003 STANDALONE firmware with a real, on-rig PWM-to-RPM baseline; the `build-ch32` three-leg matrix exercises both the default (fan-health off) and the telemetry / command (fan-health on) variants. The shipping default firmware is byte-for-byte unchanged. Stage 20 is closed — and with it the first slice of the Stage 17 follow-on (a host-tool baseline-capture sweep + the MCU enablement) is shipped; the remainder (scenario directives, NVS persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection, the 2D temperature-compensated baseline) stays deferred.
 
 ---
 
@@ -813,4 +818,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.19*
+*End of implementation plan v0.20*

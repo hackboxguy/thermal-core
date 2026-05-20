@@ -909,6 +909,7 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
                tools/thermalcore-scenario/scenario.py \
                tools/thermalcore-probe \
                docs/paper/data/ch32v003-capture.csv \
+               docs/paper/data/ch32v003-nf-a8-sweep.csv \
                $(wildcard docs/paper/figures/plots/*.py)
 	@set -e; for s in $(PAPER_FIGURE_SCENARIOS); do \
 	    echo "=== scenario: $$s ==="; \
@@ -918,10 +919,12 @@ paper-figures: build build/tools/thermalcore-scenario/libplant.so \
 	    python3 docs/paper/figures/plots/plot_$$s.py; \
 	done
 	@python3 tools/figure_manifest.py
-	@# Captured-artifact figure (CH32V003 on-hardware bring-up): not a
-	@# regenerable scenario, so it is rendered from its committed CSV
-	@# outside the scenario loop and the figure-freshness manifest.
+	@# Captured-artifact figures (CH32V003 on-hardware bring-up + the
+	@# NF-A8 sweep that backs the Stage 20 fan-health baseline): not
+	@# regenerable scenarios, so each is rendered from its committed
+	@# CSV outside the scenario loop and the figure-freshness manifest.
 	@python3 docs/paper/figures/plots/render_ch32_capture.py
+	@python3 docs/paper/figures/plots/render_ch32_sweep.py
 	@echo "paper-figures: ALL FIGURES WRITTEN"
 
 # --- Stage 19 19b: thermal-telemetry-tool (C++ host tool) ---

@@ -137,7 +137,16 @@ With the stall detector enabled in the configuration, the same firmware was run 
 
 That same capture also carries the per-tick execution time. A compile-time probe brackets each \texttt{thermal\_core\_step()} call with a SysTick read and logs the cost; across the 340 ticks of the capture the step ran in 134--159\,$\mu$s, median 142\,$\mu$s, on the 48\,MHz core --- about 0.014\,\% of the 1\,s control period. The remainder of each period is the blocking DS18B20 conversion and the idle wait; the control law itself is a vanishingly small slice even on this part.
 
-Like the HIL bring-up above, this is a functional demonstration, not a calibrated benchmark --- the heat and the stalls were both applied by hand and ambient was not regulated. What it establishes is that the same \texttt{core/} source exercised by the simulation gates runs its full closed loop on-chip on a ten-cent part: sensing, the governor, fault detection and recovery, and actuator drive, with no host involved.
+The post-v1 fan-health detector --- the advisory tach-versus-baseline monitor described in the Component Design section --- is also compiled on this chip, the first MCU build to enable the gate. Its baseline is not hand-authored: a host-driven sweep (a Stage~19 bench mode that exposes the regulator's PWM and tach over a UART command channel) stepped the fan's duty across 1--100\,\% and logged the settled RPM at each point. Figure~\ref{fig:ch32-sweep} plots the full 100-point capture together with the 8 points authored into the firmware's \texttt{fan\_health.baseline} block --- the spin-up threshold and the four governor-state duties. With the detector compiled in, the firmware links at \textbf{14{,}168\,bytes} of flash (86.5\,\% of 16\,KB); the default no-telemetry image is byte-for-byte unchanged.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{ch32v003-sweep}
+\caption{NF-A8 PWM-to-RPM sweep captured on the deployed CH32V003 via the Stage~19 host command channel: 100 duty steps with the settled tach RPM at each. The fan does not spin below the shaded duty (the spin-up dead zone); above it, RPM is monotone in duty. The eight ringed points are the firmware's \texttt{fan\_health.baseline} --- the spin-up threshold plus the four governor-state duties (100/160/220/255). The raw CSV is committed at \texttt{docs/paper/data/ch32v003-nf-a8-sweep.csv}.}
+\label{fig:ch32-sweep}
+\end{figure}
+
+Like the HIL bring-up above, this is a functional demonstration, not a calibrated benchmark --- the heat and the stalls were both applied by hand and ambient was not regulated. What it establishes is that the same \texttt{core/} source exercised by the simulation gates runs its full closed loop on-chip on a ten-cent part: sensing, the governor, fault detection and recovery, the advisory fan-health detector, and actuator drive, with no host involved.
 
 \subsection{What This Section Does Not Yet Claim}\label{sec:eval-gaps}
 

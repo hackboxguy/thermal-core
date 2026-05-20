@@ -284,6 +284,35 @@ obeys `pwmset`, not the temperature. Run it with an operator
 present; `loop on` (or `pwmsweep`, which restores it) re-arms the
 regulator.
 
+### Fan-health detector (post-v1)
+
+Stage 20 enables the advisory fan-health detector on the CH32V003,
+gated together with `CH32_TELEMETRY=1`: the detector grades the fan's
+RPM drift against a per-actuator PWM-to-RPM baseline and emits
+`fan_health_*` telemetry (delta / severity / baseline source /
+confidence). It never commands the fan -- it is observability, not
+control.
+
+The baseline lives in [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)
+as an 8-point `fan_health.baseline` table, captured on the deployed
+unit with the bench tool (the path from Stage 19 to a real baseline):
+
+```bash
+# 1. Flash the bench-channel firmware (Stage 19) on the target fan.
+make flash-ch32 CH32_COMMAND=1 CH32_TELEMETRY_BAUD=115200
+# 2. Sweep the fan and capture a PWM-to-RPM table.
+./tools/thermal-telemetry-tool/thermal-telemetry-tool \
+    --device=/dev/ttyUSB0 --baud=115200 \
+    --action=pwmsweep --value=/tmp/sweep.csv
+# 3. Pick <=8 points (spin-up threshold + governor-state duties),
+#    update the fan_health block in the JSON, reflash with telemetry.
+make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
+```
+
+The default no-telemetry firmware is byte-for-byte unchanged with
+the detector compiled out. The telemetry build (with the detector)
+sits at 14 168 B of 16 KB.
+
 ## Build + test (host-side)
 
 The Linux daemon, replay tests, scenario harness, and
@@ -361,6 +390,13 @@ Recent stages:
   path for a fan-health baseline. The shipping firmware is
   byte-for-byte unchanged; the bench build is gated by a third
   `build-ch32` matrix leg.
+- **Stage 20** (post-v1) — fan-health detector enabled on the
+  CH32V003 STANDALONE firmware. The Stage 17 detector now compiles
+  on a 10-cent MCU with a real PWM-to-RPM baseline measured on the
+  deployed fan via `thermal-telemetry-tool --action=pwmsweep`. The
+  `build-ch32` telemetry and command matrix legs both exercise the
+  detector; the default no-telemetry image stays byte-for-byte
+  unchanged.
 
 ## Documentation
 
