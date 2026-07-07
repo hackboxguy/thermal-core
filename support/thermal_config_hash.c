@@ -7,6 +7,7 @@
  *
  *   1. config_version            (u16 LE)
  *   2. control_period_ms         (u16 LE)
+ *      period_relative_to_ms     (u16 LE; 0 if unspecified)
  *   3. sensors[0..MAX-1]         field-by-field, zero-filled past
  *                                 sensor_count
  *      sensor_count              (u8)
@@ -301,6 +302,7 @@ void thermal_config_hash(const thermal_config_t *cfg,
 
     w_u16(&s, cfg->config_version);
     w_u16(&s, cfg->control_period_ms);
+    w_u16(&s, cfg->period_relative_to_ms);
 
     for (size_t i = 0; i < THERMAL_MAX_SENSORS; i++) {
         w_sensor(&s, &cfg->sensors[i], i < cfg->sensor_count);

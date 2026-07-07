@@ -2154,6 +2154,13 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
             }
             cfg->control_period_ms = (uint16_t)val;
             saw_control_period = 1;
+        } else if (tok_str_eq(ctx, k, "period_relative_to_ms")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, "period_relative_to_ms",
+                               "expected integer in [0, 65535]");
+            }
+            cfg->period_relative_to_ms = (uint16_t)val;
         } else if (tok_str_eq(ctx, k, "sensors") ||
                    tok_str_eq(ctx, k, "context_signals") ||
                    tok_str_eq(ctx, k, "actuators")) {

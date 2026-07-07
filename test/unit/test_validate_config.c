@@ -153,6 +153,15 @@ TEST_CASE(validate_config) {
     cfg.actuators[0].spinup_pwm = 0;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+    /* === M2: optional period-relative guard must match control period. === */
+    make_valid_config(&cfg);
+    cfg.period_relative_to_ms = 100;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    make_valid_config(&cfg);
+    cfg.period_relative_to_ms = 1000;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
     /* === L1: referenced state_pwm[] entries must be non-decreasing. === */
     make_valid_config(&cfg);
     cfg.actuators[0].state_pwm[2] = 90;      /* below state_pwm[1] = 100 */

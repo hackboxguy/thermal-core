@@ -1117,6 +1117,10 @@ thermal_status_t thermal_core_validate_config(const thermal_config_t *cfg) {
     if (!cfg) return THERMAL_ERR_INVALID_ARG;
     if (cfg->config_version != 1) return THERMAL_ERR_INVALID_CONFIG;
     if (cfg->control_period_ms == 0) return THERMAL_ERR_INVALID_CONFIG;
+    if (cfg->period_relative_to_ms != 0 &&
+        cfg->period_relative_to_ms != cfg->control_period_ms) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
 
     if (cfg->sensor_count   > THERMAL_MAX_SENSORS)         return THERMAL_ERR_NO_SPACE;
     if (cfg->zone_count     > THERMAL_MAX_ZONES)           return THERMAL_ERR_NO_SPACE;

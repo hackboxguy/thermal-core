@@ -136,7 +136,7 @@ class ConfigError(Exception):
 # the dynamic loader would have caught.
 
 TOP_LEVEL_ALLOWED = {
-    "config_version", "control_period_ms",
+    "config_version", "control_period_ms", "period_relative_to_ms",
     "sensors", "context_signals", "actuators", "zones",
     "policy_modifiers", "fault_detection", "telemetry", "control",
     "mcu_pinmap",                         # MCU-target-only, optional
@@ -482,6 +482,11 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
         raise ConfigError("missing config_version")
     if "control_period_ms" not in raw:
         raise ConfigError("missing control_period_ms")
+    control_period_ms = int(raw["control_period_ms"])
+    period_relative_to_ms = int(raw.get("period_relative_to_ms", 0))
+    if period_relative_to_ms != 0 and period_relative_to_ms != control_period_ms:
+        raise ConfigError(
+            "period_relative_to_ms must equal control_period_ms when present")
 
     def pop_enum(name, m, where):
         v = m.get(name)
@@ -739,7 +744,8 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
 
     return {
         "config_version":     int(raw["config_version"]),
-        "control_period_ms":  int(raw["control_period_ms"]),
+        "control_period_ms":  control_period_ms,
+        "period_relative_to_ms": period_relative_to_ms,
         "sensors":            sensors,
         "contexts":           contexts,
         "actuators":          actuators,
@@ -1025,6 +1031,8 @@ def emit_static(cfg, symbol="G_THERMAL_CFG", source_path="",
     out.append(f"const thermal_config_t {symbol} = {{")
     out.append(f"    .config_version    = {cfg['config_version']},")
     out.append(f"    .control_period_ms = {cfg['control_period_ms']},")
+    if cfg["period_relative_to_ms"] != 0:
+        out.append(f"    .period_relative_to_ms = {cfg['period_relative_to_ms']},")
 
     if cfg["sensors"]:
         out.append("    .sensors = {")

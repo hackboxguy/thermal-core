@@ -122,6 +122,7 @@ typedef struct {
 typedef struct {
     uint16_t config_version;
     uint16_t control_period_ms;
+    uint16_t period_relative_to_ms;  /* 0 = unspecified; else must match control_period_ms */
     thermal_sensor_cfg_t sensors[THERMAL_MAX_SENSORS];
     uint8_t  sensor_count;
     thermal_context_cfg_t contexts[THERMAL_MAX_CONTEXT_SIGNALS];

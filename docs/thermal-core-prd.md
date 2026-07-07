@@ -454,6 +454,7 @@ typedef struct {
 typedef struct {
     uint16_t config_version;
     uint16_t control_period_ms;
+    uint16_t period_relative_to_ms;
     thermal_sensor_cfg_t sensors[THERMAL_MAX_SENSORS];
     uint8_t sensor_count;
     thermal_context_cfg_t contexts[THERMAL_MAX_CONTEXT_SIGNALS];
@@ -691,6 +692,7 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
 {
   "config_version": 1,
   "control_period_ms": 100,
+  "period_relative_to_ms": 100,
   "sensors": [
     {"id": 0, "name": "soc",     "source": "hwmon:chip=coretemp:input=temp1_input", "iir_alpha_q16": 16384, "max_staleness_ms": 500},
     {"id": 1, "name": "amp",     "source": "ds18b20:28-0000abc", "max_staleness_ms": 2000},
@@ -770,7 +772,7 @@ Aggregation uses valid samples only. For `max`, `avg`, and `weighted`, invalid s
 
 Sensor `max_staleness_ms` is enforced by the platform when building `thermal_input_snapshot_t`: if `(uint32_t)(now_ms - sample_ts_ms)` exceeds the configured age, the platform reports the sample with `valid = 0`. This lets slow sources such as DS18B20 probes reuse cached samples between conversions without confusing the core about freshness.
 
-Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. `min_on_ticks`/`min_off_ticks` are period-relative anti-short-cycle dwell knobs; zero disables the corresponding dwell. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero after dwell; the spin-up boost bypasses normal upward slew for its configured window, and stall detection ignores tach failures during the same grace window.
+Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. Sensor/context IIR coefficients are applied once per control tick, and detector windows, telemetry cadence, dwell knobs, and fan-health stability gates are tick-count based. `period_relative_to_ms` is optional metadata for that authoring assumption; when present, it must match `control_period_ms` so a retimed deployment fails validation until those period-relative knobs are reviewed. `min_on_ticks`/`min_off_ticks` are period-relative anti-short-cycle dwell knobs; zero disables the corresponding dwell. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero after dwell; the spin-up boost bypasses normal upward slew for its configured window, and stall detection ignores tach failures during the same grace window.
 
 Platform-only fields live in platform-specific configuration structures, such as `thermalcored_runtime_cfg_t` under `platform/linux/`. Examples include source URIs, `pwm_freq_hz`, `tach_pulses_per_rev`, `telemetry.transport`, `telemetry.signals`, and `control.listen`. Loaders convert these into `thermal_config_t` plus platform runtime config.
 
@@ -791,6 +793,7 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 `thermal_core_validate_config()` and the Linux JSON loader must reject invalid configuration before the control loop starts. Required v1 checks:
 
 - `config_version` is present and supported.
+- `control_period_ms` is non-zero. Optional `period_relative_to_ms`, when present, equals `control_period_ms`; it documents that IIR coefficients and tick-count windows were authored for that control period.
 - The Linux loader treats `jsmn` as a tokenizer only; validation is a hand-written, schema-aware walk that enumerates every allowed key for each object type.
 - IDs and debug names are unique within their namespaces.
 - All references resolve: zones to sensors, zones to actuators, policies to context signals, telemetry selectors to known signal IDs.

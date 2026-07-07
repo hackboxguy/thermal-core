@@ -75,6 +75,7 @@ TEST_CASE(config_jsmn) {
 
         EXPECT_EQ(cfg.config_version, 1);
         EXPECT_EQ(cfg.control_period_ms, 100);
+        EXPECT_EQ(cfg.period_relative_to_ms, 100);
         EXPECT_EQ(cfg.sensor_count, 1);
         EXPECT_EQ(cfg.actuator_count, 1);
         EXPECT_EQ(cfg.context_count, 1);
@@ -144,6 +145,17 @@ TEST_CASE(config_jsmn) {
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
                                                        &cfg, NULL, err, sizeof(err));
         EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+    }
+
+    /* === Scenario 4b: period-relative guard mismatch ========= */
+    {
+        const char *json =
+            "{ \"config_version\": 1,"
+            "  \"control_period_ms\": 100,"
+            "  \"period_relative_to_ms\": 1000 }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        EXPECT_EQ(s, THERMAL_ERR_INVALID_CONFIG);
     }
 
     /* === Scenario 5: unknown enum value ======================= */

@@ -55,6 +55,7 @@ static void init_minimal_valid(thermal_config_t *cfg)
 {
     cfg->config_version    = 1;
     cfg->control_period_ms = 100;
+    cfg->period_relative_to_ms = 0;
 
     cfg->sensor_count = 1;
     cfg->sensors[0].id = 0;
