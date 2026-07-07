@@ -1,0 +1,19 @@
+\section{Background and Related Work}\label{sec:background}
+
+\subsection{Existing Thermal-Control Stacks}
+
+Open-source thermal daemons such as \texttt{thermald}, \texttt{fancontrol}, \texttt{fan2go}, and \texttt{nbfc-linux} are practical tools for desktops, laptops, and Linux appliances. They bind tightly to Linux sensor and fan interfaces, and their configuration languages usually describe local devices rather than a portable control law that can be replayed unchanged on an MCU.
+
+The Linux kernel thermal framework supplies a useful vocabulary: thermal zones, trip points, governors, and cooling devices. \texttt{thermal-core} deliberately borrows that vocabulary, but keeps the controller outside the kernel and outside any one operating system. A JSON configuration on Linux and a generated \texttt{static const} configuration on MCU targets describe the same control problem.
+
+Automotive stacks solve adjacent problems differently. AUTOSAR thermal monitoring and vendor daemons such as Qualcomm's Android-side \texttt{thermal-engine} integrate with production platform services, but they are closed, target-specific, and difficult to use as reproducible research artefacts. This project occupies the smaller space between those worlds: a deterministic, inspectable reference core with platform adapters around it.
+
+\subsection{What This Work Does Not Replace}
+
+\texttt{thermal-core} is not a safety-certified vehicle thermal-management stack, not an AUTOSAR component, and not a claim that a PWM fan is the only useful actuator. The v1 reference actuator is a single-quadrant PWM fan because that is the reproducible bench device used in this paper. The concept layer is broader: a cooling state is an abstract request for more thermal authority, and the v1 \texttt{state\_pwm[]} table is the first backend-specific realization of that idea.
+
+\subsection{Reproducibility Goal}
+
+The differentiator is auditability rather than novelty of the control law. The same control step is replayed in unit tests, host scenarios, firmware cross-builds, and paper figures. Inputs are numeric snapshots, outputs are numeric actuator frames, and generated plots cite the SHA-256 of their source telemetry. This makes the control behavior portable enough to criticize: if a reviewer changes a trip point, fault action, or governor rule, the replay and scenario gates show exactly what moved.
+
+\endinput

@@ -2,7 +2,7 @@
 
 \subsection{Automotive IVI Thermal Context}
 
-The reference system is an IVI head unit operating across cabin temperature, solar loading, enclosure heat soak, and vehicle-speed regimes. The thermal controller must handle both slow heat accumulation and abrupt workload changes while avoiding unnecessary fan noise in quiet conditions.
+The reference system is an IVI head unit operating across cabin temperature, solar loading, enclosure heat soak, and vehicle-speed regimes. The thermal controller must handle both slow heat accumulation and abrupt workload changes while preserving a clear safety order: policy may spend thermal margin, but critical cooling wins over comfort policy.
 
 \subsection{Operating Regimes}
 
@@ -12,14 +12,14 @@ The reference system is an IVI head unit operating across cabin temperature, sol
 \toprule
 \textbf{Regime} & \textbf{Example} & \textbf{Control implication} \\
 \midrule
-Parked heat soak & hot cabin, no road noise & prioritize acoustic cap until thermal margin is consumed \\
-Idle / stop light & vehicle speed near zero & avoid sudden fan ramps; use conservative PWM cap \\
-Urban driving & 10--50 km/h & moderate acoustic masking; allow gradual cooling response \\
-Highway driving & 80+ km/h & road noise masks fan; permit higher PWM and lower trip offsets \\
+Parked heat soak & hot cabin, no road noise & policy modifier may cap actuator output while margin exists; fallback must fail toward cooling \\
+Idle / stop light & vehicle speed near zero & avoid sudden actuator cycling; dwell and slew shape transitions \\
+Urban driving & 10--50 km/h & context policy may relax caps gradually as operating context changes \\
+Highway driving & 80+ km/h & context policy may permit earlier or stronger cooling while safety ordering stays unchanged \\
 Fault / degraded sensor & missing tach, stale sensor, lost CAN & enter explicit fail-safe behavior and log numeric events \\
 \bottomrule
 \end{tabular}
-\caption{Initial operating regimes for the IVI reference application.}
+\caption{Initial operating regimes for the IVI reference application. The acoustic-aware policy in Section~\ref{sec:reference-policy} is one configured modifier instance of these more general rules.}
 \label{tab:thermal-operating-regimes}
 \end{table}
 

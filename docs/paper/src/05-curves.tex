@@ -5,32 +5,16 @@
 
 \subsection{Curve Types}
 
-\texttt{thermal-core} uses curves for fan command shaping, trip or setpoint offsets, and context policy modifiers. Curves should be represented as fixed-size point tables with deterministic interpolation so the same configuration can be used on Linux and MCU targets.
+\texttt{thermal-core} uses curves for command shaping, trip or setpoint offsets, fan-health baselines, and context policy modifiers. Curves are represented as fixed-size point tables with deterministic interpolation so the same configuration can be used on Linux and MCU targets.
 
-\subsection{Acoustic Mask Curve}
+\subsection{Generic Examples}
 
-The first policy curve maps vehicle speed to a PWM cap and optional trip offset:
-
-\begin{table}[h]
-\centering
-\begin{tabular}{ccc}
-\toprule
-\textbf{Speed (km/h)} & \textbf{PWM cap} & \textbf{Trip offset (m$^\circ$C)} \\
-\midrule
-0 & 120 & 0 \\
-30 & 180 & 0 \\
-80 & 255 & -5000 \\
-130 & 255 & -8000 \\
-\bottomrule
-\end{tabular}
-\caption{Initial acoustic-mask curve from the PRD. Values are placeholders until tuned.}
-\label{tab:acoustic-mask-curve}
-\end{table}
+The simplest curve-like mapping is the actuator \texttt{state\_pwm[]} table: a step-wise zone produces a cooling-state index and each actuator maps that index to its own drive level. The fan-health detector uses a different curve shape, an eight-point PWM-to-RPM baseline, to compare measured tachometer speed against the expected value for a known-good fan. The acoustic-aware speed-to-cap curve is a reference-policy application, described later in Section~\ref{sec:reference-policy}.
 
 \subsection{Implementation Notes}
 
 Curves are fixed-size point tables evaluated by deterministic linear interpolation between adjacent breakpoints, with flat (clamped) extrapolation outside the table. Inputs, outputs, and the interpolation arithmetic are integer or Q16.16 fixed-point, so a curve evaluates bit-for-bit identically on the Linux host and the ESP32-C3. Breakpoints are validated at configuration load to be strictly ascending on the x-axis.
 
-The acoustic-mask curve values in Table~\ref{tab:acoustic-mask-curve} remain provisional pending tuning. The figure-regeneration pipeline is in place and renders the closed-loop scenario plots in Section~\ref{sec:eval-scenarios}, but the before/after plots showing the masking effect on PWM-seconds depend on the CAN-driven acoustic-mask scenarios and are deferred with the rest of the acoustic benchmark work; this draft documents the mechanism, not tuned acoustic results.
+Configuration validation rejects duplicate or descending x-axis points. Modifier curves get additional value-range checks: PWM caps must be either zero or within actuator bounds, and trip/setpoint offsets are checked at every curve point so adjusted trips remain ordered and PID setpoints remain inside their configured ranges. The figure-regeneration pipeline renders the closed-loop scenario plots in Section~\ref{sec:eval-scenarios}; policy-specific before/after acoustic plots are deferred with the calibrated acoustic benchmark.
 
 \endinput

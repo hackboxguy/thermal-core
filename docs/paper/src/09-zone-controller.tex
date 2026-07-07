@@ -1,8 +1,8 @@
-\section{Governors and Control Loop}
+\section{Control-Loop Implementation}
 
-\subsection{Loop Overview}
+\subsection{Per-Tick Order}
 
-The control loop is single-threaded from the core perspective. The platform calls \texttt{thermal\_core\_step} once per control period and supplies a snapshot of sensor, tach, and context samples; the core advances every module in a fixed order and writes one actuator output frame. The order below matches PRD §4.6 (lines 580--596) and the implementation in \texttt{core/thermal\_core.c}.
+The control model in Section~\ref{sec:control-model} is implemented as one single-threaded call to \texttt{thermal\_core\_step}. The platform supplies a snapshot of sensor, tachometer, and context samples; the core advances every module in a fixed order and writes one actuator output frame. The order below matches PRD §4.6 and the implementation in \texttt{core/thermal\_core.c}.
 
 \begin{lstlisting}[language=C,caption={Per-tick control-loop order in \texttt{thermal\_core\_step}}]
 thermal_core_step(ctx, snapshot, &out):
@@ -17,61 +17,16 @@ thermal_core_step(ctx, snapshot, &out):
   // Step 8:  apply post-governor modifier pwm_cap per actuator
   //            (skipped when driving zone is CRITICAL+)
   // Step 9:  step each fault detector; derive safety_override_up;
-  //            apply force_pwm_max actions; emit fault, safety,
-  //            and shutdown events on rising edges
+  //            apply force_pwm_max / shutdown actions; emit fault,
+  //            fallback, safety, and shutdown events on edges
   // Post-v1: advisory fan-health update -- compare tach against the
   //            previous applied duty, skip non-steady / fault-
-  //            overridden windows; telemetry only, never alters arb_pwm
-  // Step 10: slew per actuator (override bypasses upward only);
-  //            final clamp to [pwm_min, pwm_max] with 0-stays-0
+  //            overridden windows; telemetry only
+  // Step 10: actuator dwell, spin-up boost, slew, and final clamp
   // Step 11: emit telemetry signals on configured cadence
 \end{lstlisting}
 
-Figure~\ref{fig:closed-loop-control} shows the same flow as a closed-loop control system. The protocol-agnostic core owns the middle of the loop: filtering, zone state, trip evaluation, governor output, arbitration, policy modifiers, slew limits, faults, and telemetry. Platform-specific code only supplies snapshots and applies actuator requests.
-
-\begin{figure}[htbp]
-\centering
-\resizebox{\textwidth}{!}{%
-\begin{tikzpicture}[
-    font=\small,
-    node distance=0.72cm,
-    block/.style={draw, rounded corners=2pt, align=center, minimum height=0.85cm, minimum width=2.35cm, fill=blue!6},
-    coreblock/.style={block, fill=orange!10},
-    ioblock/.style={block, fill=gray!12},
-    plantblock/.style={block, fill=green!10, minimum width=2.8cm},
-    contextblock/.style={block, fill=purple!8, minimum width=2.6cm},
-    sum/.style={circle, draw, align=center, inner sep=1pt, minimum size=0.6cm, fill=white},
-    arrow/.style={->, thick}
-]
-    \node[coreblock] (target) {Targets\\trips, setpoints};
-    \node[sum, right=0.65cm of target] (compare) {$\Sigma$};
-    \node[coreblock, right=0.65cm of compare] (governor) {Governor\\step-wise or PID};
-    \node[coreblock, right=0.65cm of governor] (policy) {Arbitration + policy\\caps, offsets, slew};
-    \node[ioblock, right=0.65cm of policy] (actuator) {Actuator adapter\\PWM / fan request};
-    \node[plantblock, right=0.65cm of actuator] (plant) {Thermal plant\\device + cooling};
-
-    \node[contextblock, above=0.75cm of policy] (context) {Context snapshot\\vehicle speed, mode};
-    \node[contextblock, above=0.75cm of plant] (disturbance) {Disturbances\\ambient, workload};
-    \node[ioblock, below=1.0cm of plant] (sensors) {Sensor snapshot\\temperature, tach};
-    \node[coreblock, below=1.0cm of governor] (filters) {Filters + zone state\\temperature, faults};
-
-    \draw[arrow] (target) -- (compare);
-    \draw[arrow] (compare) -- (governor);
-    \draw[arrow] (governor) -- (policy);
-    \draw[arrow] (policy) -- (actuator);
-    \draw[arrow] (actuator) -- (plant);
-    \draw[arrow] (disturbance) -- (plant);
-    \draw[arrow] (context) -- (policy);
-    \draw[arrow] (plant) -- (sensors);
-    \draw[arrow] (sensors.west) -- (filters.east);
-    \draw[arrow] (filters.west) -| (compare.south);
-\end{tikzpicture}%
-}
-\caption{Protocol-agnostic closed-loop thermal-control model}
-\label{fig:closed-loop-control}
-\end{figure}
-
-Figure~\ref{fig:tick-pipeline} expands the same loop into its per-tick module pipeline. Where Figure~\ref{fig:closed-loop-control} captures the negative-feedback architecture, the pipeline view shows the eight stages \texttt{thermal\_core\_step} runs in order and where the fault detectors inject a safety override, the slew limiter clamps the rate of change, and the advisory fan-health detector taps the loop without ever touching the command path.
+Figure~\ref{fig:tick-pipeline} expands the same order into the module pipeline. The fault detectors may overwrite post-modifier duty upward, the fan-health detector taps state without commanding anything, and the actuator policy stage applies dwell, spin-up, slew, and final clamping before the frame leaves the core.
 
 \begin{figure}[htbp]
 \centering
@@ -90,13 +45,13 @@ Figure~\ref{fig:tick-pipeline} expands the same loop into its per-tick module pi
     tap/.style={->, thick, dashed, gray}
 ]
     \node[io] (in) {input\\snapshot};
-    \node[stage, right=of in] (iir)   {IIR filter\\(per sensor)};
+    \node[stage, right=of in] (iir)   {IIR filter\\(per signal)};
     \node[stage, right=of iir] (agg)  {Zone\\aggregate};
     \node[stage, right=of agg] (gov)  {Governor\\step-wise\\or PID};
     \node[stage, right=of gov] (arb)  {Arbitrator\\(max-wins)};
     \node[stage, right=of arb] (mod)  {Modifier\\cap};
     \node[stage, right=of mod] (flt)  {Fault\\detectors};
-    \node[stage, right=of flt] (slew) {Slew\\\& clamp};
+    \node[stage, right=of flt] (slew) {Dwell +\\spin-up + slew};
     \node[io, right=of slew] (out) {actuator\\frame};
 
     \draw[arrow] (in)  -- (iir);
@@ -117,47 +72,18 @@ Figure~\ref{fig:tick-pipeline} expands the same loop into its per-tick module pi
             {prev applied duty};
 \end{tikzpicture}%
 }
-\caption{Per-tick module pipeline inside \texttt{thermal\_core\_step}. Each stage runs once per control period in this order; the fault detectors may overwrite the post-modifier duty upward on \texttt{force\_pwm\_max} / \texttt{shutdown}, the slew limiter then bounds the per-tick PWM step (override bypasses slew on upward moves only), and the post-v1 advisory fan-health detector reads the tach sample and the previous tick's applied duty without ever touching the command path (dashed taps).}
+\caption{Per-tick module pipeline inside \texttt{thermal\_core\_step}. Each stage runs once per control period in this order; the fault detectors may overwrite the post-modifier duty upward on \texttt{force\_pwm\_max} / \texttt{shutdown}, the actuator-policy stage then applies dwell, spin-up, slew, and clamping, and the post-v1 advisory fan-health detector reads the tach sample and the previous tick's applied duty without touching the command path (dashed taps).}
 \label{fig:tick-pipeline}
 \end{figure}
 
-\subsection{Governors}
+\subsection{Runtime Shadows}
 
-The step-wise governor maps active trips to discrete cooling states. Each trip carries a temperature threshold, a hysteresis band, a severity (\texttt{WARN}, \texttt{CRITICAL}, \texttt{SHUTDOWN}), and a cooling-state index. A trip is active when zone temperature crosses its threshold; it remains active until the temperature drops below \(\text{threshold} - \text{hysteresis}\). The zone's reported cooling state is the maximum cooling-state index over all active trips. Each actuator maps that index to a PWM value through its \texttt{state\_pwm[]} table, so per-actuator coupling stays at the configuration layer rather than the governor.
-
-The PID governor targets a per-zone setpoint using Q16.16 fixed-point math. Gains $K_p$, $K_i$, $K_d$ are stored as Q16.16 quantities (PWM per~m$^\circ$C, PWM per~m$^\circ$C\,$\cdot$\,s, and PWM\,$\cdot$\,s per~m$^\circ$C respectively). With \(\Delta t\) in milliseconds clamped to the configured \([dt_\text{min}, dt_\text{max}]\), one tick computes:
-
-\begin{align}
-e_t &= T_t - \text{setpoint}_\text{eff} \label{eq:pid-err}\\
-P_t^{q16} &= K_p \cdot e_t \\
-I_t^{q16} &= I_{t-1}^{q16} + \left\lfloor \frac{K_i \cdot e_t \cdot \Delta t}{1000} \right\rfloor \\
-D_t^{q16} &= \left\lfloor \frac{K_d \cdot (T_t - T_{t-1}) \cdot 1000}{\Delta t} \right\rfloor \\
-u_t &= \mathrm{clamp}\!\left(\left\lfloor\frac{P_t^{q16} + I_t^{q16} + D_t^{q16}}{2^{16}}\right\rfloor, \text{pwm\_min}, \text{pwm\_max}\right) \label{eq:pid-out}
-\end{align}
-
-The clamp on \(\Delta t\) prevents missed-tick gaps from spiking $I$ or $D$. The derivative is taken on the measurement \(T_t - T_{t-1}\), not on the error, so a setpoint change does not produce a derivative kick. The 64-bit intermediates and \(>>\,16\) shift back to Q16.16 are documented in PRD §4.5 and matched bit-for-bit by the Python reference under \texttt{test/reference/pid.py}.
-
-\paragraph{Anti-windup.} The integral update is computed tentatively and committed only when the output is not deeper into saturation than before. Concretely, if the unclamped output sits above \texttt{pwm\_max} and the increment is positive, the integral is not advanced; symmetrically for the lower bound. The accumulator therefore stops growing against a saturated edge but resumes immediately once the output leaves saturation, avoiding the long unwind that pure integral clamping would produce. \texttt{validate\_config} also requires a PID zone to declare at least one \texttt{CRITICAL} or \texttt{SHUTDOWN} trip as a safety floor: the floor's cooling state takes over from PID output whenever the floor trip is active, so a stuck or mis-tuned PID cannot hold the fan below safe levels.
-
-\subsection{Policy Modifier (Acoustic Mask)}
-
-The v1 policy modifier is \texttt{acoustic\_mask}: a linear-interpolation curve indexed by vehicle speed that emits two values per evaluation:
-
-\begin{itemize}[leftmargin=*]
-    \item \texttt{pwm\_cap} --- a post-governor PWM ceiling applied per actuator. Skipped when the zone driving that actuator is at \texttt{CRITICAL} or \texttt{SHUTDOWN} severity (PRD §4.6 line 598). The skip is per-actuator, not global: a busy actuator may bypass the cap while a quiet one still respects it.
-    \item \texttt{trip\_offset\_mc} --- a pre-governor offset added to every trip's temperature and to the PID setpoint. Negative offsets at higher speeds shift trips earlier, asking for more cooling preemptively while the acoustic cap is also relaxed.
-\end{itemize}
-
-Both values come from one curve evaluation against the current effective context value. If the context filter is stale, the per-modifier fail-safe (\texttt{assume\_stationary} or \texttt{hold\_last}) determines what the modifier sees: \texttt{assume\_stationary} feeds zero (most-aggressive cap), \texttt{hold\_last} feeds the last valid filtered value. The modifier itself is stateless; runtime tuning (CMD\_SET\_CURVE\_POINT, §11) mutates the curve in an internal shadow copy without touching the immutable configuration.
-
-\subsection{Arbitration and Slew}
-
-When multiple zones request the same actuator, v1 uses max-wins arbitration: each zone produces a single PWM demand per actuator (step-wise zones via \(\text{state\_pwm}[\text{cooling\_state}]\); PID zones via the saturated PID output), and the arbitrator picks the largest demand. Conservative, deterministic regardless of zone enumeration order, and easy to reason about for a single shared fan.
-
-After arbitration and the optional modifier cap, fault actions may overwrite the request upward (for example, \texttt{force\_pwm\_max\_until\_recovered} on a latched runaway detector raises the actuator to \texttt{pwm\_max}). The slew-rate limiter then enforces a per-tick PWM step bound configured per actuator. Upward safety overrides --- \texttt{CRITICAL} or \texttt{SHUTDOWN} severity, runaway, latched faults --- bypass slew on the way up so a cooling event happens immediately, but \emph{not} on the way down: recovery still slews so a clearing fault doesn't produce an audible PWM cliff. The final clamp obeys PRD §4.3 line 506: requests above \texttt{pwm\_max} are lowered, non-zero requests below \texttt{pwm\_min} are raised to \texttt{pwm\_min}, and an explicit zero request --- meaning no zone demanded any cooling and no fault overrode the demand --- passes through unmodified so the fan can actually be commanded off.
+Runtime tuning never mutates the immutable \texttt{thermal\_config\_t} passed to \texttt{thermal\_core\_init}. The core copies tunable trip points, PID gains, setpoints, and modifier curves into an internal shadow. \texttt{thermal\_core\_step} reads the shadow values, while command handlers validate prospective edits against the same safety invariants used at load time. In particular, runtime edits cannot make trip points descend, move PID setpoints outside configured bounds, or create modifier offsets that would make the shifted trip table invalid.
 
 \subsection{Verification}
 
-The control loop is verified at two levels. Per-module replay goldens cover curves, IIR filters, zone aggregation, the step-wise governor, the PID step, and each of the four fault detectors; every C golden is matched byte-for-byte by a Python reference under \texttt{test/reference/}. The full-loop golden \texttt{test/replay/golden/full\_step\_sweep.csv} drives \texttt{thermal\_core\_step} through a 600-tick scenario covering cold start, WARN under acoustic cap, speed ramp relaxing the cap, CRITICAL bypass, downward-slew recovery, runaway, and shutdown --- so any commit that changes loop behavior produces a CI-visible diff against this canary. Named safety-override unit cases (CRITICAL bypasses cap, SHUTDOWN bypasses cap and requests max PWM and emits the shutdown event once, slew obeyed on downward, slew bypassed on upward override) live in \texttt{test/unit/test\_core\_step.c}. The post-v1 fan-health detector carries its own replay golden --- \texttt{test/replay/golden/fan\_health\_drift.csv}, a four-phase degradation drift matched byte-for-byte by \texttt{test/reference/fan\_health.py} --- and unit cases that it never perturbs an actuator command frame (\texttt{test\_fan\_health\_advisory.c}) and that its telemetry behaves as documented across skipped windows (\texttt{test\_fan\_health\_telemetry.c}).
+The control loop is verified at two levels. Per-module replay goldens cover curves, IIR filters, zone aggregation, the step-wise governor, the PID step, and each of the four fault detectors; every C golden is matched byte-for-byte by a Python reference under \texttt{test/reference/}. The full-loop golden \texttt{test/replay/golden/full\_step\_sweep.csv} drives \texttt{thermal\_core\_step} through a 600-tick scenario covering cold start, WARN under a modifier cap, a context ramp relaxing that cap, spin-up from zero, CRITICAL bypass, downward-slew recovery, runaway, and shutdown. Any commit that changes loop behavior produces a CI-visible diff against this canary.
+
+Named safety-override unit cases live in \texttt{test/unit/test\_core\_step.c}: CRITICAL bypasses caps, SHUTDOWN bypasses caps and emits the shutdown event once, downward recovery obeys slew, upward safety override bypasses slew, dwell holds both on and off commands, and spin-up disarms when demand drops to zero. The post-v1 fan-health detector carries its own replay golden --- \texttt{test/replay/golden/fan\_health\_drift.csv}, a four-phase degradation drift matched byte-for-byte by \texttt{test/reference/fan\_health.py} --- and unit cases that it never perturbs an actuator command frame.
 
 \endinput

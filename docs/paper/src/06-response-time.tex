@@ -5,7 +5,13 @@
 
 \subsection{Control Period}
 
-The default control period is 100 ms. Thermal time constants are usually much slower than this, but a short control period simplifies telemetry, tach observation, and fault detection while still fitting MCU budgets.
+The default control period is 100 ms on the host and ESP32 reference paths. Thermal time constants are usually much slower than this, but a short control period simplifies telemetry, tach observation, and fault detection while still fitting MCU budgets. The CH32V003 standalone configuration intentionally runs at a 1 s period because the DS18B20 conversion dominates that target's loop.
+
+Filters and fault windows are period-relative: IIR alpha is applied once per tick, and persist, recovery, stuck-sensor, runaway, and fan-health windows count ticks. That choice keeps the hot path deterministic and cheap, but the same numeric configuration does not imply the same real-time cutoff or latency if \texttt{control\_period\_ms} changes.
+
+\subsection{Multi-Rate Inputs}
+
+Sensors may update slower than the control period. A 12-bit DS18B20 conversion, for example, is roughly 750 ms, so a 100 ms control loop will see sample-and-hold temperature input between conversions. The platform marks samples invalid when their configured staleness limit expires; until then, filters consume the repeated value deliberately. This is a correctness contract, not a claim that every physical signal is sampled at the control rate.
 
 \subsection{Response Metrics}
 
@@ -14,7 +20,7 @@ The evaluation section should report:
 \begin{itemize}[leftmargin=*]
     \item step-response settling time;
     \item overshoot above setpoint;
-    \item fan PWM-seconds and/or RPM-seconds;
+    \item actuator PWM-seconds and/or RPM-seconds;
     \item fault detection latency;
     \item per-tick execution time on each target.
 \end{itemize}
@@ -38,6 +44,6 @@ RH850-F1KM budget & 100 ms & $<$500 us \\
 
 \subsection{Measurement Status}
 
-Section~\ref{sec:evaluation} reports the results measured at this draft: firmware footprint, build determinism, and a hardware-in-the-loop bench bring-up. Per-tick execution time is \emph{not} yet instrumented on any target --- the budget in Table~\ref{tab:timing-budget} remains a set of design goals, not measurements. Oscilloscope-grade step-time capture lands with the formal benchmark sweep.
+Section~\ref{sec:evaluation} reports the results measured at this draft: firmware footprint, build determinism, hardware bring-up, closed-loop scenario behavior, and CH32V003 per-tick execution time. ESP32-C3 per-tick timing and oscilloscope-grade step-time capture remain part of the formal benchmark sweep.
 
 \endinput

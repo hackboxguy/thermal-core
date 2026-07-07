@@ -1,12 +1,36 @@
-\section{Cabin Acoustics and Perceived Fan Noise}
+\section{Reference Policy Application: Acoustic-Aware Fan Control}\label{sec:reference-policy}
 
-\subsection{Why Acoustic Context Matters}
+\subsection{Motivation}
 
-Thermal controllers often optimize only temperature margin. In a vehicle cabin, the user-visible quality problem is more nuanced: the same fan command can feel silent while driving and distracting while stationary. \texttt{thermal-core} models this through a policy modifier rather than embedding cabin assumptions into the governor itself.
+Thermal controllers often optimize only temperature margin. In a vehicle cabin, the user-visible quality problem is more nuanced: the same fan command can feel silent while driving and distracting while stationary. A fan that disappears acoustically at highway speed can feel sudden and intrusive at a red light, even if its duty cycle changed only modestly.
 
-\subsection{Vehicle Speed as a First Context Signal}
+\texttt{thermal-core} models this as a reference policy modifier rather than embedding cabin assumptions into the governor. The governor still computes thermal demand; the \texttt{acoustic\_mask} modifier uses vehicle speed to choose how much non-critical fan duty may be capped and whether trips should shift earlier when the cabin noise floor is higher.
 
-Vehicle speed is used as the first acoustic-context proxy because it is easy to reproduce on a bench and broadly correlated with road and wind noise. The v1 reference implementation uses OBD-II PID \texttt{0x0D} only as a reproducible test source; production systems would normally use an OEM-private CAN signal or another vehicle-state service.
+\subsection{Vehicle Speed as Context}
+
+Vehicle speed is used as the first acoustic-context proxy because it is easy to reproduce on a bench and broadly correlated with road and wind noise. The v1 reference implementation uses OBD-II PID \texttt{0x0D} only as a reproducible test source; production systems would normally use an OEM-private CAN signal or another vehicle-state service. If the speed source is stale, the reference modifier uses an explicit fail-safe mode: either hold the last valid value or assume stationary operation.
+
+\subsection{Acoustic-Mask Curve}
+
+The reference policy maps vehicle speed to a PWM cap and optional trip offset:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccc}
+\toprule
+\textbf{Speed (km/h)} & \textbf{PWM cap} & \textbf{Trip offset (m$^\circ$C)} \\
+\midrule
+0 & 120 & 0 \\
+30 & 180 & 0 \\
+80 & 255 & -5000 \\
+130 & 255 & -8000 \\
+\bottomrule
+\end{tabular}
+\caption{Initial acoustic-mask curve from the PRD. Values are placeholders until tuned.}
+\label{tab:acoustic-mask-curve}
+\end{table}
+
+The cap is skipped for actuators driven by \texttt{CRITICAL} or \texttt{SHUTDOWN} zones, and spin-up is allowed to exceed the cap during its configured boost window. Modifier validation bounds both the cap and the trip offset, so this reference curve cannot silently reorder trips or ask for a non-zero PWM below an actuator's configured minimum.
 
 \subsection{Acoustic Proxy}
 
@@ -15,6 +39,12 @@ Until calibrated sound-pressure measurements are available, the paper uses fan P
 \begin{equation}
     A_{pwm} = \sum_{k=0}^{N-1} PWM_k \Delta t
 \end{equation}
+
+These proxies are not a substitute for SPL data. They are useful only as reproducible scenario metrics until the formal acoustic sweep is run.
+
+\subsection{Scenario Coverage}
+
+The canonical scenarios \texttt{acoustic\_mask\_low\_speed.scn} and \texttt{acoustic\_mask\_high\_speed.scn} exercise the two ends of the modifier curve with a virtual CAN speed source; \texttt{can\_bus\_loss.scn} exercises the stale-context fail-safe path. These scenario names keep the original policy label, but they are tests of the generic modifier and stale-context machinery described in Section~\ref{sec:control-model}.
 
 \subsection{Pending Acoustic Characterization}
 

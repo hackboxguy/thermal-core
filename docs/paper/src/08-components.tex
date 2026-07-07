@@ -6,11 +6,11 @@ Sensors provide temperature samples in millidegrees Celsius. Platform backends m
 
 \subsection{Actuators}
 
-The v1 actuator model is a PWM fan with optional tach feedback. The actuator definition includes minimum PWM, maximum PWM, slew limit, and stall threshold.
+The v1 actuator model is explicitly a PWM fan with optional tach feedback. The actuator definition includes minimum PWM, maximum PWM, slew limit, spin-up duty and duration, anti-short-cycle dwell ticks, and the \texttt{state\_pwm[]} cooling-state table. This is narrower than a generic automotive cooling-device abstraction: v1 does not model throttling, heaters, pumps, inverted polarity, or multi-quadrant devices. The generic concept is the cooling-state request; the fan backend is the reference realization.
 
 \subsection{Context Inputs}
 
-Vehicle speed is the first context input. It is deliberately not special in the core: future context inputs such as ignition state, ambient temperature, HVAC state, and drive mode should use the same mechanism.
+Vehicle speed is the first context input. It is deliberately not special in the core: future context inputs such as ignition state, ambient temperature, HVAC state, drive mode, and workload or power estimate should use the same mechanism. A load/power context is the natural feed-forward signal for a future governor extension and a better stuck-sensor correlate than vehicle speed; v1 only sketches that path.
 
 \subsection{Fault Detectors}
 
@@ -18,8 +18,8 @@ Initial fault detectors:
 
 \begin{itemize}[leftmargin=*]
     \item fan stall while PWM is above a configured threshold;
-    \item stuck sensor over a configured observation window;
-    \item thermal runaway when temperature rises despite requested cooling;
+    \item stuck sensor over a configured observation window, gated either by a correlated context value changing during the same window or by flatness-only mode when no correlate is configured;
+    \item thermal runaway when temperature rises despite requested cooling; a latched force-max runaway escalates to a shutdown request if the condition remains active while latched;
     \item stale context input --- for example a speed-source timeout, which drives acoustic-mask fail-safe behavior.
 \end{itemize}
 
@@ -64,7 +64,7 @@ All four detectors share one state machine (Figure~\ref{fig:fault-fsm}), anchore
 
 A post-v1 addition extends the fault family with an \emph{advisory} counterpart: a fan-health detector that grades bearing wear and contamination before they become a stall. Where the stall detector raises a binary fault at the terminal failure --- tachometer near zero while PWM is high --- fan-health grades the slow approach to it, comparing measured fan RPM against a known-good PWM-to-RPM baseline captured once at the factory, at first boot, or at a service event.
 
-It is deliberately not a fifth fault detector: it has no action and no fault state machine. It only emits health telemetry --- a signed drift figure, a severity grade, the baseline provenance, and a confidence figure --- and never commands an actuator, so thermal safety stays entirely with the v1 stall and runaway detectors. The module is compile-optional and contributes no code when built out, leaving constrained MCU targets unaffected. Only the minimal core-resident slice is implemented --- the steady-state comparison, the per-baseline-point drift accumulators, and the severity grading; baseline capture, persistence, and host tooling are deliberately deferred, as is the controlled dust-loading measurement a quantitative evaluation would need.
+It is deliberately not a fifth fault detector: it has no action and no fault state machine. It only emits health telemetry --- a signed drift figure, a severity grade, the baseline provenance, and a confidence figure --- and never commands an actuator, so thermal safety stays entirely with the v1 stall and runaway detectors. The module is compile-optional and contributes no code when built out, leaving constrained MCU targets unaffected. Only the minimal core-resident slice is implemented --- the steady-state comparison, the per-baseline-point drift accumulators, and the severity grading; baseline capture, persistence, and host tooling are deliberately deferred, as is the controlled dust-loading measurement a quantitative evaluation would need. Temperature compensation is also deferred: a hot intake day can legitimately lower RPM at fixed duty and may look like negative drift until a temperature-aware baseline is added.
 
 \subsection{Numeric Identity}
 

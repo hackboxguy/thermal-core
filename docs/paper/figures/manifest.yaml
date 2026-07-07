@@ -10,7 +10,7 @@
 # canonical encoder exists (impl-plan Stage 12 deferral) and the
 # csv_sha256 is the actual freshness signal; the config hash is
 # provenance only.
-git_sha: c435e86402f0426f4c69ca6d3a993137b4b3da8d
+git_sha: e846e64006ddf94999a306d2b3dcb9e43a7572a7
 tool_versions:
   python: 3.12.3
   matplotlib: 3.6.3
@@ -19,16 +19,16 @@ figures:
 - scenario: fan_stall_recovery
   csv_sha256: dbdbe9f36b71a005e71a1ff151b4eef7cecceb3cebb5f189772ff290484a1280
   config: test/integration/scenario-config-stall.json
-  config_sha256: ae54369865a166304c12a8a49bd222694c962dffe5956863e3a8e2336ad2995b
+  config_sha256: 7619beb258ecfaf85649e56dd1101b1fb2fc62247c24d56c44f2178e8e411826
 - scenario: heat_soak_ramp
   csv_sha256: 8299c8141bd32c39ed34c2dfbda006dd5041aea5ef8b87e9bff1a5e68c6fc7e4
   config: test/integration/scenario-config.json
-  config_sha256: 067df8dad72bcdeb2720772e2ac87a96f5b529fbe61f6548c36f3698a384a6a5
+  config_sha256: 213ebd934b8b7ed2c873ffe1f22be9f6af8f6aece0e8f6062da80b95fb0e74e4
 - scenario: runaway
   csv_sha256: e11aba2e0d0adc5681ee1ca72b88767ae3f021e308d3c5e95ec338f14fd170f5
   config: test/integration/scenario-config-runaway.json
-  config_sha256: 704b05bf1bab6485f48d9e75400c44a4c4b75799493fb77d21a343e994b2f9d4
+  config_sha256: 771204db069cd329912e6a9edcc62cf953f4a511444038f09f0862408f277ce0
 - scenario: step_load
   csv_sha256: 96dfd5687ff36ce82a1b3362a56a3003373c8b1b6a771f80cfbf18eefce184b9
   config: test/integration/scenario-config.json
-  config_sha256: 067df8dad72bcdeb2720772e2ac87a96f5b529fbe61f6548c36f3698a384a6a5
+  config_sha256: 213ebd934b8b7ed2c873ffe1f22be9f6af8f6aece0e8f6062da80b95fb0e74e4

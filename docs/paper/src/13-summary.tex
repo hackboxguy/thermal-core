@@ -9,8 +9,14 @@ This document describes a protocol-agnostic thermal-control core that has been i
 \begin{itemize}[leftmargin=*]
     \item not ASIL-rated;
     \item no AUTOSAR integration in v1;
-    \item OBD-II speed is a reproducible test source, not a production IVI integration strategy;
-    \item PWM-seconds is only an acoustic proxy;
+    \item OBD-II speed is a reproducible test source, not a production IVI integration strategy; a spoofed or stale speed signal can bias the acoustic reference policy, although CRITICAL and SHUTDOWN paths bypass the cap;
+    \item runtime tuning is a development surface and should remain local, authenticated, or disabled in production deployments;
+    \item the acoustic reference policy's PWM-seconds metric is only a proxy until calibrated SPL measurements exist;
+    \item fan-health does not yet compensate its PWM-to-RPM baseline for intake temperature;
+    \item CH32 UART telemetry can still drop records under sustained backpressure without a first-class drop counter;
+    \item v1 arbitration is max-wins only, with no strategy hook or actuator-load sharing;
+    \item v1 governor dispatch is a closed two-value enum, not yet a pluggable governor interface;
+    \item Linux scheduled-time ticking keeps the core deterministic, but a daemon overrun diagnostic is still future work;
     \item RH850 is structurally planned but not hardware-validated in v1;
     \item the formal timing and acoustic benchmarks are not yet captured (Section~\ref{sec:eval-gaps}).
 \end{itemize}
@@ -20,7 +26,13 @@ This document describes a protocol-agnostic thermal-control core that has been i
 \begin{itemize}[leftmargin=*]
     \item calibrated SPL measurement;
     \item controlled fan-degradation (dust-loading) measurement for the fan-health detector;
-    \item multi-input policy modifiers;
+    \item temperature-compensated fan-health baselines;
+    \item multi-input policy modifiers with explicit composition semantics;
+    \item workload/power context and optional PID feed-forward;
+    \item actuator linearization or an inner RPM loop for PID-controlled fans;
+    \item a pluggable governor dispatch table before adding a third governor;
+    \item telemetry drop counters on constrained UART paths;
+    \item Linux tick-overrun diagnostics;
     \item OEM CAN DBC integration outside the core;
     \item PID autotune;
     \item full RH850 validation;

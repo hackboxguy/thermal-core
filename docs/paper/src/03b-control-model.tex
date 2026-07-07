@@ -1,0 +1,87 @@
+\section{Closed-Loop Control Model}\label{sec:control-model}
+
+\subsection{Loop Structure}
+
+Figure~\ref{fig:closed-loop-control} shows the system as a negative-feedback controller. The protocol-agnostic core owns the middle of the loop: filtering, zone state, trip evaluation, governor output, arbitration, policy modifiers, actuator dwell and spin-up, slew limits, faults, and telemetry. Platform-specific code supplies snapshots and applies actuator requests.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    node distance=0.72cm,
+    block/.style={draw, rounded corners=2pt, align=center, minimum height=0.85cm, minimum width=2.35cm, fill=blue!6},
+    coreblock/.style={block, fill=orange!10},
+    ioblock/.style={block, fill=gray!12},
+    plantblock/.style={block, fill=green!10, minimum width=2.8cm},
+    contextblock/.style={block, fill=purple!8, minimum width=2.6cm},
+    sum/.style={circle, draw, align=center, inner sep=1pt, minimum size=0.6cm, fill=white},
+    arrow/.style={->, thick}
+]
+    \node[coreblock] (target) {Targets\\trips, setpoints};
+    \node[sum, right=0.65cm of target] (compare) {$\Sigma$};
+    \node[coreblock, right=0.65cm of compare] (governor) {Governor\\step-wise or PID};
+    \node[coreblock, right=0.65cm of governor] (policy) {Arbitration + policy\\caps, offsets, slew};
+    \node[ioblock, right=0.65cm of policy] (actuator) {Actuator adapter\\PWM / fan request};
+    \node[plantblock, right=0.65cm of actuator] (plant) {Thermal plant\\device + cooling};
+
+    \node[contextblock, above=0.75cm of policy] (context) {Context snapshot\\speed, mode, load};
+    \node[contextblock, above=0.75cm of plant] (disturbance) {Disturbances\\ambient, workload};
+    \node[ioblock, below=1.0cm of plant] (sensors) {Sensor snapshot\\temperature, tach};
+    \node[coreblock, below=1.0cm of governor] (filters) {Filters + zone state\\temperature, faults};
+
+    \draw[arrow] (target) -- (compare);
+    \draw[arrow] (compare) -- (governor);
+    \draw[arrow] (governor) -- (policy);
+    \draw[arrow] (policy) -- (actuator);
+    \draw[arrow] (actuator) -- (plant);
+    \draw[arrow] (disturbance) -- (plant);
+    \draw[arrow] (context) -- (policy);
+    \draw[arrow] (plant) -- (sensors);
+    \draw[arrow] (sensors.west) -- (filters.east);
+    \draw[arrow] (filters.west) -| (compare.south);
+\end{tikzpicture}%
+}
+\caption{Protocol-agnostic closed-loop thermal-control model.}
+\label{fig:closed-loop-control}
+\end{figure}
+
+\subsection{Governors}
+
+The step-wise governor maps active trips to discrete cooling states. Each trip carries a temperature threshold, a hysteresis band, a severity (\texttt{WARN}, \texttt{CRITICAL}, \texttt{SHUTDOWN}), and a cooling-state index. A trip is active when zone temperature crosses its threshold; it remains active until the temperature drops below \(\text{threshold} - \text{hysteresis}\). The zone's cooling state is the maximum cooling-state index over all active trips. Each actuator maps that index to a backend command through its \texttt{state\_pwm[]} table.
+
+The PID governor targets a per-zone setpoint using Q16.16 fixed-point math. Gains $K_p$, $K_i$, $K_d$ are stored as Q16.16 quantities (PWM per~m$^\circ$C, PWM per~m$^\circ$C\,$\cdot$\,s, and PWM\,$\cdot$\,s per~m$^\circ$C respectively). With \(\Delta t\) in milliseconds clamped to the configured \([dt_\text{min}, dt_\text{max}]\), one tick computes:
+
+\begin{align}
+e_t &= T_t - \text{setpoint}_\text{eff} \label{eq:pid-err}\\
+P_t^{q16} &= K_p \cdot e_t \\
+I_t^{q16} &= I_{t-1}^{q16} + \left\lfloor \frac{K_i \cdot e_t \cdot \Delta t}{1000} \right\rfloor \\
+D_t^{q16} &= \left\lfloor \frac{K_d \cdot (T_t - T_{t-1}) \cdot 1000}{\Delta t} \right\rfloor \\
+u_t &= \mathrm{clamp}\!\left(\left\lfloor\frac{P_t^{q16} + I_t^{q16} + D_t^{q16}}{2^{16}}\right\rfloor, \text{pwm\_min}, \text{pwm\_max}\right) \label{eq:pid-out}
+\end{align}
+
+The derivative is taken on the measurement \(T_t - T_{t-1}\), not on the error, so a setpoint change does not produce a derivative kick. v1 does not implement derivative filtering; deployments that use a noisy sensor should keep \(K_d\) conservative or zero. PID output is a duty command in the reference fan backend, so it is appropriate only for actuators whose duty-to-cooling relationship is monotonic over the commanded range. The fan-health baseline table gives the project a future path to static inverse-curve linearization or an inner RPM loop, but v1 does not close that loop.
+
+\paragraph{Anti-windup.} The integral update is computed tentatively and committed only when the output is not being driven deeper into saturation. If the unclamped output sits above \texttt{pwm\_max} and the increment is positive, the integral is not advanced; symmetrically for the lower bound. A PID zone must also declare at least one \texttt{CRITICAL} or \texttt{SHUTDOWN} trip as a safety floor: that trip's cooling state takes over whenever the floor is active, so a stuck or mis-tuned PID cannot hold the fan below safe levels.
+
+\subsection{Context Modifiers}
+
+Policy modifiers are the generic hook for non-temperature context. A modifier evaluates a deterministic curve against a typed context signal and can produce two outputs: a pre-governor trip/setpoint offset and a post-governor actuator cap. The v1 implementation intentionally supports one modifier at a time; that keeps composition unambiguous while the reference policy is being validated. A future multi-modifier contract should combine caps by minimum, combine offsets by bounded saturating sum, evaluate modifiers in configured order, and emit per-modifier telemetry so a combined policy remains explainable.
+
+Safety ordering is part of the modifier contract. Caps may reduce cooling only below critical severity. \texttt{CRITICAL}, \texttt{SHUTDOWN}, and fault-driven safety actions bypass caps; validation also bounds caps and trip/setpoint offsets so a configured curve cannot reorder trips, collapse hysteresis bands, or move a PID setpoint outside its configured limits.
+
+\subsection{Actuator Policy}
+
+After arbitration and safety actions, each actuator applies lifetime and startability policy before the final slew-limited command is emitted. \texttt{min\_on\_ticks} can hold an already-running fan on long enough to avoid chatter, and \texttt{min\_off\_ticks} can hold a stopped fan off before restart. Safety overrides bypass both dwell timers. When a stopped actuator is then commanded non-zero, the spin-up stage drives at least \texttt{spinup\_pwm} for \texttt{spinup\_ms}; this deliberately may exceed a comfort cap because a fan that never starts is a thermal fault waiting to happen.
+
+\subsection{Fault and Fallback Semantics}
+
+All detector windows are expressed in control ticks, and filters apply their IIR coefficient once per control tick. This is deterministic and MCU-cheap, but it means the same numeric window has different real-time latency at 100\,ms and 1\,s control periods. Configurations are therefore period-relative artefacts, not unitless policies.
+
+Sensor aggregation is fail-toward-cooling. When all sensors in a zone are invalid, the core substitutes the zone's configured fallback temperature; enter and exit edges are logged, and \texttt{aggregation\_valid} is available as telemetry. Stuck-sensor detection uses a flatness window plus either a correlated context-value change inside that same window, or flatness-only mode when no correlate is configured. A runaway configured as \texttt{force\_pwm\_max\_and\_latch} escalates to a shutdown request if the runaway remains active while latched.
+
+\subsection{Arbitration}
+
+v1 uses max-wins arbitration. Each zone produces one demand for every actuator it references, and the arbitrator selects the largest demand. This is conservative and deterministic for the single shared-fan reference plant. It is also intentionally closed: there is no strategy hook in v1, and PID demand is not split or weighted across multiple actuators.
+
+\endinput
