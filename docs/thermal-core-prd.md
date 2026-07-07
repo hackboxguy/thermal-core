@@ -1052,7 +1052,7 @@ assert no_faults except stall
 
 The scenario runner drives each scenario, captures its telemetry to a canonical CSV, and evaluates the assertions to a pass/fail result. Scenario reproducibility is enforced by the determinism gate (`make determinism`): the captured CSV must be byte-identical run-to-run and across the GCC and Clang toolchains, compared by SHA-256. A per-scenario provenance sidecar (command log, git SHA, tool versions) is not produced in v1.
 
-A canonical config-hash encoding — all `thermal_config_t` fields packed in declaration order, strings null-terminated, unused tail bytes zeroed before hashing — is implemented in `support/thermal_config_hash.c` and verified by the `json2static` round-trip test (the JSON-loader path and the static-config path must hash equal). It is not, in v1, stored beside scenario artifacts; the white-paper figure manifest records a config-file SHA-256 over the JSON bytes instead (§9.2).
+A canonical config-hash encoding — all `thermal_config_t` fields packed in declaration order, strings null-terminated, unused tail bytes zeroed before hashing — is implemented in `support/thermal_config_hash.c` and verified by the `json2static` round-trip test (the JSON-loader path and the static-config path must hash equal). The digest is scoped to the compiled feature profile: feature-gated fields such as PID-only actuator/PID extensions or fan-health baselines are encoded only when that feature is compiled in, so cross-profile comparisons must include the feature-profile identity. It is not, in v1, stored beside scenario artifacts; the white-paper figure manifest records a config-file SHA-256 over the JSON bytes instead (§9.2).
 
 ## 8. Reference Bench Rig (pinned)
 

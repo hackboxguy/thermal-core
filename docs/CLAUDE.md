@@ -67,9 +67,9 @@ are easy to forget.
   to leave the shipping default `make build-ch32` firmware byte-for-byte
   identical when their flags are off. Verify by git-stash-comparing the
   `main.bin` sha256. The current default sha after the M6 governor
-  dispatch / PID-gate change is
-  `b53b28b5ee12c6038c9eb6a568bac69a35466c3b861f20cc68d14dbc8f394eb5`
-  (12 912 B).
+  dispatch / PID-gate change and v3 lookup hardening is
+  `4ab1d9ca1eeb7ae5ac1123e4eaf7cb13ff61a1035428760d8d072c14c4e71c8b`
+  (12 260 B).
   If a change
   unrelated to default control behavior perturbs the default, gate it
   behind a build flag.

@@ -30,6 +30,10 @@
  *      past actuator_count -- only when THERMALCORE_ENABLE_FAN_HEALTH
  *      is defined (Stage 17, PRD Appendix C). Compiled out, this
  *      stage is absent and the digest is unchanged from v1.
+ *
+ * The digest is intentionally feature-profile scoped: compile-time
+ * gates such as THERMALCORE_ENABLE_PID and THERMALCORE_ENABLE_FAN_HEALTH
+ * add or omit their owned fields from this canonical stream.
  */
 #include "thermal_config_hash.h"
 

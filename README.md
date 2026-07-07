@@ -182,7 +182,7 @@ make flash-ch32                                          # build + flash via WCH
 
 `make build-ch32` cross-compiles the firmware and asserts the
 PRD Appendix D.2 budget (flash ≤ 16 KB, SRAM ≤ 2 KB).  The
-current STANDALONE build links at 12 912 B flash / 1 044 B SRAM.
+current STANDALONE build links at 12 260 B flash / 1 044 B SRAM.
 
 Expected pin map (see [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)):
 
@@ -331,10 +331,10 @@ make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
 ```
 
 The detector remains compiled out of the default no-telemetry firmware,
-which currently links at 12 912 B of 16 KB. The telemetry build (with
-the detector and drop counter) sits at 15 016 B of 16 KB; the
+which currently links at 12 260 B of 16 KB. The telemetry build (with
+the detector and drop counter) sits at 14 420 B of 16 KB; the
 `CH32_COMMAND=1` bench variant, with fan-health compiled out by default,
-sits at 14 556 B.
+sits at 14 072 B.
 
 ## Build + test (host-side)
 

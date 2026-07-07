@@ -74,6 +74,11 @@ TEST_CASE(validate_config) {
     cfg.control_period_ms = 0;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+    /* === Rule 3b: governor enum value 0 is reserved/unknown === */
+    make_valid_config(&cfg);
+    cfg.zones[0].governor = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
     /* === Rule 4: sensor_count > MAX === */
     make_valid_config(&cfg);
     cfg.sensor_count = THERMAL_MAX_SENSORS + 1;

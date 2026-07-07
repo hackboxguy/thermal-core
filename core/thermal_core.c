@@ -351,7 +351,8 @@ static const thermal_governor_ops_t GOVERNOR_OPS[] = {
 };
 
 static const thermal_governor_ops_t *governor_ops_for(uint8_t gov) {
-    if (gov >= (uint8_t)(sizeof(GOVERNOR_OPS) / sizeof(GOVERNOR_OPS[0]))) {
+    if (gov == 0 ||
+        gov >= (uint8_t)(sizeof(GOVERNOR_OPS) / sizeof(GOVERNOR_OPS[0]))) {
         return NULL;
     }
     if (GOVERNOR_OPS[gov].id != gov) {
