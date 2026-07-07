@@ -553,7 +553,7 @@ Borrowed in spirit from the Linux kernel thermal framework:
 - **Governor**: a control algorithm. v1 = `step_wise` (Linux-thermal style discrete states) and `pid` (continuous PID with anti-windup).
 - **Context signal**: a typed non-temperature input, such as vehicle speed, ignition state, drive mode, HVAC state, or ambient-noise proxy. v1 uses vehicle speed only. Context IDs are configured; the core never knows where the value came from.
 - **Policy modifier**: a configured rule that can transform either pre-governor effective targets/trips or post-governor actuator requests based on context. v1 allows exactly one modifier, `acoustic_mask`, with a pre-governor trip/setpoint offset and a post-governor PWM cap as functions of vehicle speed. The config field is an array only for forward compatibility; future multiple modifiers apply in configured order, which then becomes part of the deterministic contract.
-- **Arbitrator**: when multiple zones target the same actuator, the arbitrator decides the final command. v1 = max-wins (highest demanded PWM). If one zone lists multiple actuators, the zone produces one demand that is broadcast to each listed actuator before per-actuator arbitration, clamps, and slew limits are applied.
+- **Arbitrator**: when multiple zones target the same actuator, the arbitrator decides the final command. v1 = max-wins (highest demanded PWM), with no strategy hook. If one zone lists multiple actuators, the zone produces one demand that is broadcast unscaled to each listed actuator before per-actuator arbitration, clamps, and slew limits are applied. v1 does not split PID demand, balance load, or weight cooling across multiple actuators; those policies require an explicit future arbitration strategy.
 - **Fault detector**: stall, sensor-stuck, runaway, stale context. Per detector, configurable thresholds, severity, latching/recovery behavior, and action.
 
 **IIR filter math (used by sensor `iir_alpha_q16` and context-signal `iir_alpha_q16`):** a single-pole low-pass with Q16.16 coefficient `alpha`:
@@ -577,7 +577,7 @@ The multiplication is computed in 64-bit intermediate (`int64_t`) and shifted ba
 - On subsequent valid samples, the IIR equation above advances `filtered_value`.
 - On an invalid sample (`sample.valid = 0` or staleness exceeded), the filter does not update arithmetic. `filtered_value` holds its last numeric value; `valid` is set to `0`.
 - Aggregation skips sensors whose filter `valid = 0`. The held numeric value is not policy-active.
-- For context signals, the `fail_safe = hold_last` mode keeps the held filtered value policy-active even with `valid = 0`; other fail-safe modes substitute the configured value. The held filter state and the policy-active flag are distinct.
+- For context signals, the `fail_safe = hold_last` mode keeps the held filtered value policy-active even with `valid = 0`; `assume_stationary` substitutes `0`. `assume_value` is a reserved enum value for a future config shape with an explicit fallback value and is rejected by v1 validation. The held filter state and the policy-active flag are distinct.
 
 ### 4.6 Control loop
 
@@ -676,7 +676,7 @@ The implementation must make governor math reproducible across targets:
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A platform that passes measured wall time lets the core observe missing or extremely late ticks through that clamped `dt`; a platform that passes scheduled time must emit a platform diagnostic when the observed wall-clock wakeup overruns the scheduled deadline.
 - **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic. The Linux daemon deliberately keeps scheduled-time `now_ms` in wall-clock mode for deterministic control math and emits `TEVENT_PLATFORM_TICK_OVERRUN` when `CLOCK_MONOTONIC` shows it woke late by more than its overrun threshold.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
-- **Derivative:** derivative is computed on measured temperature by default. Derivative filtering is deferred; v1 deployments should set `kd_q16 = 0` or keep it conservative when sensor noise is high.
+- **Derivative:** derivative is computed on measured temperature, not error. v1 has no derivative-filter parameter; deployments with noisy sensors should set `kd_q16 = 0` or keep it conservative. A first-order D-filter is future work and would require an explicit config/API field.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
 - **Step-state mapping:** v1 maps `cooling_state` to PWM through the per-actuator `state_pwm` table in actuator config. There is no zone-local cooling-state curve in v1.
 - **Curve interpolation:** all policy and governor curves use deterministic integer linear interpolation between adjacent points, with endpoint clamping outside the configured x-axis range. The formula is `y = y0 + ((int64_t)(x - x0) * (y1 - y0)) / (x1 - x0)`, using C99 signed-division truncation toward zero. Duplicate or descending x-axis points are rejected at config validation. No floating point is used for curve evaluation.
@@ -1092,7 +1092,7 @@ All scenarios are scripted (`scenarios/*.scn`) and run on three rigs: pure unit-
 | `stuck_sensor` | Freeze SoC sensor at 50°C while injecting load; verify stuck-sensor fault, fallback behavior. |
 | `acoustic_mask_low_speed` | Vehicle speed = 0; verify PWM cap applied; temperature trends with cap engaged. |
 | `acoustic_mask_high_speed` | Vehicle speed sweep 0 → 130 km/h; verify cap releases, trip offset applied. |
-| `multi_zone_coupling` | Amp and tuner zones heat simultaneously, shared fan; verify max-wins arbitration. |
+| `multi_zone_coupling` | Amp and tuner zones heat simultaneously, shared fan; verify v1 max-wins arbitration. This does not exercise multi-actuator load sharing, which is outside v1 scope. |
 | `runaway` | PWM forced to 0 (actuator failure), temperature rising; verify runaway fault. |
 | `can_bus_loss` | Cut CAN; verify fail-safe to `assume_stationary` after the configured context `timeout_ms`. |
 

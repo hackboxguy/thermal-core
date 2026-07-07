@@ -82,6 +82,6 @@ Sensor aggregation is fail-toward-cooling. When all sensors in a zone are invali
 
 \subsection{Arbitration}
 
-v1 uses max-wins arbitration. Each zone produces one demand for every actuator it references, and the arbitrator selects the largest demand. This is conservative and deterministic for the single shared-fan reference plant. It is also intentionally closed: there is no strategy hook in v1, and PID demand is not split or weighted across multiple actuators.
+v1 uses max-wins arbitration. Each zone produces one demand for every actuator it references; if a zone references multiple actuators, that demand is broadcast unscaled, and each actuator then keeps the largest demand addressed to it. This is conservative and deterministic for the single shared-fan reference plant. It is also intentionally closed: there is no strategy hook in v1, and PID demand is not split or weighted across multiple actuators.
 
 \endinput
