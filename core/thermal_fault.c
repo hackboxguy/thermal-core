@@ -156,6 +156,7 @@ void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s) {
     s->window_value_min = 0;
     s->window_value_max = 0;
     s->window_tick_count = 0;
+    s->window_correlated_seen_change = 0;
 }
 
 void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
@@ -174,11 +175,15 @@ void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
         if (s->window_tick_count == 0) {
             s->window_value_min = sensor_filtered_value;
             s->window_value_max = sensor_filtered_value;
+            s->window_correlated_seen_change = 0;
         } else {
             if (sensor_filtered_value < s->window_value_min)
                 s->window_value_min = sensor_filtered_value;
             if (sensor_filtered_value > s->window_value_max)
                 s->window_value_max = sensor_filtered_value;
+        }
+        if (correlated_load_changing) {
+            s->window_correlated_seen_change = 1;
         }
         s->window_tick_count++;
     }
@@ -188,9 +193,9 @@ void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
     /* Window check fires once per window_ticks. Window_ticks == 0 is a
      * config bug; defensive: skip the check. */
     if (window_ticks > 0 && s->window_tick_count >= window_ticks) {
-        uint8_t advisory_mode = (cfg->correlated_context_id == 0xFFFF);
+        uint8_t flatness_only_mode = (cfg->correlated_context_id == 0xFFFF);
 
-        if (!advisory_mode && correlated_load_changing) {
+        if (flatness_only_mode || s->window_correlated_seen_change) {
             int32_t delta = s->window_value_max - s->window_value_min;
             if (delta < delta_threshold) {
                 condition_active = 1;
@@ -201,6 +206,10 @@ void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
         s->window_value_min = sensor_filtered_value;
         s->window_value_max = sensor_filtered_value;
         s->window_tick_count = sensor_valid ? 1 : 0;
+        s->window_correlated_seen_change = 0;
+        if (sensor_valid && correlated_load_changing) {
+            s->window_correlated_seen_change = 1;
+        }
     }
 
     fsm_tick(&s->state, &s->persist_count, &s->recovery_count,

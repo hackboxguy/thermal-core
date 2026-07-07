@@ -243,9 +243,12 @@ typedef enum {
     THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP = 0x0201,
     THERMAL_ACT_REASON_FAULT_STALL           = 0x0301,
     THERMAL_ACT_REASON_FAULT_RUNAWAY         = 0x0302,
+    THERMAL_ACT_REASON_FAULT_STUCK_SENSOR    = 0x0303,
+    THERMAL_ACT_REASON_FAULT_STALE_CONTEXT   = 0x0304,
     THERMAL_ACT_REASON_SAFETY_SHUTDOWN       = 0x0401,
     THERMAL_ACT_REASON_MANUAL_CMD            = 0x0501,
-    THERMAL_ACT_REASON_SPINUP                = 0x0601
+    THERMAL_ACT_REASON_SPINUP                = 0x0601,
+    THERMAL_ACT_REASON_DWELL                 = 0x0701
 } thermal_actuator_reason_t;
 
 typedef enum {
@@ -378,6 +381,8 @@ typedef struct {
     uint8_t slew_per_tick;
     uint8_t spinup_pwm;
     uint32_t spinup_ms;
+    uint16_t min_on_ticks;
+    uint16_t min_off_ticks;
     uint8_t state_pwm[THERMAL_MAX_COOLING_STATES];
 } thermal_actuator_cfg_t;
 
@@ -595,7 +600,7 @@ tick (every CONTROL_PERIOD_MS, default 100ms):
      12. write actuator commands and persist/forward telemetry as needed
 ```
 
-Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps. Because post-governor policy caps run before fault actions, a fault action such as `force_pwm_max` is allowed to overwrite an already-capped PWM request. Upward safety overrides from `CRITICAL`, `LATCHED`, `shutdown`, and runaway paths bypass the normal slew-rate limiter; recovery and downward transitions still obey slew limits. Fan spin-up is an actuator-level boost: when the previously applied duty was `0` and the post-safety request is non-zero, the core commands at least `spinup_pwm` for `spinup_ms` before returning to the requested duty, emitting `THERMAL_ACT_REASON_SPINUP` while the boost is active.
+Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps. Because post-governor policy caps run before fault actions, a fault action such as `force_pwm_max` is allowed to overwrite an already-capped PWM request. Upward safety overrides from `CRITICAL`, `LATCHED`, `shutdown`, and runaway paths bypass the normal slew-rate limiter; recovery and downward transitions still obey slew limits. Anti-short-cycle dwell is an actuator-level comfort/lifetime policy: `min_on_ticks` can hold a non-zero command before allowing off, and `min_off_ticks` can hold zero before allowing restart; safety overrides bypass both. Fan spin-up is an actuator-level boost: when the previously applied duty was `0` and the post-safety request is non-zero after dwell, the core commands at least `spinup_pwm` for `spinup_ms` before returning to the requested duty, emitting `THERMAL_ACT_REASON_SPINUP` while the boost is active.
 
 Determinism: the loop is monotonic; `now_ms()` rollover (32-bit ms = ~49 days) is handled with `(uint32_t)(a - b)` subtraction throughout. All loop work is bounded by compile-time maxima.
 
@@ -629,8 +634,8 @@ Detector configuration is specified as global defaults per detector type, while 
 Required v1 detector behavior:
 
 - **Fan stall:** active when requested PWM is above `stall_pwm_threshold` and tach stays below `stall_rpm` for `persist_ticks`, excluding configured spin-up grace. Recovery requires tach above threshold for `recovery_ticks`.
-- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while the configured `correlated_context` or a scenario injection indicates changing thermal load. If no correlated context is configured, the detector is advisory only: it emits telemetry/events but does not move the detector out of `NORMAL`.
-- **Thermal runaway:** active when temperature rises for `persist_ticks` while requested cooling is high or increasing. This fault is `CRITICAL` by default and overrides acoustic caps.
+- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while the configured `correlated_context` changes during that same window. If no correlated context is configured (`0xFFFF` / JSON `null`), v1 runs in flatness-only mode and the same long flat sensor window is actionable.
+- **Thermal runaway:** active when temperature rises for `persist_ticks` while requested cooling is high or increasing. This fault is `CRITICAL` by default and overrides acoustic caps. A `force_pwm_max_and_latch` runaway escalates to a shutdown request if the runaway condition remains active for `recovery_ticks` after the latch.
 - **Stale context:** active when a context sample is invalid longer than its timeout. The configured context fail-safe value is applied and the policy emits telemetry so tests can prove the fallback occurred.
 
 Fault actions must be idempotent and bounded. A fault action may force an actuator command higher than the governor requested, but v1 must not silently command a lower cooling level during `CRITICAL` or `LATCHED` thermal faults.
@@ -642,7 +647,7 @@ Required v1 fault actions:
 | `mark_degraded` | Emit event/telemetry and keep normal governor output. |
 | `use_zone_fallback` | Replace the affected zone's computed temperature with the max of remaining valid zone sensors; if none exist, use the zone's configured `fallback_temp_mc`. Invalid config if neither is possible. Enter/exit edges emit `TEVENT_ZONE_FALLBACK_ENTER` / `TEVENT_ZONE_FALLBACK_EXIT`, and `aggregation_valid` is exposed as zone telemetry. |
 | `force_pwm_max_until_recovered` | Request maximum configured PWM for affected actuators until the detector reaches `NORMAL`. Upward command is slew-exempt. |
-| `force_pwm_max_and_latch` | Request maximum configured PWM, enter `LATCHED` after detection, and require `CMD_CLEAR_FAULT`, reboot, or platform-local maintenance reset after recovery. Upward command is slew-exempt. |
+| `force_pwm_max_and_latch` | Request maximum configured PWM, enter `LATCHED` after detection, and require `CMD_CLEAR_FAULT`, reboot, or platform-local maintenance reset after recovery. Upward command is slew-exempt. For runaway, continued active runaway for `recovery_ticks` while latched also emits `TEVENT_SHUTDOWN_REQUEST` and latches shutdown-requested state. |
 | `request_shutdown` | Latch a shutdown-request condition, emit `TEVENT_SHUTDOWN_REQUEST`, and request maximum configured cooling. The platform decides whether that event maps to process exit, system power action, or no action. |
 | `none` | Emit detector telemetry only. Useful for advisory detectors and experiments. |
 
@@ -671,7 +676,7 @@ The implementation must make governor math reproducible across targets:
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A missing or extremely late tick emits telemetry and uses the clamped value.
 - **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
-- **Derivative:** derivative is computed on measured temperature by default, with optional first-order filtering to avoid tach/sensor noise coupling.
+- **Derivative:** derivative is computed on measured temperature by default. Derivative filtering is deferred; v1 deployments should set `kd_q16 = 0` or keep it conservative when sensor noise is high.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
 - **Step-state mapping:** v1 maps `cooling_state` to PWM through the per-actuator `state_pwm` table in actuator config. There is no zone-local cooling-state curve in v1.
 - **Curve interpolation:** all policy and governor curves use deterministic integer linear interpolation between adjacent points, with endpoint clamping outside the configured x-axis range. The formula is `y = y0 + ((int64_t)(x - x0) * (y1 - y0)) / (x1 - x0)`, using C99 signed-division truncation toward zero. Duplicate or descending x-axis points are rejected at config validation. No floating point is used for curve evaluation.
@@ -702,6 +707,7 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
     {"id": 0, "name": "main_fan", "pwm": "hwmon:chip=nct6775:input=pwm1", "tach": "hwmon:chip=nct6775:input=fan1_input",
      "pwm_min": 80, "pwm_max": 255, "slew_per_tick": 8,
      "pwm_freq_hz": 25000, "tach_pulses_per_rev": 2, "spinup_pwm": 180, "spinup_ms": 500,
+     "min_on_ticks": 0, "min_off_ticks": 0,
      "state_pwm": [0, 100, 160, 220, 255]}
   ],
   "zones": [
@@ -764,7 +770,7 @@ Aggregation uses valid samples only. For `max`, `avg`, and `weighted`, invalid s
 
 Sensor `max_staleness_ms` is enforced by the platform when building `thermal_input_snapshot_t`: if `(uint32_t)(now_ms - sample_ts_ms)` exceeds the configured age, the platform reports the sample with `valid = 0`. This lets slow sources such as DS18B20 probes reuse cached samples between conversions without confusing the core about freshness.
 
-Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero; the spin-up boost bypasses normal upward slew for its configured window, and stall detection ignores tach failures during the same grace window.
+Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. `min_on_ticks`/`min_off_ticks` are period-relative anti-short-cycle dwell knobs; zero disables the corresponding dwell. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero after dwell; the spin-up boost bypasses normal upward slew for its configured window, and stall detection ignores tach failures during the same grace window.
 
 Platform-only fields live in platform-specific configuration structures, such as `thermalcored_runtime_cfg_t` under `platform/linux/`. Examples include source URIs, `pwm_freq_hz`, `tach_pulses_per_rev`, `telemetry.transport`, `telemetry.signals`, and `control.listen`. Loaders convert these into `thermal_config_t` plus platform runtime config.
 
@@ -794,8 +800,8 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 - Units are explicit in field names or schema metadata; core units are millidegrees C, 0-255 PWM duty, RPM, milliseconds, and Q16.16 coefficients.
 - Curves are strictly increasing in their x-axis and have at least two points; interpolation uses the deterministic formula in §4.8.
 - Runtime curve edits must preserve the same strictly increasing x-axis invariant. `CMD_SET_CURVE_POINT` rejects edits that would make `x[point_idx - 1] < x[point_idx] < x[point_idx + 1]` false, returning `THERMAL_ERR_BOUNDS`.
-- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, is non-decreasing across cooling states, and each referenced non-zero entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. If `spinup_ms > 0`, `spinup_pwm` is non-zero and satisfies `pwm_min <= spinup_pwm <= pwm_max`.
-- A zone's `fallback_temp_mc` is at least the highest configured `CRITICAL` trip temperature, so loss of all valid sensors fails toward cooling rather than away from it.
+- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, is non-decreasing through the highest referenced cooling state for each affected actuator, and each referenced non-zero entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. Shorter JSON `state_pwm` arrays are valid when no trip references the zero-padded tail. If `spinup_ms > 0`, `spinup_pwm` is non-zero and satisfies `pwm_min <= spinup_pwm <= pwm_max`. `min_on_ticks` and `min_off_ticks` are unsigned 16-bit tick counts; zero disables each dwell.
+- A zone's `fallback_temp_mc` is at least the highest configured `CRITICAL` trip temperature; if the zone has no `CRITICAL` trip, fallback reaches the highest configured trip so loss of all valid sensors fails toward cooling rather than away from it.
 - Modifier `pwm_cap` values are in `0..255` and either `0` or at least each affected actuator's `pwm_min`. Modifier trip/setpoint offsets are validated at every curve point so adjusted trips remain valid and adjusted PID setpoints remain within their configured bounds; runtime curve/trip/setpoint commands are checked against the same invariants.
 - PID runtime bounds are present for every PID zone and satisfy `min <= current <= max` for gains and setpoints.
 - PID `dt_min_ms` and `dt_max_ms` are present for every PID zone and satisfy `0 < dt_min_ms <= control_period_ms <= dt_max_ms`.
@@ -804,7 +810,7 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 - Weighted sensor aggregation requires a `weights` array matching the sensor list length; weights use Q16.16 and must have a positive sum.
 - Fault actions are one of the v1 actions in §4.7; action-specific required fields such as `fallback_temp_mc` are present.
 - Expanded per-target fault detector instances fit within `THERMAL_MAX_FAULTS`.
-- Optional `correlated_context` values for stuck-sensor detection resolve to a configured context signal. If `correlated_context` is `null` or absent, the detector is advisory unless a scenario/test injection explicitly supplies a correlated load signal.
+- Optional `correlated_context` values for stuck-sensor detection resolve to a configured context signal. If `correlated_context` is `null` or absent, the detector runs in flatness-only mode.
 - Trip points are ordered by temperature and hysteresis does not overlap neighboring trips.
 - Trip `cooling_state < THERMAL_MAX_COOLING_STATES` and is valid for every affected actuator's `state_pwm` table.
 - Runtime tuning bounds are configured for every tunable value; commands outside those bounds return an error and leave state unchanged.
@@ -1035,7 +1041,7 @@ v1 does not require a physical heat-injection plant to be considered complete. T
 
 | Item | Qty | Notes |
 |---|---|---|
-| ESP32-C6 DevKitC-1 | 1 | Primary MCU; supports TWAI (CAN) for OBD-II, plenty of LEDC/PCNT/GPIO |
+| ESP32-C3 DevKitC-1 | 1 | Primary MCU; supports TWAI (CAN) for OBD-II, plenty of LEDC/GPIO |
 | Noctua NF-A8 PWM (80 mm, 4-pin) | 1 | Reference low-noise fan; published PWM/RPM curve used for model validation |
 | Arctic P8 PWM (80 mm, 4-pin) | 2 | Cheaper test/abuse fans for fault injection |
 | 4-pin fan extension cables | 5 | Cut and use as wiring pigtails |
@@ -1088,7 +1094,7 @@ All scenarios are scripted (`scenarios/*.scn`) and run on three rigs: pure unit-
 
 | Benchmark | Target |
 |---|---|
-| Step time per `thermal_core_step()` call | Linux: sub-100 µs; ESP32-C6: sub-1 ms; budget for RH850-F1KM: sub-500 µs |
+| Step time per `thermal_core_step()` call | Linux: sub-100 µs; ESP32-C3: sub-1 ms; budget for RH850-F1KM: sub-500 µs |
 | Memory footprint (`.text`/`.bss`/`.data`) | Linux: not bounded (informational); ESP32: ≤ 64 KB text, ≤ 16 KB bss; RH850 budget: ≤ 32 KB text, ≤ 8 KB bss |
 | Settling time (`step_load`) | Reported per platform, per governor |
 | Overshoot (`step_load`) | Reported per platform, per governor |

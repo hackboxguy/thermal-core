@@ -127,7 +127,8 @@ typedef enum {
     THERMAL_ACT_REASON_FAULT_STALE_CONTEXT   = 0x0304,
     THERMAL_ACT_REASON_SAFETY_SHUTDOWN       = 0x0401,
     THERMAL_ACT_REASON_MANUAL_CMD            = 0x0501,
-    THERMAL_ACT_REASON_SPINUP                = 0x0601
+    THERMAL_ACT_REASON_SPINUP                = 0x0601,
+    THERMAL_ACT_REASON_DWELL                 = 0x0701
 } thermal_actuator_reason_t;
 
 /* === Sample (platform → core via input snapshot) === */

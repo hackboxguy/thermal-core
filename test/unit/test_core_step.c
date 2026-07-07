@@ -566,9 +566,9 @@ TEST_CASE(core_step_full_loop) {
         cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
-        /* Send valid speed context + flat sensor for many ticks. */
+        /* Send changing speed context + flat sensor for many ticks. */
         for (int i = 0; i < 20; i++) {
-            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60 + i, &out);
         }
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
         /* Detector latched -> fallback applied. Zone temp = 87000;
@@ -778,7 +778,7 @@ TEST_CASE(core_step_full_loop) {
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
         for (int i = 0; i < 20; i++) {
-            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60 + i, &out);
         }
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
         /* Codex-C v3-#7: distinct reason code for stuck-sensor (was
@@ -893,7 +893,7 @@ TEST_CASE(core_step_full_loop) {
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
         for (int i = 0; i < 20; i++) {
-            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60, &out);
+            step_t1c(&ctx, (uint32_t)(100 + i * 100), 50000, 60 + i, &out);
         }
         /* Exactly one TEVENT_SHUTDOWN_REQUEST emitted across the run
          * (rising edge once; latch keeps state but does not re-emit). */
@@ -947,7 +947,7 @@ TEST_CASE(core_step_full_loop) {
             run_step(&ctx, (uint32_t)(100 + i * 100),
                      50000, 1,    /* sensor 1: flat */
                      s2, 1,       /* sensor 2: varying */
-                     60, 1,
+                     60 + i, 1,
                      3, &out);
         }
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
@@ -1045,5 +1045,81 @@ TEST_CASE(core_step_full_loop) {
         step_t1(&ctx, 400, 72000, &out);
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 192);
         EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_STEP);
+    }
+
+    /* Spin-up edge: a zero demand during the boost window disarms it. */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].spinup_pwm = 200;
+        cfg.actuators[0].spinup_ms = 300;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        step_t1(&ctx, 100, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SPINUP);
+        step_t1(&ctx, 200, 50000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_STEP);
+        step_t1(&ctx, 300, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_STEP);
+    }
+
+    /* ============================================================
+     * S27 -- Anti-short-cycle dwell. min_on_ticks keeps an already-on
+     * fan from immediately shutting off; min_off_ticks then prevents
+     * an immediate restart. Safety paths are covered elsewhere and
+     * bypass this comfort/lifetime dwell.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].slew_per_tick = 255;
+        cfg.actuators[0].min_on_ticks = 2;
+        cfg.actuators[0].min_off_ticks = 3;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+
+        step_t1(&ctx, 100, 72000, &out);   /* WARN -> on */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
+        step_t1(&ctx, 200, 50000, &out);   /* below WARN, held by min_on */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_DWELL);
+        step_t1(&ctx, 300, 50000, &out);   /* min_on satisfied -> off */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 0);
+        step_t1(&ctx, 400, 72000, &out);   /* min_off tick 1 -> held off */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 0);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_DWELL);
+        step_t1(&ctx, 500, 72000, &out);   /* min_off tick 2 -> held off */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 0);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_DWELL);
+        step_t1(&ctx, 600, 72000, &out);   /* min_off satisfied -> on */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
+    }
+
+    /* ============================================================
+     * S28 -- Latched runaway escalation. A runaway configured as
+     * FORCE_PWM_MAX_AND_LATCH first forces max PWM, then escalates to
+     * a shutdown request if the runaway condition remains active for
+     * recovery_ticks while latched.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.faults.runaway_defaults.enabled = 1;
+        cfg.faults.runaway_defaults.severity = THERMAL_FAULT_SEVERITY_CRITICAL;
+        cfg.faults.runaway_defaults.action =
+            THERMAL_FAULT_ACTION_FORCE_PWM_MAX_AND_LATCH;
+        cfg.faults.runaway_defaults.persist_ticks = 3;
+        cfg.faults.runaway_defaults.recovery_ticks = 2;
+        cfg.faults.runaway_defaults.threshold0 = 500;
+        cfg.faults.runaway_defaults.threshold1 = 200;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        int32_t t = 86000;
+        for (int i = 0; i < 10; i++) {
+            step_t1(&ctx, (uint32_t)(100 + i * 100), t, &out);
+            t += 600;
+        }
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SAFETY_SHUTDOWN);
+        EXPECT_EQ(count_events(TEVENT_SHUTDOWN_REQUEST) >= 1, 1);
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
     }
 }

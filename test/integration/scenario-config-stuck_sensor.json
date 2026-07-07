@@ -67,7 +67,7 @@
       "recovery_ticks": 10,
       "delta_mc": 100,
       "window_ticks": 50,
-      "correlated_context": "vehicle_speed"
+      "correlated_context": null
     }
   },
 

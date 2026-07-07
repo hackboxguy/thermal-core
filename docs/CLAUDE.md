@@ -63,12 +63,13 @@ are easy to forget.
   wrong, accept when right, confirm with the user before applying, and
   fix in a single commit referencing the version (`Fix Codex vN
   findings: ...`). `tmp-review/` is git-ignored — never commit it.
-- **The byte-for-byte invariant**. The shipping default `make build-ch32`
-  firmware is supposed to stay byte-for-byte identical when adding
-  features. Verify by git-stash-comparing the `main.bin` sha256.
-  Multiple commits explicitly call this out. The current default sha is
-  `ffe0a777ae2cc6cf...` (12 220 B). If your change perturbs the default,
-  gate it behind a build flag.
+- **The byte-for-byte invariant**. Build-gated CH32 features are supposed
+  to leave the shipping default `make build-ch32` firmware byte-for-byte
+  identical when their flags are off. Verify by git-stash-comparing the
+  `main.bin` sha256. The current default sha after the Fable v1
+  core-behavior fixes is `16dd6d67812066d...` (13 104 B). If a change
+  unrelated to default control behavior perturbs the default, gate it
+  behind a build flag.
 - **Don't commit**: `.claude/`, `tmp*/`, `build/`, `generated/`,
   rendered figure PDFs (`docs/paper/figures/*.pdf` is git-ignored), or
   the `figure_manifest.yaml`'s `git_sha` churn from a local `make

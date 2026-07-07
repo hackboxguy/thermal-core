@@ -82,6 +82,8 @@ typedef struct {
     uint16_t                  actuator_prev_reason[THERMAL_MAX_ACTUATORS];
     uint8_t                   actuator_prev_safety_override[THERMAL_MAX_ACTUATORS];
     uint16_t                  actuator_spinup_remaining[THERMAL_MAX_ACTUATORS];
+    uint16_t                  actuator_on_ticks[THERMAL_MAX_ACTUATORS];
+    uint16_t                  actuator_off_ticks[THERMAL_MAX_ACTUATORS];
 
     /* Stage 8.5 codex-B: per-actuator tach state populated by step 3b
      * from THERMAL_SAMPLE_TACH_RPM samples (one per tick per actuator).
@@ -112,6 +114,10 @@ typedef struct {
     thermal_fault_stuck_sensor_state_t   stuck_sensor_states[THERMAL_MAX_SENSORS];
     thermal_fault_runaway_state_t        runaway_states[THERMAL_MAX_ZONES];
     thermal_fault_stale_context_state_t  stale_context_states[THERMAL_MAX_CONTEXT_SIGNALS];
+    uint16_t                             runaway_latched_active_ticks[THERMAL_MAX_ZONES];
+    uint8_t                              runaway_escalated_shutdown[THERMAL_MAX_ZONES];
+    int32_t                              stuck_context_prev_value[THERMAL_MAX_CONTEXT_SIGNALS];
+    uint8_t                              stuck_context_prev_valid[THERMAL_MAX_CONTEXT_SIGNALS];
 
 #if THERMALCORE_ENABLE_FAN_HEALTH
     /* Stage 17 (PRD Appendix C): per-actuator fan-health detector. */
@@ -211,11 +217,6 @@ static thermal_status_t validate_actuators(const thermal_config_t *cfg) {
                 return THERMAL_ERR_INVALID_CONFIG;
             }
         }
-        for (uint8_t s = 1; s < THERMAL_MAX_COOLING_STATES; s++) {
-            if (a->state_pwm[s] < a->state_pwm[s - 1]) {
-                return THERMAL_ERR_INVALID_CONFIG;
-            }
-        }
     }
     for (uint8_t i = 0; i < cfg->actuator_count; i++) {
         for (uint8_t j = (uint8_t)(i + 1); j < cfg->actuator_count; j++) {
@@ -252,11 +253,17 @@ static int adjusted_trips_valid(const thermal_trip_cfg_t *trips,
     return 1;
 }
 
-static int zone_fallback_covers_critical(const thermal_zone_cfg_t *z,
-                                         const thermal_trip_cfg_t *trips) {
+static int zone_fallback_reaches_safety_floor(const thermal_zone_cfg_t *z,
+                                              const thermal_trip_cfg_t *trips) {
     int have_critical = 0;
+    int have_any_trip = 0;
     int32_t highest_critical_mc = 0;
+    int32_t highest_trip_mc = 0;
     for (uint8_t i = 0; i < z->trip_count; i++) {
+        if (!have_any_trip || trips[i].temp_mc > highest_trip_mc) {
+            highest_trip_mc = trips[i].temp_mc;
+            have_any_trip = 1;
+        }
         if (trips[i].severity == THERMAL_TRIP_CRITICAL) {
             if (!have_critical || trips[i].temp_mc > highest_critical_mc) {
                 highest_critical_mc = trips[i].temp_mc;
@@ -264,7 +271,10 @@ static int zone_fallback_covers_critical(const thermal_zone_cfg_t *z,
             have_critical = 1;
         }
     }
-    return !have_critical || z->fallback_temp_mc >= highest_critical_mc;
+    if (have_critical) {
+        return z->fallback_temp_mc >= highest_critical_mc;
+    }
+    return !have_any_trip || z->fallback_temp_mc >= highest_trip_mc;
 }
 
 static int modifier_curve_values_valid(const thermal_config_t *cfg,
@@ -540,8 +550,12 @@ static thermal_status_t validate_fault_detectors(const thermal_config_t *cfg) {
  * by zone trips must have state_pwm[cs] either 0 or in [pwm_min,
  * pwm_max]. PRD §4.3 line 506 establishes the 0-stays-0 special case;
  * other state_pwm entries that map a trip's cooling_state must be
- * legal PWM commands. */
+ * legal PWM commands. Monotonicity is checked only through the highest
+ * state a zone can actually request for that actuator; loaders support
+ * shorter JSON state_pwm arrays by zero-padding the unused tail. */
 static thermal_status_t validate_state_pwm_references(const thermal_config_t *cfg) {
+    uint8_t referenced[THERMAL_MAX_ACTUATORS] = { 0 };
+    uint8_t max_state[THERMAL_MAX_ACTUATORS] = { 0 };
     for (uint8_t z = 0; z < cfg->zone_count; z++) {
         const thermal_zone_cfg_t *zc = &cfg->zones[z];
         for (uint8_t t = 0; t < zc->trip_count; t++) {
@@ -549,12 +563,23 @@ static thermal_status_t validate_state_pwm_references(const thermal_config_t *cf
             for (uint8_t k = 0; k < zc->actuator_count; k++) {
                 int slot = find_actuator_slot(cfg, zc->actuator_ids[k]);
                 if (slot < 0) continue; /* caught elsewhere */
+                referenced[slot] = 1;
+                if (cs > max_state[slot]) max_state[slot] = cs;
                 uint8_t pwm = cfg->actuators[slot].state_pwm[cs];
                 if (pwm == 0) continue; /* off is always legal */
                 if (pwm < cfg->actuators[slot].pwm_min ||
                     pwm > cfg->actuators[slot].pwm_max) {
                     return THERMAL_ERR_BOUNDS;
                 }
+            }
+        }
+    }
+    for (uint8_t a = 0; a < cfg->actuator_count; a++) {
+        if (!referenced[a]) continue;
+        for (uint8_t s = 1; s <= max_state[a]; s++) {
+            if (cfg->actuators[a].state_pwm[s] <
+                cfg->actuators[a].state_pwm[s - 1]) {
+                return THERMAL_ERR_INVALID_CONFIG;
             }
         }
     }
@@ -635,7 +660,7 @@ static thermal_status_t validate_zone(const thermal_config_t *cfg,
             }
         }
     }
-    if (!zone_fallback_covers_critical(z, z->trips)) {
+    if (!zone_fallback_reaches_safety_floor(z, z->trips)) {
         return THERMAL_ERR_INVALID_CONFIG;
     }
 
@@ -1174,6 +1199,9 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
 
     for (uint8_t i = 0; i < THERMAL_MAX_ACTUATORS; i++) {
         thermal_fault_stall_reset(&core->stall_states[i]);
+        if (i < cfg->actuator_count) {
+            core->actuator_off_ticks[i] = cfg->actuators[i].min_off_ticks;
+        }
     }
     for (uint8_t i = 0; i < THERMAL_MAX_SENSORS; i++) {
         thermal_fault_stuck_sensor_reset(&core->stuck_sensor_states[i]);
@@ -1314,16 +1342,22 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     if (cfg->faults.stuck_sensor_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
         /* Derive correlated_load_changing once per tick from the
-         * configured correlated context's validity. v1 simplification:
-         * presence of a valid correlated context implies "the workload
-         * is observable" -- the sensor-flatness window is still the
-         * primary signal. A richer "context value changed across a
-         * window" gate is deferred to a future commit. */
+         * configured correlated context's value delta. The detector
+         * accumulates this boolean across its sensor-flatness window, so
+         * a single load/context transition inside the window is enough
+         * to make a flat sensor actionable. With 0xFFFF, the detector
+         * runs in flatness-only mode. */
         uint8_t correlated_load_changing = 0;
         if (fc->correlated_context_id != 0xFFFF) {
             int ctx_slot = find_context_slot(cfg, fc->correlated_context_id);
-            if (ctx_slot >= 0 && core->context_filters[ctx_slot].valid) {
-                correlated_load_changing = 1;
+            if (ctx_slot >= 0) {
+                uint8_t curr_valid = core->context_filters[ctx_slot].valid;
+                int32_t curr_value = core->context_filters[ctx_slot].filtered_value;
+                if (curr_valid &&
+                    core->stuck_context_prev_valid[ctx_slot] &&
+                    curr_value != core->stuck_context_prev_value[ctx_slot]) {
+                    correlated_load_changing = 1;
+                }
             }
         }
         for (uint8_t s = 0; s < cfg->sensor_count; s++) {
@@ -1366,6 +1400,15 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                         }
                     }
                 }
+            }
+        }
+        if (fc->correlated_context_id != 0xFFFF) {
+            int ctx_slot = find_context_slot(cfg, fc->correlated_context_id);
+            if (ctx_slot >= 0) {
+                core->stuck_context_prev_value[ctx_slot] =
+                    core->context_filters[ctx_slot].filtered_value;
+                core->stuck_context_prev_valid[ctx_slot] =
+                    core->context_filters[ctx_slot].valid;
             }
         }
     }
@@ -1633,14 +1676,33 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             if (fault_state_active(core->runaway_states[z].state)) {
                 int forces_max = action_forces_pwm_max(fc->action);
                 int requests_sd = (fc->action == THERMAL_FAULT_ACTION_REQUEST_SHUTDOWN);
-                if (forces_max || requests_sd) {
+                int escalates_sd = 0;
+                if (fc->action == THERMAL_FAULT_ACTION_FORCE_PWM_MAX_AND_LATCH &&
+                    core->runaway_states[z].state == THERMAL_FAULT_LATCHED) {
+                    if (core->runaway_states[z].recovery_count == 0) {
+                        if (core->runaway_latched_active_ticks[z] < 0xFFFF) {
+                            core->runaway_latched_active_ticks[z]++;
+                        }
+                    } else {
+                        core->runaway_latched_active_ticks[z] = 0;
+                    }
+                    if (fc->recovery_ticks > 0 &&
+                        core->runaway_latched_active_ticks[z] >= fc->recovery_ticks) {
+                        escalates_sd = 1;
+                    }
+                } else {
+                    core->runaway_latched_active_ticks[z] = 0;
+                }
+                if (forces_max || requests_sd || escalates_sd) {
                     for (uint8_t k = 0; k < cfg->zones[z].actuator_count; k++) {
                         int slot = find_actuator_slot(cfg,
                             cfg->zones[z].actuator_ids[k]);
                         if (slot < 0) continue;
                         slew_override_up[slot] = 1;
                         force_pwm_max[slot] = 1;
-                        if (forces_max) {
+                        if (escalates_sd) {
+                            shutdown_action[slot] = 1;
+                        } else if (forces_max) {
                             cause_runaway[slot] = 1;
                         } else {
                             shutdown_action[slot] = 1;
@@ -1654,7 +1716,20 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                                            (uint32_t)THERMAL_FAULT_TYPE_RUNAWAY,
                                            0u, 0u);
                     }
+                    if (escalates_sd &&
+                        !core->runaway_escalated_shutdown[z] &&
+                        core->cb.log_event) {
+                        core->cb.log_event(in->now_ms, TEVENT_SHUTDOWN_REQUEST,
+                                           (uint32_t)z,
+                                           (uint32_t)THERMAL_FAULT_TYPE_RUNAWAY,
+                                           (uint32_t)THERMAL_FAULT_ACTION_FORCE_PWM_MAX_AND_LATCH,
+                                           0u);
+                        core->runaway_escalated_shutdown[z] = 1;
+                    }
                 }
+            } else {
+                core->runaway_latched_active_ticks[z] = 0;
+                core->runaway_escalated_shutdown[z] = 0;
             }
         }
     }
@@ -1820,7 +1895,25 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     for (uint8_t a = 0; a < cfg->actuator_count; a++) {
         const thermal_actuator_cfg_t *ac = &cfg->actuators[a];
         uint8_t spinup_applied = 0;
+        uint8_t dwell_applied = 0;
         uint8_t requested_pwm = arb_pwm[a];
+        uint8_t safety_bypass_dwell = (uint8_t)(slew_override_up[a] ||
+                                                force_pwm_max[a] ||
+                                                shutdown_action[a]);
+
+        if (!safety_bypass_dwell) {
+            if (requested_pwm > 0 &&
+                core->actuator_prev_duty[a] == 0 &&
+                core->actuator_off_ticks[a] < ac->min_off_ticks) {
+                requested_pwm = 0;
+                dwell_applied = 1;
+            } else if (requested_pwm == 0 &&
+                       core->actuator_prev_duty[a] > 0 &&
+                       core->actuator_on_ticks[a] < ac->min_on_ticks) {
+                requested_pwm = core->actuator_prev_duty[a];
+                dwell_applied = 1;
+            }
+        }
 
         if (requested_pwm == 0) {
             core->actuator_spinup_remaining[a] = 0;
@@ -1890,6 +1983,9 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         if (spinup_applied && final_pwm > 0) {
             reason = THERMAL_ACT_REASON_SPINUP;
         }
+        if (dwell_applied) {
+            reason = THERMAL_ACT_REASON_DWELL;
+        }
         /* Fault force-max overrides governor/modifier reason. Codex-C
          * v3-#7: each detector kind gets its own reason code (instead
          * of stuck-sensor/stale-context borrowing FAULT_RUNAWAY). */
@@ -1922,6 +2018,17 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
         core->actuator_prev_safety_override[a] = slew_override_up[a];
         if (core->actuator_spinup_remaining[a] > 0) {
             core->actuator_spinup_remaining[a]--;
+        }
+        if (final_pwm > 0) {
+            if (core->actuator_on_ticks[a] < 0xFFFF) {
+                core->actuator_on_ticks[a]++;
+            }
+            core->actuator_off_ticks[a] = 0;
+        } else {
+            if (core->actuator_off_ticks[a] < 0xFFFF) {
+                core->actuator_off_ticks[a]++;
+            }
+            core->actuator_on_ticks[a] = 0;
         }
     }
 
@@ -2040,7 +2147,7 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
                 if (next_cold < (int64_t)temp) ok = 0;
             }
             if (ok) {
-                if (!zone_fallback_covers_critical(&cfg->zones[z], proposed)) {
+                if (!zone_fallback_reaches_safety_floor(&cfg->zones[z], proposed)) {
                     ok = 0;
                 }
             }
@@ -2143,6 +2250,8 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
                 status = THERMAL_ERR_REJECTED_SAFETY;
             } else {
                 thermal_fault_runaway_reset(&core->runaway_states[tid]);
+                core->runaway_latched_active_ticks[tid] = 0;
+                core->runaway_escalated_shutdown[tid] = 0;
                 status = THERMAL_OK;
             }
             break;

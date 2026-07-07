@@ -101,6 +101,8 @@ static void build_cfg(thermal_config_t *cfg) {
     cfg->actuators[0].pwm_min = 80;
     cfg->actuators[0].pwm_max = 255;
     cfg->actuators[0].slew_per_tick = 8;
+    cfg->actuators[0].spinup_pwm = 200;
+    cfg->actuators[0].spinup_ms = 300;
     cfg->actuators[0].state_pwm[0] = 0;
     cfg->actuators[0].state_pwm[1] = 100;
     cfg->actuators[0].state_pwm[2] = 160;

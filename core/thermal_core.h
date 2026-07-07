@@ -41,6 +41,8 @@ typedef struct {
     uint8_t  slew_per_tick;
     uint8_t  spinup_pwm;
     uint32_t spinup_ms;
+    uint16_t min_on_ticks;      /* 0 disables anti-short-cycle on dwell */
+    uint16_t min_off_ticks;     /* 0 disables anti-short-cycle off dwell */
     uint8_t  state_pwm[THERMAL_MAX_COOLING_STATES];
 } thermal_actuator_cfg_t;
 

@@ -153,10 +153,21 @@ TEST_CASE(validate_config) {
     cfg.actuators[0].spinup_pwm = 0;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
-    /* === L1: state_pwm[] must be non-decreasing with cooling state === */
+    /* === L1: referenced state_pwm[] entries must be non-decreasing. === */
     make_valid_config(&cfg);
     cfg.actuators[0].state_pwm[2] = 90;      /* below state_pwm[1] = 100 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === F7: zero-padded short state_pwm tails are not policy entries. === */
+    make_valid_config(&cfg);
+    cfg.zones[0].trips[0].cooling_state = 1;
+    cfg.zones[0].trips[1].cooling_state = 2;
+    cfg.actuators[0].state_pwm[0] = 0;
+    cfg.actuators[0].state_pwm[1] = 100;
+    cfg.actuators[0].state_pwm[2] = 160;
+    cfg.actuators[0].state_pwm[3] = 0;       /* loader zero-padded tail */
+    cfg.actuators[0].state_pwm[4] = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
 #if THERMAL_MAX_CONTEXT_SIGNALS >= 2  /* needs a 2-context config; skipped under a maxima=1 profile */
     /* === Rule 15: duplicate context IDs === */
@@ -260,6 +271,13 @@ TEST_CASE(validate_config) {
     /* === L1: fallback_temp_mc must reach the highest CRITICAL trip === */
     make_valid_config(&cfg);
     cfg.zones[0].fallback_temp_mc = 89999;   /* critical trip is 90000 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === F8: if no CRITICAL/SHUTDOWN trip exists, fallback must reach
+     * the highest configured trip so sensor loss still requests cooling. */
+    make_valid_config(&cfg);
+    cfg.zones[0].trips[1].severity = THERMAL_TRIP_WARN;
+    cfg.zones[0].fallback_temp_mc = 89999;   /* highest trip is 90000 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
     /* === Telemetry signal count > MAX -> NO_SPACE === */

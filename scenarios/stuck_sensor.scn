@@ -3,11 +3,12 @@
 # PRD section 9.1 row 5: "Freeze SoC sensor at 50 C while
 # injecting load; verify stuck-sensor fault, fallback behavior."
 #
-# Detector config (scenario-config-faults.json):
+# Detector config (scenario-config-stuck_sensor.json):
 #   delta_mc=100, window_ticks=50, persist_ticks=5
 # So the sensor must stay within +/-50 mc of its tracked value for
 # 50 ticks (5 s) for stuck conditions, then 5 ticks (500 ms)
-# persist before TEVENT_FAULT_ENTER fires.
+# persist before TEVENT_FAULT_ENTER fires. correlated_context=null
+# selects v1 flatness-only mode for this canonical scenario.
 
 config test/integration/scenario-config-stuck_sensor.json
 
@@ -16,7 +17,7 @@ plant initial_temp_mc 50000
 plant duration_ms     12000
 
 # Freeze the sensor at 50000 mc for the whole scenario.  With no
-# motion at all, the stuck-sensor detector should fire after
+# sensor motion at all, the stuck-sensor detector should fire after
 # window_ticks + persist_ticks * tick_ms ~= 5500 ms.
 0 freeze_input soc 50000
 

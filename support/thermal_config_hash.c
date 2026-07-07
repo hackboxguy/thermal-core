@@ -138,7 +138,8 @@ static void w_context(sha256_ctx_t *s, const thermal_context_cfg_t *c, int activ
 static void w_actuator(sha256_ctx_t *s, const thermal_actuator_cfg_t *c, int active)
 {
     if (!active) {
-        uint8_t z[THERMAL_NAME_MAX + 2 + 1 + 1 + 1 + 1 + 4 + THERMAL_MAX_COOLING_STATES] = {0};
+        uint8_t z[THERMAL_NAME_MAX + 2 + 1 + 1 + 1 + 1 + 4 + 2 + 2 +
+                  THERMAL_MAX_COOLING_STATES] = {0};
         sha256_update(s, z, sizeof(z)); return;
     }
     w_u16(s, c->id);
@@ -148,6 +149,8 @@ static void w_actuator(sha256_ctx_t *s, const thermal_actuator_cfg_t *c, int act
     w_u8 (s, c->slew_per_tick);
     w_u8 (s, c->spinup_pwm);
     w_u32(s, c->spinup_ms);
+    w_u16(s, c->min_on_ticks);
+    w_u16(s, c->min_off_ticks);
     w_u8_array(s, c->state_pwm,
                (uint8_t)THERMAL_MAX_COOLING_STATES,
                (size_t)THERMAL_MAX_COOLING_STATES);

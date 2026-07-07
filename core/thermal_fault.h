@@ -80,6 +80,7 @@ typedef struct {
     int32_t  window_value_min;
     int32_t  window_value_max;
     uint16_t window_tick_count;      /* ticks accumulated in current window */
+    uint8_t  window_correlated_seen_change;
 } thermal_fault_stuck_sensor_state_t;
 
 void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s);
@@ -89,10 +90,12 @@ void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s);
  *   threshold1 = window_ticks
  *   persist_ticks, recovery_ticks
  *   severity, action
- *   correlated_context_id  (0xFFFF -> advisory-only mode)
+ *   correlated_context_id  (0xFFFF -> flatness-only mode)
  *
  * `correlated_load_changing` is a caller-supplied boolean; the caller
- * (Stage 7 wiring) computes it from the configured context signal. */
+ * (Stage 7 wiring) computes it from a configured context signal's
+ * value delta. The detector accumulates it across the same sensor
+ * flatness window. */
 void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
                                      const thermal_fault_detector_cfg_t *cfg,
                                      int32_t  sensor_filtered_value,

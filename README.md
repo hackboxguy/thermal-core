@@ -182,7 +182,7 @@ make flash-ch32                                          # build + flash via WCH
 
 `make build-ch32` cross-compiles the firmware and asserts the
 PRD Appendix D.2 budget (flash ≤ 16 KB, SRAM ≤ 2 KB).  The
-current STANDALONE build links at ~12.1 KB flash / ~1.0 KB SRAM.
+current STANDALONE build links at 13 104 B flash / 1 044 B SRAM.
 
 Expected pin map (see [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)):
 
@@ -256,8 +256,8 @@ to drive the fan manually. This is the characterisation path for a
 fan's PWM-to-RPM curve -- the baseline the fan-health detector needs.
 
 It is a bench / characterisation build, **not** shipping firmware:
-the regulation-disable command is absent from the default image,
-which stays byte-for-byte unchanged with the gate off. `CH32_COMMAND=1`
+the regulation-disable command is absent from the default image.
+`CH32_COMMAND=1`
 forces `CH32_TELEMETRY=1` on -- command responses share the USART1 tap.
 
 The host side is [`thermal-telemetry-tool`](tools/thermal-telemetry-tool),
@@ -323,9 +323,10 @@ make flash-ch32 CH32_COMMAND=1 CH32_TELEMETRY_BAUD=115200
 make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
 ```
 
-The default no-telemetry firmware is byte-for-byte unchanged with
-the detector compiled out. The telemetry build (with the detector)
-sits at 14 168 B of 16 KB.
+The detector remains compiled out of the default no-telemetry firmware,
+which currently links at 13 104 B of 16 KB. The telemetry build (with
+the detector) sits at 15 168 B of 16 KB; the `CH32_COMMAND=1` bench
+variant sits at 16 188 B.
 
 ## Build + test (host-side)
 
@@ -386,7 +387,8 @@ Recent stages:
   telemetry (delta / severity / baseline-source / confidence).
   It never commands an actuator.  Compile-gated by
   `THERMALCORE_ENABLE_FAN_HEALTH` (host-on, MCU-off, so the
-  ESP32/CH32 images are unchanged); enabled per actuator via a
+  default ESP32/CH32 images do not include it unless a later
+  target-specific gate opts in); enabled per actuator via a
   `fan_health` JSON block — see
   [`configs/fan-health-demo.json`](configs/fan-health-demo.json).
 - **Stage 18** (post-v1) — CH32V003 STANDALONE port: the
@@ -401,16 +403,16 @@ Recent stages:
   commands over USART1 RX, plus
   [`thermal-telemetry-tool`](tools/thermal-telemetry-tool), a C++
   host tool that drives a PWM-to-RPM sweep — the characterisation
-  path for a fan-health baseline. The shipping firmware is
-  byte-for-byte unchanged; the bench build is gated by a third
+  path for a fan-health baseline. The bench-only command path is
+  absent from the shipping firmware; the bench build is gated by a third
   `build-ch32` matrix leg.
 - **Stage 20** (post-v1) — fan-health detector enabled on the
   CH32V003 STANDALONE firmware. The Stage 17 detector now compiles
   on a 10-cent MCU with a real PWM-to-RPM baseline measured on the
   deployed fan via `thermal-telemetry-tool --action=pwmsweep`. The
   `build-ch32` telemetry and command matrix legs both exercise the
-  detector; the default no-telemetry image stays byte-for-byte
-  unchanged.
+  detector; the default no-telemetry image keeps the detector compiled
+  out.
 
 ## Documentation
 

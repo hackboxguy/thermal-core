@@ -774,6 +774,20 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected non-negative integer");
             }
             out->spinup_ms = (uint32_t)val;
+        } else if (tok_str_eq(ctx, k, "min_on_ticks")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [0, 65535]");
+            }
+            out->min_on_ticks = (uint16_t)val;
+        } else if (tok_str_eq(ctx, k, "min_off_ticks")) {
+            long long val;
+            if (tok_parse_int_range(ctx, v, 0, UINT16_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected integer in [0, 65535]");
+            }
+            out->min_off_ticks = (uint16_t)val;
         } else if (tok_str_eq(ctx, k, "state_pwm")) {
             if (ctx->toks[v].type != JSMN_ARRAY) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path, "expected array");

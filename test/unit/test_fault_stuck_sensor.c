@@ -1,7 +1,7 @@
 /* test/unit/test_fault_stuck_sensor.c
  *
  * Unit tests for thermal_fault_stuck_sensor_step. Covers window-based
- * detection, advisory mode (no correlated context), load-changing
+ * detection, flatness-only mode (no correlated context), load-change
  * gating, and varying-sensor negative case.
  */
 #include <stdint.h>
@@ -44,6 +44,18 @@ TEST_CASE(fault_stuck_sensor) {
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
 
+    /* === One context change inside the window is enough.
+     * The core passes a per-tick value-delta boolean; the detector
+     * accumulates it across the same flatness window. */
+    thermal_fault_stuck_sensor_reset(&s);
+    for (int t = 0; t < 10; t++) {
+        thermal_fault_stuck_sensor_step(&s, &cfg,
+                                        75000, 1,
+                                        (uint8_t)(t == 3),
+                                        (uint32_t)(t * 100));
+    }
+    EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
+
     /* === Constant sensor + NO load_changing: stays NORMAL ===
      * Stuck-sensor detector requires the load to be changing to call
      * the sensor "stuck" -- a constant reading on a constant load is
@@ -67,18 +79,17 @@ TEST_CASE(fault_stuck_sensor) {
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
 
-    /* === Advisory mode: correlated_context_id == 0xFFFF -> never fires ===
-     * Even with constant sensor + load_changing, advisory mode suppresses
-     * the condition. */
+    /* === Flatness-only mode: correlated_context_id == 0xFFFF fires on
+     * a long flat sensor without requiring an external correlate. */
     thermal_fault_detector_cfg_t adv_cfg;
     make_cfg_basic(&adv_cfg);
     adv_cfg.correlated_context_id = 0xFFFF;
     thermal_fault_stuck_sensor_reset(&s);
-    for (int t = 0; t < 30; t++) {
-        thermal_fault_stuck_sensor_step(&s, &adv_cfg, 75000, 1, 1,
+    for (int t = 0; t < 10; t++) {
+        thermal_fault_stuck_sensor_step(&s, &adv_cfg, 75000, 1, 0,
                                         (uint32_t)(t * 100));
     }
-    EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
+    EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
 
     /* === sensor_valid = 0 doesn't accumulate window === */
     thermal_fault_stuck_sensor_reset(&s);

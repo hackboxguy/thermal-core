@@ -162,7 +162,7 @@ CONTEXT_ALLOWED = {
 
 ACTUATOR_ALLOWED = {
     "id", "name", "pwm_min", "pwm_max", "slew_per_tick",
-    "spinup_pwm", "spinup_ms", "state_pwm",
+    "spinup_pwm", "spinup_ms", "min_on_ticks", "min_off_ticks", "state_pwm",
     "pwm", "tach", "pwm_freq_hz", "tach_pulses_per_rev",   # platform-only
     "fan_health",                       # Stage 17, --enable-fan-health only
 }
@@ -526,6 +526,8 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             "slew_per_tick":  int(a.get("slew_per_tick", 0)),
             "spinup_pwm":     int(a.get("spinup_pwm", 0)),
             "spinup_ms":      int(a.get("spinup_ms", 0)),
+            "min_on_ticks":   int(a.get("min_on_ticks", 0)),
+            "min_off_ticks":  int(a.get("min_off_ticks", 0)),
             "state_pwm":      [int(x) for x in sp] + [0] * (MAX_COOLING_STATES - len(sp)),
         })
         # When --enable-fan-health is off, any fan_health block in
@@ -880,6 +882,8 @@ def emit_actuator(a):
             f" .pwm_min = {a['pwm_min']}, .pwm_max = {a['pwm_max']},"
             f" .slew_per_tick = {a['slew_per_tick']},"
             f" .spinup_pwm = {a['spinup_pwm']}, .spinup_ms = {a['spinup_ms']},"
+            f" .min_on_ticks = {a['min_on_ticks']},"
+            f" .min_off_ticks = {a['min_off_ticks']},"
             f" .state_pwm = {emit_state_pwm(a['state_pwm'])} }}")
 
 
