@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.21
+**Document status:** Draft v0.22
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -673,6 +673,7 @@ The implementation must make governor math reproducible across targets:
 
 - **Step-wise governor:** trip points are evaluated with hysteresis. Each active trip contributes a `cooling_state`; the zone request is the highest active state.
 - **PID governor:** error is `zone_temp_mc - effective_setpoint_mc`; positive error increases cooling demand. Output units are PWM duty `0..255` before arbitration and policy modifiers.
+- **Governor dispatch:** the v1 governor set remains closed and enum-based. Implementations may centralize per-governor behavior in a static ops table or equivalent compile-time dispatch, but no runtime governor registration API is part of v1. A build profile may compile out an optional governor such as PID; the public enum value remains reserved, and any config selecting a governor unavailable in that build is invalid.
 - **Trips with PID:** PID remains the normal continuous controller. Trips on PID zones provide telemetry and safety floors: `warn` is informational, `critical` floors output via `state_pwm[cooling_state]`, and `shutdown` requests maximum configured cooling plus shutdown event.
 - **PID state snapshot:** `thermal_zone_state_t.cooling_state` is `0` for PID zones while no safety trip floor is active; it becomes the highest active safety trip's `cooling_state` while a `critical` or `shutdown` floor is affecting output.
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A platform that passes measured wall time lets the core observe missing or extremely late ticks through that clamped `dt`; a platform that passes scheduled time must emit a platform diagnostic when the observed wall-clock wakeup overruns the scheduled deadline.
@@ -1656,4 +1657,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.21*
+*End of PRD v0.22*

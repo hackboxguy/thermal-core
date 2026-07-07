@@ -478,6 +478,7 @@ TEST_CASE(core_step_full_loop) {
      * Demand must be max(pid_pwm, state_pwm[critical_floor_cs]) >=
      * floor, not the raw PID value. Codex #5.
      * ============================================================ */
+#if THERMALCORE_ENABLE_PID
     {
         build_base_cfg(&cfg);
         /* Swap zone 0 to PID, keep the same trips (which already have a
@@ -505,6 +506,7 @@ TEST_CASE(core_step_full_loop) {
         step_t1(&ctx, 100, 86000, &out);
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
     }
+#endif
 
     /* ============================================================
      * S11 -- REQUEST_SHUTDOWN fault action emits shutdown event and

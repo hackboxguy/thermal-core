@@ -25,7 +25,9 @@
 #include "thermal_filter.h"
 #include "thermal_zone.h"
 #include "thermal_governor.h"
+#if THERMALCORE_ENABLE_PID
 #include "thermal_pid.h"
+#endif
 #include "thermal_modifier.h"
 #include "thermal_arbitrator.h"
 #include "thermal_slew.h"
@@ -43,11 +45,15 @@ typedef struct {
     uint8_t  aggregation_seen;   /* edge memory for fallback enter/exit events */
     uint8_t  sensor_slot_count;  /* copy of cfg.zones[i].sensor_count */
     uint8_t  sensor_slots[THERMAL_MAX_SENSORS_PER_ZONE];  /* resolved at init */
+#if THERMALCORE_ENABLE_PID
     thermal_pid_state_t pid;     /* PID integrator + derivative history (Stage 5b) */
+#endif
     /* Stage 8: runtime-mutable shadow of cfg fields commands can change.
      * Copied from cfg at init; mutated by thermal_core_apply_command.
      * The step function reads from these (not cfg->zones[i].pid / .trips). */
+#if THERMALCORE_ENABLE_PID
     thermal_pid_cfg_t   shadow_pid;
+#endif
     thermal_trip_cfg_t  shadow_trips[THERMAL_MAX_TRIPS_PER_ZONE];
     /* Stage 7c: handoff into step-7 arbitration */
     uint8_t  pwm_this_tick;      /* PID zone's PWM demand for this tick;
@@ -135,6 +141,209 @@ typedef struct {
 typedef char thermal_core_t_fits[
     (sizeof(thermal_core_internal_t) <= sizeof(thermal_core_t)) ? 1 : -1];
 
+/* === Governor dispatch (M6) ===
+ *
+ * The public governor enum stays closed and numeric-stable; this
+ * private table centralizes the per-governor behavior that used to be
+ * spread across validation, step-6 evaluation, step-7 actuator demand,
+ * reason assignment, and state inspection. */
+typedef thermal_status_t (*governor_validate_fn)(
+        const thermal_config_t *cfg,
+        const thermal_zone_cfg_t *z);
+typedef void (*governor_reset_fn)(zone_runtime_t *zr);
+typedef void (*governor_evaluate_fn)(
+        zone_runtime_t *zr,
+        const thermal_zone_cfg_t *zc,
+        const thermal_trip_cfg_t *trips_eff,
+        int32_t trip_offset_mc,
+        uint32_t now_ms);
+typedef uint8_t (*governor_actuator_demand_fn)(
+        const zone_runtime_t *zr,
+        const thermal_actuator_cfg_t *actuator);
+typedef int32_t (*governor_effective_setpoint_fn)(
+        const zone_runtime_t *zr);
+
+typedef struct {
+    uint8_t id;
+    uint8_t supports_pid_commands;
+    uint16_t reason;
+    governor_validate_fn validate;
+    governor_reset_fn reset;
+    governor_evaluate_fn evaluate;
+    governor_actuator_demand_fn actuator_demand;
+    governor_effective_setpoint_fn effective_setpoint;
+} thermal_governor_ops_t;
+
+static thermal_status_t governor_validate_step(
+        const thermal_config_t *cfg,
+        const thermal_zone_cfg_t *z) {
+    (void)cfg;
+    (void)z;
+    return THERMAL_OK;
+}
+
+static void governor_eval_step(zone_runtime_t *zr,
+                               const thermal_zone_cfg_t *zc,
+                               const thermal_trip_cfg_t *trips_eff,
+                               int32_t trip_offset_mc,
+                               uint32_t now_ms) {
+    (void)trip_offset_mc;
+    (void)now_ms;
+    thermal_governor_step_result_t gr;
+    thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
+                               zr->active_trip_mask, &gr);
+    zr->active_trip_mask = gr.active_trip_mask;
+    zr->cooling_state    = gr.cooling_state;
+    zr->pwm_this_tick    = 0;
+    zr->effective_setpoint_mc = 0;
+    zr->pid_error_mc = 0;
+    zr->pid_p_term_q16 = 0;
+    zr->pid_i_term_q16 = 0;
+    zr->pid_d_term_q16 = 0;
+}
+
+static uint8_t governor_demand_step(const zone_runtime_t *zr,
+                                    const thermal_actuator_cfg_t *actuator) {
+    return actuator->state_pwm[zr->cooling_state];
+}
+
+static int32_t governor_effective_setpoint_zero(const zone_runtime_t *zr) {
+    (void)zr;
+    return 0;
+}
+
+#if THERMALCORE_ENABLE_PID
+static thermal_status_t governor_validate_pid(
+        const thermal_config_t *cfg,
+        const thermal_zone_cfg_t *z) {
+    const thermal_pid_cfg_t *p = &z->pid;
+    if (p->kp_q16 < p->kp_min_q16 || p->kp_q16 > p->kp_max_q16) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->ki_q16 < p->ki_min_q16 || p->ki_q16 > p->ki_max_q16) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->kd_q16 < p->kd_min_q16 || p->kd_q16 > p->kd_max_q16) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->setpoint_mc < p->setpoint_min_mc ||
+        p->setpoint_mc > p->setpoint_max_mc) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->dt_min_ms == 0) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->dt_min_ms > cfg->control_period_ms) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    if (p->dt_max_ms < cfg->control_period_ms) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    int has_floor = 0;
+    for (uint8_t i = 0; i < z->trip_count; i++) {
+        if (z->trips[i].severity == THERMAL_TRIP_CRITICAL ||
+            z->trips[i].severity == THERMAL_TRIP_SHUTDOWN) {
+            has_floor = 1;
+            break;
+        }
+    }
+    if (!has_floor) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
+    return THERMAL_OK;
+}
+
+static void governor_reset_pid(zone_runtime_t *zr) {
+    thermal_pid_reset(&zr->pid);
+}
+
+static void governor_eval_pid(zone_runtime_t *zr,
+                              const thermal_zone_cfg_t *zc,
+                              const thermal_trip_cfg_t *trips_eff,
+                              int32_t trip_offset_mc,
+                              uint32_t now_ms) {
+    int32_t setpoint_eff = zr->shadow_pid.setpoint_mc + trip_offset_mc;
+    thermal_pid_step_result_t pr;
+    thermal_pid_step(&zr->pid,
+                     zr->shadow_pid.kp_q16,
+                     zr->shadow_pid.ki_q16,
+                     zr->shadow_pid.kd_q16,
+                     setpoint_eff, zr->temp_mc,
+                     now_ms,
+                     zr->shadow_pid.dt_min_ms,
+                     zr->shadow_pid.dt_max_ms,
+                     0, 255,
+                     &pr);
+    zr->pwm_this_tick = (uint8_t)pr.output_pwm;
+    zr->effective_setpoint_mc = setpoint_eff;
+    zr->pid_error_mc   = zr->temp_mc - setpoint_eff;
+    zr->pid_p_term_q16 = pr.p_term_q16;
+    zr->pid_i_term_q16 = pr.i_term_q16;
+    zr->pid_d_term_q16 = pr.d_term_q16;
+
+    /* PID safety floor: cooling_state reflects only active
+     * CRITICAL/SHUTDOWN trips, not WARN telemetry trips. */
+    thermal_governor_step_result_t gr;
+    thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
+                               zr->active_trip_mask, &gr);
+    zr->active_trip_mask = gr.active_trip_mask;
+    uint8_t pid_cs = 0;
+    for (uint8_t k = 0; k < zc->trip_count; k++) {
+        if (!(gr.active_trip_mask & ((uint32_t)1u << k))) continue;
+        const thermal_trip_cfg_t *t = &trips_eff[k];
+        if (t->severity != THERMAL_TRIP_CRITICAL &&
+            t->severity != THERMAL_TRIP_SHUTDOWN) continue;
+        if (t->cooling_state > pid_cs) pid_cs = t->cooling_state;
+    }
+    zr->cooling_state = pid_cs;
+}
+
+static uint8_t governor_demand_pid(const zone_runtime_t *zr,
+                                   const thermal_actuator_cfg_t *actuator) {
+    uint8_t floor = actuator->state_pwm[zr->cooling_state];
+    return (floor > zr->pwm_this_tick) ? floor : zr->pwm_this_tick;
+}
+
+static int32_t governor_effective_setpoint_pid(const zone_runtime_t *zr) {
+    return zr->effective_setpoint_mc;
+}
+#endif /* THERMALCORE_ENABLE_PID */
+
+static const thermal_governor_ops_t GOVERNOR_OPS[] = {
+    [THERMAL_GOVERNOR_STEP_WISE] = {
+        .id = THERMAL_GOVERNOR_STEP_WISE,
+        .supports_pid_commands = 0,
+        .reason = THERMAL_ACT_REASON_GOVERNOR_STEP,
+        .validate = governor_validate_step,
+        .reset = NULL,
+        .evaluate = governor_eval_step,
+        .actuator_demand = governor_demand_step,
+        .effective_setpoint = governor_effective_setpoint_zero,
+    },
+#if THERMALCORE_ENABLE_PID
+    [THERMAL_GOVERNOR_PID] = {
+        .id = THERMAL_GOVERNOR_PID,
+        .supports_pid_commands = 1,
+        .reason = THERMAL_ACT_REASON_GOVERNOR_PID,
+        .validate = governor_validate_pid,
+        .reset = governor_reset_pid,
+        .evaluate = governor_eval_pid,
+        .actuator_demand = governor_demand_pid,
+        .effective_setpoint = governor_effective_setpoint_pid,
+    },
+#endif
+};
+
+static const thermal_governor_ops_t *governor_ops_for(uint8_t gov) {
+    if (gov >= (uint8_t)(sizeof(GOVERNOR_OPS) / sizeof(GOVERNOR_OPS[0]))) {
+        return NULL;
+    }
+    if (GOVERNOR_OPS[gov].id != gov) {
+        return NULL;
+    }
+    return &GOVERNOR_OPS[gov];
+}
+
 /* === validate_config helpers === */
 
 static int find_sensor_slot(const thermal_config_t *cfg, uint16_t id) {
@@ -165,8 +374,7 @@ static int aggregation_known(uint8_t agg) {
 }
 
 static int governor_known(uint8_t gov) {
-    return gov == THERMAL_GOVERNOR_STEP_WISE
-        || gov == THERMAL_GOVERNOR_PID;
+    return governor_ops_for(gov) != NULL;
 }
 
 static int severity_known(uint8_t sev) {
@@ -296,7 +504,9 @@ static int modifier_curve_values_valid(const thermal_config_t *cfg,
                 if (!adjusted_trips_valid(zc->trips, zc->trip_count, offset)) {
                     return 0;
                 }
-                if (zc->governor == THERMAL_GOVERNOR_PID) {
+                const thermal_governor_ops_t *ops =
+                    governor_ops_for(zc->governor);
+                if (ops && ops->supports_pid_commands) {
                     int64_t setpoint = (int64_t)zc->pid.setpoint_mc +
                                        (int64_t)offset;
                     if (setpoint < (int64_t)zc->pid.setpoint_min_mc ||
@@ -329,6 +539,7 @@ static int runtime_trips_with_modifier_offsets_valid(
     return 1;
 }
 
+#if THERMALCORE_ENABLE_PID
 static int runtime_setpoint_with_modifier_offsets_valid(
         const thermal_core_internal_t *core,
         uint16_t zone_id,
@@ -351,6 +562,7 @@ static int runtime_setpoint_with_modifier_offsets_valid(
     }
     return 1;
 }
+#endif /* THERMALCORE_ENABLE_PID */
 
 static int modifier_curve_values_valid_runtime(
         const thermal_core_internal_t *core,
@@ -376,7 +588,10 @@ static int modifier_curve_values_valid_runtime(
                                           offset)) {
                     return 0;
                 }
-                if (cfg->zones[z].governor == THERMAL_GOVERNOR_PID) {
+#if THERMALCORE_ENABLE_PID
+                const thermal_governor_ops_t *ops =
+                    governor_ops_for(cfg->zones[z].governor);
+                if (ops && ops->supports_pid_commands) {
                     const thermal_pid_cfg_t *pid = &cfg->zones[z].pid;
                     int64_t shifted = (int64_t)core->zones[z].shadow_pid.setpoint_mc +
                                       (int64_t)offset;
@@ -385,6 +600,7 @@ static int modifier_curve_values_valid_runtime(
                         return 0;
                     }
                 }
+#endif
             }
         }
     }
@@ -666,45 +882,11 @@ static thermal_status_t validate_zone(const thermal_config_t *cfg,
         return THERMAL_ERR_INVALID_CONFIG;
     }
 
-    /* PID-zone-specific rules (PRD §5.3 lines 796-798) */
-    if (z->governor == THERMAL_GOVERNOR_PID) {
-        const thermal_pid_cfg_t *p = &z->pid;
-        if (p->kp_q16 < p->kp_min_q16 || p->kp_q16 > p->kp_max_q16) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->ki_q16 < p->ki_min_q16 || p->ki_q16 > p->ki_max_q16) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->kd_q16 < p->kd_min_q16 || p->kd_q16 > p->kd_max_q16) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->setpoint_mc < p->setpoint_min_mc ||
-            p->setpoint_mc > p->setpoint_max_mc) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->dt_min_ms == 0) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->dt_min_ms > cfg->control_period_ms) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        if (p->dt_max_ms < cfg->control_period_ms) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
-        int has_floor = 0;
-        for (uint8_t i = 0; i < z->trip_count; i++) {
-            if (z->trips[i].severity == THERMAL_TRIP_CRITICAL ||
-                z->trips[i].severity == THERMAL_TRIP_SHUTDOWN) {
-                has_floor = 1;
-                break;
-            }
-        }
-        if (!has_floor) {
-            return THERMAL_ERR_INVALID_CONFIG;
-        }
+    const thermal_governor_ops_t *ops = governor_ops_for(z->governor);
+    if (!ops || !ops->validate) {
+        return THERMAL_ERR_INVALID_CONFIG;
     }
-
-    return THERMAL_OK;
+    return ops->validate(cfg, z);
 }
 
 /* === Step-helper static functions (Stage 7c) === */
@@ -1190,9 +1372,14 @@ thermal_status_t thermal_core_init(thermal_core_t *ctx,
         for (uint8_t k = 0; k < zc->sensor_count; k++) {
             zr->sensor_slots[k] = (uint8_t)find_sensor_slot(cfg, zc->sensor_ids[k]);
         }
-        thermal_pid_reset(&zr->pid);
+        const thermal_governor_ops_t *ops = governor_ops_for(zc->governor);
+        if (ops && ops->reset) {
+            ops->reset(zr);
+        }
         /* Stage 8: shadow cfg sub-structs that commands can mutate. */
+#if THERMALCORE_ENABLE_PID
         zr->shadow_pid = zc->pid;
+#endif
         for (uint8_t t = 0; t < zc->trip_count; t++) {
             zr->shadow_trips[t] = zc->trips[t];
         }
@@ -1461,61 +1648,11 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             trips_eff = adj_trips;
         }
 
-        if (zc->governor == THERMAL_GOVERNOR_STEP_WISE) {
-            thermal_governor_step_result_t gr;
-            /* Use zr->temp_mc (post-fallback) so USE_ZONE_FALLBACK actually
-             * drives control; codex-v2 #2 bug fix. */
-            thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
-                                       zr->active_trip_mask, &gr);
-            zr->active_trip_mask = gr.active_trip_mask;
-            zr->cooling_state    = gr.cooling_state;
-            zr->pwm_this_tick    = 0; /* step 7 uses state_pwm[cooling_state] */
-            zr->effective_setpoint_mc = 0;
-            zr->pid_error_mc = 0;
-            zr->pid_p_term_q16 = 0;
-            zr->pid_i_term_q16 = 0;
-            zr->pid_d_term_q16 = 0;
-        } else {
-            /* Stage 8: PID gains + setpoint come from shadow
-             * (CMD_SET_PID / CMD_SET_SETPOINT targets). dt bounds are
-             * init-time copies. */
-            int32_t setpoint_eff = zr->shadow_pid.setpoint_mc + trip_offset_mc;
-            /* Use zr->temp_mc (post-fallback) so USE_ZONE_FALLBACK drives
-             * the PID; codex-v2 #2 bug fix. */
-            thermal_pid_step_result_t pr;
-            thermal_pid_step(&zr->pid,
-                             zr->shadow_pid.kp_q16,
-                             zr->shadow_pid.ki_q16,
-                             zr->shadow_pid.kd_q16,
-                             setpoint_eff, zr->temp_mc,
-                             in->now_ms,
-                             zr->shadow_pid.dt_min_ms,
-                             zr->shadow_pid.dt_max_ms,
-                             0, 255,
-                             &pr);
-            zr->pwm_this_tick = (uint8_t)pr.output_pwm;
-            zr->effective_setpoint_mc = setpoint_eff;
-            zr->pid_error_mc   = zr->temp_mc - setpoint_eff;
-            zr->pid_p_term_q16 = pr.p_term_q16;
-            zr->pid_i_term_q16 = pr.i_term_q16;
-            zr->pid_d_term_q16 = pr.d_term_q16;
-
-            /* PID safety floor via step-wise on the same offset-adjusted
-             * trips (PRD §4.8 line 670): cooling_state for the snapshot
-             * reflects only CRITICAL/SHUTDOWN trips. */
-            thermal_governor_step_result_t gr;
-            thermal_governor_step_wise(zr->temp_mc, trips_eff, zc->trip_count,
-                                       zr->active_trip_mask, &gr);
-            zr->active_trip_mask = gr.active_trip_mask;
-            uint8_t pid_cs = 0;
-            for (uint8_t k = 0; k < zc->trip_count; k++) {
-                if (!(gr.active_trip_mask & ((uint32_t)1u << k))) continue;
-                const thermal_trip_cfg_t *t = &trips_eff[k];
-                if (t->severity != THERMAL_TRIP_CRITICAL &&
-                    t->severity != THERMAL_TRIP_SHUTDOWN) continue;
-                if (t->cooling_state > pid_cs) pid_cs = t->cooling_state;
-            }
-            zr->cooling_state = pid_cs;
+        const thermal_governor_ops_t *ops = governor_ops_for(zc->governor);
+        if (ops && ops->evaluate) {
+            /* Use zr->temp_mc (post-fallback) so USE_ZONE_FALLBACK
+             * actually drives control; codex-v2 #2 bug fix. */
+            ops->evaluate(zr, zc, trips_eff, trip_offset_mc, in->now_ms);
         }
     }
 
@@ -1532,17 +1669,12 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                 if (zc->actuator_ids[k] == aid) { referenced = 1; break; }
             }
             if (!referenced) continue;
-            uint8_t d;
-            if (zc->governor == THERMAL_GOVERNOR_STEP_WISE) {
-                d = cfg->actuators[a].state_pwm[core->zones[z].cooling_state];
-            } else {
-                /* PRD §4.7 trip severity table: PID zones floor PID output
-                 * to state_pwm[critical_floor_cs]. zone_runtime.cooling_state
-                 * was computed in step 6 as max cooling_state over active
-                 * CRITICAL/SHUTDOWN trips (0 if none). */
-                uint8_t pid_d = core->zones[z].pwm_this_tick;
-                uint8_t floor = cfg->actuators[a].state_pwm[core->zones[z].cooling_state];
-                d = (floor > pid_d) ? floor : pid_d;
+            const thermal_governor_ops_t *ops =
+                governor_ops_for(zc->governor);
+            uint8_t d = 0;
+            if (ops && ops->actuator_demand) {
+                d = ops->actuator_demand(&core->zones[z],
+                                         &cfg->actuators[a]);
             }
             demands[count++] = d;
         }
@@ -1953,19 +2085,23 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
          * not the reason code. */
         uint16_t reason = THERMAL_ACT_REASON_NONE;
         if (final_pwm > 0) {
-            int has_pid_zone = 0;
+            uint16_t governor_reason = THERMAL_ACT_REASON_GOVERNOR_STEP;
             for (uint8_t z = 0; z < cfg->zone_count; z++) {
                 for (uint8_t k = 0; k < cfg->zones[z].actuator_count; k++) {
                     if (cfg->zones[z].actuator_ids[k] == ac->id) {
-                        if (cfg->zones[z].governor == THERMAL_GOVERNOR_PID) {
-                            has_pid_zone = 1;
+                        const thermal_governor_ops_t *ops =
+                            governor_ops_for(cfg->zones[z].governor);
+                        if (ops) {
+                            governor_reason = ops->reason;
+                            if (ops->supports_pid_commands) {
+                                z = cfg->zone_count;
+                            }
                         }
                         break;
                     }
                 }
             }
-            reason = has_pid_zone ? THERMAL_ACT_REASON_GOVERNOR_PID
-                                  : THERMAL_ACT_REASON_GOVERNOR_STEP;
+            reason = governor_reason;
             if (modifier_cap_applied[a]) {
                 reason = THERMAL_ACT_REASON_MODIFIER_ACOUSTIC_CAP;
             }
@@ -2059,25 +2195,33 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
         target_id = z;
         if (z >= cfg->zone_count) {
             status = THERMAL_ERR_INVALID_ARG;
-        } else if (cfg->zones[z].governor != THERMAL_GOVERNOR_PID) {
-            status = THERMAL_ERR_INVALID_ARG;
         } else {
-            const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
-            int32_t kp = cmd->u.set_pid.kp_q16;
-            int32_t ki = cmd->u.set_pid.ki_q16;
-            int32_t kd = cmd->u.set_pid.kd_q16;
-            if (kp < b->kp_min_q16 || kp > b->kp_max_q16 ||
-                ki < b->ki_min_q16 || ki > b->ki_max_q16 ||
-                kd < b->kd_min_q16 || kd > b->kd_max_q16) {
-                status = THERMAL_ERR_BOUNDS;
+            const thermal_governor_ops_t *ops =
+                governor_ops_for(cfg->zones[z].governor);
+            if (!ops || !ops->supports_pid_commands) {
+                status = THERMAL_ERR_INVALID_ARG;
             } else {
-                core->zones[z].shadow_pid.kp_q16 = kp;
-                core->zones[z].shadow_pid.ki_q16 = ki;
-                core->zones[z].shadow_pid.kd_q16 = kd;
-                /* PRD §7.5: reset integrator + derivative history on
-                 * gain change to avoid long unwind. */
-                thermal_pid_reset(&core->zones[z].pid);
-                status = THERMAL_OK;
+#if THERMALCORE_ENABLE_PID
+                const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
+                int32_t kp = cmd->u.set_pid.kp_q16;
+                int32_t ki = cmd->u.set_pid.ki_q16;
+                int32_t kd = cmd->u.set_pid.kd_q16;
+                if (kp < b->kp_min_q16 || kp > b->kp_max_q16 ||
+                    ki < b->ki_min_q16 || ki > b->ki_max_q16 ||
+                    kd < b->kd_min_q16 || kd > b->kd_max_q16) {
+                    status = THERMAL_ERR_BOUNDS;
+                } else {
+                    core->zones[z].shadow_pid.kp_q16 = kp;
+                    core->zones[z].shadow_pid.ki_q16 = ki;
+                    core->zones[z].shadow_pid.kd_q16 = kd;
+                    /* PRD §7.5: reset integrator + derivative history on
+                     * gain change to avoid long unwind. */
+                    thermal_pid_reset(&core->zones[z].pid);
+                    status = THERMAL_OK;
+                }
+#else
+                status = THERMAL_ERR_UNAVAILABLE;
+#endif
             }
         }
         break;
@@ -2087,20 +2231,28 @@ thermal_status_t thermal_core_apply_command(thermal_core_t *ctx,
         target_id = z;
         if (z >= cfg->zone_count) {
             status = THERMAL_ERR_INVALID_ARG;
-        } else if (cfg->zones[z].governor != THERMAL_GOVERNOR_PID) {
-            status = THERMAL_ERR_INVALID_ARG;
         } else {
-            int32_t sp = cmd->u.set_setpoint.setpoint_mc;
-            const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
-            if (sp < b->setpoint_min_mc || sp > b->setpoint_max_mc) {
-                status = THERMAL_ERR_BOUNDS;
-            } else if (!runtime_setpoint_with_modifier_offsets_valid(core, z, sp)) {
-                status = THERMAL_ERR_BOUNDS;
+            const thermal_governor_ops_t *ops =
+                governor_ops_for(cfg->zones[z].governor);
+            if (!ops || !ops->supports_pid_commands) {
+                status = THERMAL_ERR_INVALID_ARG;
             } else {
-                core->zones[z].shadow_pid.setpoint_mc = sp;
-                /* No PID reset: setpoint changes don't wind anti-windup
-                 * (D is on measurement, not error). */
-                status = THERMAL_OK;
+#if THERMALCORE_ENABLE_PID
+                int32_t sp = cmd->u.set_setpoint.setpoint_mc;
+                const thermal_pid_cfg_t *b = &cfg->zones[z].pid;
+                if (sp < b->setpoint_min_mc || sp > b->setpoint_max_mc) {
+                    status = THERMAL_ERR_BOUNDS;
+                } else if (!runtime_setpoint_with_modifier_offsets_valid(core, z, sp)) {
+                    status = THERMAL_ERR_BOUNDS;
+                } else {
+                    core->zones[z].shadow_pid.setpoint_mc = sp;
+                    /* No PID reset: setpoint changes don't wind anti-windup
+                     * (D is on measurement, not error). */
+                    status = THERMAL_OK;
+                }
+#else
+                status = THERMAL_ERR_UNAVAILABLE;
+#endif
             }
         }
         break;
@@ -2310,9 +2462,10 @@ thermal_status_t thermal_core_get_state(const thermal_core_t *ctx,
         state->zones[i].active_trip_mask = zr->active_trip_mask;
         state->zones[i].cooling_state    = zr->cooling_state;
         state->zones[i].aggregation_valid = zr->aggregation_valid;
+        const thermal_governor_ops_t *ops = governor_ops_for(zc->governor);
         state->zones[i].effective_setpoint_mc =
-            (zc->governor == THERMAL_GOVERNOR_PID)
-                ? zr->effective_setpoint_mc
+            (ops && ops->effective_setpoint)
+                ? ops->effective_setpoint(zr)
                 : 0;
     }
 

@@ -35,6 +35,7 @@ void  __wrap_free(void *p)                             { (void)p;               
 long  __wrap_read(int fd, void *b, size_t n)           { (void)fd; (void)b; (void)n; abort_forbidden("read");    return -1;   }
 long  __wrap_write(int fd, const void *b, size_t n)    { (void)fd; (void)b; (void)n; abort_forbidden("write");   return -1;   }
 
+#if THERMALCORE_ENABLE_PID
 static void build_pid_config(thermal_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->config_version = 1;
@@ -80,6 +81,7 @@ static void build_pid_config(thermal_config_t *cfg) {
     cfg->zones[0].trips[0].severity = THERMAL_TRIP_CRITICAL;
     cfg->zones[0].trips[0].cooling_state = 3;
 }
+#endif /* THERMALCORE_ENABLE_PID */
 
 #if THERMALCORE_ENABLE_FAN_HEALTH
 /* Step-wise config with the fan-health detector enabled, so the
@@ -214,6 +216,7 @@ TEST_CASE(core_only_no_forbidden_calls) {
     EXPECT_EQ(state.zones[0].cooling_state, 2);
     EXPECT_EQ(state.zones[0].active_trip_mask, 0x1);
 
+#if THERMALCORE_ENABLE_PID
     /* === API surface 3: PID-zone init + step + get_state ===
      * Verifies the PID dispatch path uses no forbidden libc symbols.
      * Config has one critical trip at 90000 (rule 31 requires it). */
@@ -241,6 +244,7 @@ TEST_CASE(core_only_no_forbidden_calls) {
     EXPECT_EQ(state.zones[0].temp_mc, 95000);
     EXPECT_EQ(state.zones[0].cooling_state, 3);
     EXPECT_EQ(state.zones[0].active_trip_mask, 0x1);
+#endif /* THERMALCORE_ENABLE_PID */
 
 #if THERMALCORE_ENABLE_FAN_HEALTH
     /* === API surface 4: fan-health detector init + steady steps ===

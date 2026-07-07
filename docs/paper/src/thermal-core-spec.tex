@@ -51,7 +51,7 @@
 
 % Define footer content
 \fancyfoot[C]{\thepage}
-\fancyfoot[L]{Draft 0.12 -- July 2026}
+\fancyfoot[L]{Draft 0.13 -- July 2026}
 \fancyfoot[R]{}
 
 % Header/footer lines
@@ -95,7 +95,7 @@
     {\Large Protocol-Agnostic Thermal Control}\\[0.5ex]
     {\Large Design \& Implementation}\\[2ex]
     {\large Author: Albert David}\\[2ex]
-    {\large Draft 0.12}\\[1ex]
+    {\large Draft 0.13}\\[1ex]
     July 2026\\[2ex]
     {\normalsize A Technical Guide for Portable Automotive IVI Thermal Control}
 \end{center}
@@ -129,6 +129,8 @@
     0.11 & May 2026 & Albert David & Two new TikZ figures: a per-tick module pipeline in the Zone-Controller section (expanding the existing control-systems closed-loop view into the eight-stage implementation flow), and the common fault-detector state machine in the Component Design section (anchoring the \textsc{Active}/\textsc{Recovering} lifecycle that the CH32 fan-stall capture shows in time) \\
     \hline
     0.12 & July 2026 & Albert David & Concept-review integration pass: Part I reframed around portable closed-loop thermal control, the closed-loop model and PID law moved ahead of implementation detail, acoustic-aware fan control demoted to a late reference-policy application, and review-driven behavior deltas (spin-up, dwell, fallback observability, stuck-sensor correlation, runaway escalation, and refreshed CH32 footprint) reflected in the paper \\
+    \hline
+    0.13 & July 2026 & Albert David & M6 governor dispatch refactor folded in: v1 governors now dispatch through a closed static ops table, PID is compile-gated out of the CH32 tiny profile by default, and CH32 footprint measurements are refreshed accordingly \\
     \hline
 \end{longtable}
 

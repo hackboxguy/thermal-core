@@ -25,9 +25,10 @@
 /* This suite exercises the full command surface over a 2-zone
  * (step-wise + PID) / 2-sensor config; that config is not
  * constructible under a maxima=1 build profile (PRD Appendix D.3
- * tiny profile). Under such a profile the suite compiles to a
- * trivial pass — the default profile provides the real coverage. */
-#if THERMAL_MAX_ZONES >= 2 && THERMAL_MAX_SENSORS >= 2
+ * tiny profile) or a PID-disabled build. Under such a profile the
+ * suite compiles to a trivial pass — the default profile provides
+ * the real coverage. */
+#if THERMAL_MAX_ZONES >= 2 && THERMAL_MAX_SENSORS >= 2 && THERMALCORE_ENABLE_PID
 
 /* === Mock callback recorders ================================== */
 

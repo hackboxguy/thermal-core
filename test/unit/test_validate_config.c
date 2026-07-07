@@ -330,6 +330,7 @@ TEST_CASE(validate_config) {
          * The CRITICAL trip already satisfies the trip-floor rule. */         \
     } while (0)
 
+#if THERMALCORE_ENABLE_PID
     /* === PID baseline: valid PID zone returns OK === */
     MAKE_PID_CONFIG(cfg);
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
@@ -378,6 +379,12 @@ TEST_CASE(validate_config) {
     MAKE_PID_CONFIG(cfg);
     cfg.zones[0].trips[1].severity = THERMAL_TRIP_SHUTDOWN;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+#else
+    /* PID enum remains stable, but the governor is unavailable when
+     * THERMALCORE_ENABLE_PID is compiled out. */
+    MAKE_PID_CONFIG(cfg);
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
 
     #undef MAKE_PID_CONFIG
 

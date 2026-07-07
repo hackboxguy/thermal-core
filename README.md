@@ -182,7 +182,7 @@ make flash-ch32                                          # build + flash via WCH
 
 `make build-ch32` cross-compiles the firmware and asserts the
 PRD Appendix D.2 budget (flash ≤ 16 KB, SRAM ≤ 2 KB).  The
-current STANDALONE build links at 13 300 B flash / 1 044 B SRAM.
+current STANDALONE build links at 12 912 B flash / 1 044 B SRAM.
 
 Expected pin map (see [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)):
 
@@ -331,10 +331,10 @@ make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
 ```
 
 The detector remains compiled out of the default no-telemetry firmware,
-which currently links at 13 300 B of 16 KB. The telemetry build (with
-the detector and drop counter) sits at 15 428 B of 16 KB; the
+which currently links at 12 912 B of 16 KB. The telemetry build (with
+the detector and drop counter) sits at 15 016 B of 16 KB; the
 `CH32_COMMAND=1` bench variant, with fan-health compiled out by default,
-sits at 15 092 B.
+sits at 14 556 B.
 
 ## Build + test (host-side)
 
@@ -422,6 +422,11 @@ Recent stages:
   the command bench-control image keeps it compiled out by default for
   flash headroom, and the default no-telemetry image keeps it compiled
   out.
+- **M6** (post-v1) — governor dispatch is centralized in a closed
+  static ops table inside `core/thermal_core.c`. PID remains default-on
+  for host/ESP32 builds but is compile-gated by `THERMALCORE_ENABLE_PID`;
+  the CH32 tiny profile builds step-wise-only by default and can opt
+  back in with `CH32_ENABLE_PID=1`.
 
 ## Documentation
 

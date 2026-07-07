@@ -24,10 +24,10 @@ is the public artefact; the PRD + implementation plan are the spec.
 
 | file | purpose |
 |---|---|
-| `docs/thermal-core-prd.md` (v0.21+) | the spec — wire formats, signal IDs, numeric constants |
-| `docs/thermal-core-implementation-plan.md` (v0.22+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
+| `docs/thermal-core-prd.md` (v0.22+) | the spec — wire formats, signal IDs, numeric constants |
+| `docs/thermal-core-implementation-plan.md` (v0.23+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
 | `README.md` | quick-start + how to build / test / flash each target |
-| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.12+) | the public-facing description |
+| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.13+) | the public-facing description |
 | `git log --oneline -20` | recent commits — the most current state |
 
 The Stages summary table in §9 of the impl-plan gives current state at
@@ -42,7 +42,7 @@ a glance.
   - Stage 20: fan-health enabled on CH32 with a real measured baseline; two
     reference fan configs (NF-A8 active, Arctic P8 PWM PST alt).
 - Two Codex review rounds (v14, v15) consumed and folded in.
-- Impl-plan **v0.22**; paper **Draft 0.12**; PRD **v0.21**.
+- Impl-plan **v0.23**; paper **Draft 0.13**; PRD **v0.22**.
 
 ## 3. Workflow conventions (the most important section)
 
@@ -66,10 +66,10 @@ are easy to forget.
 - **The byte-for-byte invariant**. Build-gated CH32 features are supposed
   to leave the shipping default `make build-ch32` firmware byte-for-byte
   identical when their flags are off. Verify by git-stash-comparing the
-  `main.bin` sha256. The current default sha after the Fable v2
-  core-behavior fixes is
-  `706089e8dd4747e0dc5672d74192216262a4e1138c86f49609675897d888049a`
-  (13 300 B).
+  `main.bin` sha256. The current default sha after the M6 governor
+  dispatch / PID-gate change is
+  `b53b28b5ee12c6038c9eb6a568bac69a35466c3b861f20cc68d14dbc8f394eb5`
+  (12 912 B).
   If a change
   unrelated to default control behavior perturbs the default, gate it
   behind a build flag.
@@ -125,7 +125,7 @@ make build-esp32           # ESP32-C3 firmware (3 build modes via env)
 make build-ch32            # CH32V003 STANDALONE (default, no features)
 make build-ch32 CH32_TELEMETRY=1            # + canonical-CSV tap + fan-health
 make build-ch32 CH32_COMMAND=1              # + Stage 19 bench command channel
-make build-ch32 CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json
+make build-ch32 CH32_TELEMETRY=1 CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json
 make telemetry-tool        # C++ host tool (tools/thermal-telemetry-tool/)
 make -C docs/paper         # build the white paper PDF
 make paper-figures         # regenerate all paper figures from data

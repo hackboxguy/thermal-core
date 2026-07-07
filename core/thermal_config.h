@@ -61,6 +61,13 @@
 #define THERMAL_NAME_MAX                  24
 #endif
 
+/* Governor feature gates. PID is available by default for host and
+ * larger MCU builds; constrained profiles may compile it out while
+ * preserving the public enum and config layout. */
+#ifndef THERMALCORE_ENABLE_PID
+#define THERMALCORE_ENABLE_PID             1
+#endif
+
 /* Reserved bytes for the public thermal_core_t. The internal struct
  * (core/thermal_core.c) grows within this budget across Stages 2-7;
  * raising this is a deliberate PR with rationale. A constrained

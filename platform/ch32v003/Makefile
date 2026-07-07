@@ -45,6 +45,17 @@ TELEMETRY_SRCS   := ch32_callbacks.c ../../test/parity/canonical.c
 # it whole unless CH32_COMMAND=1 wires it into main.c.
 COMMAND_SRCS     := ch32_command.c
 
+# M6: the active CH32 configs are step-wise-only, so PID is compiled
+# out by default to preserve flash headroom before PID-specific M4 work.
+# Set CH32_ENABLE_PID=1 for local diagnostics with PID configs.
+CH32_ENABLE_PID ?= 0
+ifeq ($(CH32_ENABLE_PID),1)
+EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_PID=1
+else
+EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_PID=0
+CORE_SRCS := $(filter-out ../../core/thermal_pid.c,$(CORE_SRCS))
+endif
+
 ADDITIONAL_C_FILES := $(GENERATED_CONFIG) $(CORE_SRCS) $(BSP_SRCS) \
                       $(TELEMETRY_SRCS) $(COMMAND_SRCS)
 

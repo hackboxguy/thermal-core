@@ -49,6 +49,12 @@
 #endif
 #define THERMAL_NAME_MAX                  24
 
+/* Tiny targets ship the step-wise governor only unless a platform
+ * explicitly opts PID back in before including this profile. */
+#ifndef THERMALCORE_ENABLE_PID
+#define THERMALCORE_ENABLE_PID             0
+#endif
+
 #define THERMAL_CORE_T_RESERVED_BYTES   1024
 
 #define THERMAL_FAULT_RUNAWAY_WINDOW_MAX  16
