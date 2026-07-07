@@ -107,6 +107,7 @@ TSIG_FAN_HEALTH_BASE = 0x0800
 
 def tsig_zone_temp(slot):              return TSIG_ZONE_BASE + 0x00 + slot
 def tsig_zone_cooling_state(slot):     return TSIG_ZONE_BASE + 0x10 + slot
+def tsig_zone_aggregation_valid(slot): return TSIG_ZONE_BASE + 0x40 + slot
 def tsig_actuator_duty(slot):          return TSIG_ACTUATOR_BASE + 0x00 + slot
 def tsig_actuator_rpm(slot):           return TSIG_ACTUATOR_BASE + 0x10 + slot
 def tsig_pid(zone, term):              return TSIG_PID_BASE + zone * 4 + term
@@ -388,6 +389,9 @@ def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
     if sel == "zone_cooling_state_*":
         if zone_count == 0: raise ConfigError("wildcard expanded to nothing")
         return [tsig_zone_cooling_state(s) for s in range(zone_count)]
+    if sel == "zone_aggregation_valid_*":
+        if zone_count == 0: raise ConfigError("wildcard expanded to nothing")
+        return [tsig_zone_aggregation_valid(s) for s in range(zone_count)]
     if sel == "actuator_pwm_*":
         if actuator_count == 0: raise ConfigError("wildcard expanded to nothing")
         return [tsig_actuator_duty(s) for s in range(actuator_count)]
@@ -437,6 +441,11 @@ def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
         name = sel[len("zone_temp_"):]
         for i, z in enumerate(cfg["zones"]):
             if z["name"] == name: return [tsig_zone_temp(i)]
+        raise ConfigError(f"unknown zone '{name}'")
+    if sel.startswith("zone_aggregation_valid_"):
+        name = sel[len("zone_aggregation_valid_"):]
+        for i, z in enumerate(cfg["zones"]):
+            if z["name"] == name: return [tsig_zone_aggregation_valid(i)]
         raise ConfigError(f"unknown zone '{name}'")
     if sel.startswith("actuator_pwm_"):
         name = sel[len("actuator_pwm_"):]

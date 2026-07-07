@@ -46,7 +46,7 @@
       "name": "soc_zone",
       "sensors": ["soc"],
       "aggregation": "max",
-      "fallback_temp_mc": 85000,
+      "fallback_temp_mc": 90000,
       "governor": "pid",
       "actuators": ["main_fan"],
       "pid": {

@@ -14,7 +14,7 @@
  *   8.  Malformed JSON (unbalanced brace).
  *   9.  Missing required sensor field.
  *   10. Unknown CORE field on a sensor object.
- *   11. Telemetry wildcard expansion ("zone_temp_*").
+ *   11. Telemetry wildcard expansion ("zone_temp_*", validity).
  *   12. Telemetry wildcard expands to nothing ("actuator_rpm_*"
  *       with actuator_count = 0).
  */
@@ -260,7 +260,7 @@ TEST_CASE(config_jsmn) {
 
     /* === Scenario 11: telemetry wildcard expansion ============ */
     {
-        /* Minimal valid config + "zone_temp_*" wildcard. */
+        /* Minimal valid config + zone wildcard selectors. */
         const char *json =
             "{ \"config_version\":1, \"control_period_ms\":100,"
             "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
@@ -278,15 +278,18 @@ TEST_CASE(config_jsmn) {
             "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
             "                           \"severity\":\"warn\",\"cooling_state\":1}] }],"
             "  \"telemetry\":{ \"enable\":true, \"period_ticks\":10,"
-            "                  \"signals\":[\"zone_temp_*\"] } }";
+            "                  \"signals\":[\"zone_temp_*\","
+            "                              \"zone_aggregation_valid_*\"] } }";
         thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
                                                        &cfg, NULL, err, sizeof(err));
         if (s != THERMAL_OK) {
             fprintf(stderr, "scenario 11: status=%d err='%s'\n", (int)s, err);
         }
         EXPECT_STATUS_OK(s);
-        EXPECT_EQ(cfg.telemetry.enabled_signal_count, cfg.zone_count);
+        EXPECT_EQ(cfg.telemetry.enabled_signal_count, 2);
         EXPECT_EQ(cfg.telemetry.enabled_signal_ids[0], TSIG_ZONE_TEMP(0));
+        EXPECT_EQ(cfg.telemetry.enabled_signal_ids[1],
+                  TSIG_ZONE_AGGREGATION_VALID(0));
     }
 
     /* === Scenario 12: wildcard expands to nothing ============= */
@@ -471,7 +474,7 @@ TEST_CASE(config_jsmn) {
             "                  \"pwm_max\":255,\"state_pwm\":[0,100,160,220,255]"
             "%s%s }],"
             "  \"zones\":[{ \"name\":\"z\",\"sensors\":[\"soc\"],"
-            "               \"aggregation\":\"max\",\"fallback_temp_mc\":85000,"
+            "               \"aggregation\":\"max\",\"fallback_temp_mc\":90000,"
             "               \"governor\":\"step_wise\",\"actuators\":[\"f\"],"
             "               \"trips\":[{\"temp_mc\":90000,\"hyst_mc\":2000,"
             "                           \"severity\":\"critical\","

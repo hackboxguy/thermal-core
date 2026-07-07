@@ -114,7 +114,7 @@ static void build_cfg(thermal_config_t *cfg) {
     cfg->zones[0].governor = THERMAL_GOVERNOR_STEP_WISE;
     cfg->zones[0].actuator_count = 1;
     cfg->zones[0].actuator_ids[0] = ACTUATOR_ID;
-    cfg->zones[0].fallback_temp_mc = 50000;
+    cfg->zones[0].fallback_temp_mc = 85000;
     cfg->zones[0].trip_count = 3;
     cfg->zones[0].trips[0].temp_mc = 70000;
     cfg->zones[0].trips[0].hyst_mc = 2000;

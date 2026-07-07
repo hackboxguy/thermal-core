@@ -73,7 +73,7 @@ static void build_pid_config(thermal_config_t *cfg) {
     cfg->zones[0].pid.dt_max_ms = 500;
     cfg->zones[0].actuator_count = 1;
     cfg->zones[0].actuator_ids[0] = 0;
-    cfg->zones[0].fallback_temp_mc = 85000;
+    cfg->zones[0].fallback_temp_mc = 90000;
     cfg->zones[0].trip_count = 1;
     cfg->zones[0].trips[0].temp_mc = 90000;
     cfg->zones[0].trips[0].hyst_mc = 2000;

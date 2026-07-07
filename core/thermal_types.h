@@ -163,6 +163,7 @@ typedef struct {
     int32_t  temp_mc;
     uint32_t active_trip_mask;
     uint8_t  cooling_state;     /* step-wise state, or PID safety-floor state */
+    uint8_t  aggregation_valid; /* 1 if temp_mc came from >= 1 valid sensor */
     int32_t  effective_setpoint_mc;  /* 0 for step-wise zones in v1 */
 } thermal_zone_state_t;
 

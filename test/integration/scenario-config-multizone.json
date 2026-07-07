@@ -43,7 +43,7 @@
       "name": "amp_zone",
       "sensors": ["amp"],
       "aggregation": "max",
-      "fallback_temp_mc": 85000,
+      "fallback_temp_mc": 90000,
       "governor": "step_wise",
       "actuators": ["main_fan"],
       "trips": [
@@ -55,7 +55,7 @@
       "name": "tuner_zone",
       "sensors": ["tuner"],
       "aggregation": "max",
-      "fallback_temp_mc": 85000,
+      "fallback_temp_mc": 90000,
       "governor": "step_wise",
       "actuators": ["main_fan"],
       "trips": [

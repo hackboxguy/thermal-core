@@ -20,6 +20,7 @@
  * Within-range sub-signal layout (v1, 16 slots per sub-signal type):
  *   ZONE      0x00 temp_mc        0x10 cooling_state
  *             0x20 trip_mask      0x30 effective_setpoint_mc
+ *             0x40 aggregation_valid
  *   ACTUATOR  0x00 duty           0x10 rpm
  *             0x20 slew_limited
  *   CONTEXT   0x00 filtered_value 0x10 valid
@@ -63,6 +64,7 @@ typedef uint16_t thermal_telemetry_signal_t;
 #define TSIG_ZONE_SUB_COOLING_STATE       0x10u
 #define TSIG_ZONE_SUB_TRIP_MASK           0x20u
 #define TSIG_ZONE_SUB_EFFECTIVE_SETPOINT  0x30u
+#define TSIG_ZONE_SUB_AGGREGATION_VALID   0x40u
 
 #define TSIG_ZONE_TEMP(slot) \
     ((uint16_t)(TSIG_ZONE_BASE + TSIG_ZONE_SUB_TEMP + (slot)))
@@ -72,6 +74,8 @@ typedef uint16_t thermal_telemetry_signal_t;
     ((uint16_t)(TSIG_ZONE_BASE + TSIG_ZONE_SUB_TRIP_MASK + (slot)))
 #define TSIG_ZONE_EFFECTIVE_SETPOINT(slot) \
     ((uint16_t)(TSIG_ZONE_BASE + TSIG_ZONE_SUB_EFFECTIVE_SETPOINT + (slot)))
+#define TSIG_ZONE_AGGREGATION_VALID(slot) \
+    ((uint16_t)(TSIG_ZONE_BASE + TSIG_ZONE_SUB_AGGREGATION_VALID + (slot)))
 
 /* === Actuator sub-signals === */
 #define TSIG_ACTUATOR_SUB_DUTY            0x00u

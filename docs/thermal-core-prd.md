@@ -589,13 +589,13 @@ tick (every CONTROL_PERIOD_MS, default 100ms):
       7. for each actuator: arbitrate across zones (max-wins)
       8. apply post-governor modifiers (PWM cap, policy clamp)
       9. check faults and apply fault actions / safety overrides
-     10. apply slew-rate limit and populate thermal_output_frame_t
+     10. apply spin-up actuation, slew-rate limit, and final clamp; populate thermal_output_frame_t
      11. emit selected telemetry on configured cadence and log state transitions
     platform:
      12. write actuator commands and persist/forward telemetry as needed
 ```
 
-Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps. Because post-governor policy caps run before fault actions, a fault action such as `force_pwm_max` is allowed to overwrite an already-capped PWM request. Upward safety overrides from `CRITICAL`, `LATCHED`, `shutdown`, and runaway paths bypass the normal slew-rate limiter; recovery and downward transitions still obey slew limits.
+Safety ordering: acoustic caps and comfort policies may reduce cooling only while the relevant zone is below critical severity and no safety override is active. Critical trips, runaway faults, and configured emergency actions override acoustic caps. Because post-governor policy caps run before fault actions, a fault action such as `force_pwm_max` is allowed to overwrite an already-capped PWM request. Upward safety overrides from `CRITICAL`, `LATCHED`, `shutdown`, and runaway paths bypass the normal slew-rate limiter; recovery and downward transitions still obey slew limits. Fan spin-up is an actuator-level boost: when the previously applied duty was `0` and the post-safety request is non-zero, the core commands at least `spinup_pwm` for `spinup_ms` before returning to the requested duty, emitting `THERMAL_ACT_REASON_SPINUP` while the boost is active.
 
 Determinism: the loop is monotonic; `now_ms()` rollover (32-bit ms = ~49 days) is handled with `(uint32_t)(a - b)` subtraction throughout. All loop work is bounded by compile-time maxima.
 
@@ -640,7 +640,7 @@ Required v1 fault actions:
 | Action | Core behavior |
 |---|---|
 | `mark_degraded` | Emit event/telemetry and keep normal governor output. |
-| `use_zone_fallback` | Replace the affected zone's computed temperature with the max of remaining valid zone sensors; if none exist, use the zone's configured `fallback_temp_mc`. Invalid config if neither is possible. |
+| `use_zone_fallback` | Replace the affected zone's computed temperature with the max of remaining valid zone sensors; if none exist, use the zone's configured `fallback_temp_mc`. Invalid config if neither is possible. Enter/exit edges emit `TEVENT_ZONE_FALLBACK_ENTER` / `TEVENT_ZONE_FALLBACK_EXIT`, and `aggregation_valid` is exposed as zone telemetry. |
 | `force_pwm_max_until_recovered` | Request maximum configured PWM for affected actuators until the detector reaches `NORMAL`. Upward command is slew-exempt. |
 | `force_pwm_max_and_latch` | Request maximum configured PWM, enter `LATCHED` after detection, and require `CMD_CLEAR_FAULT`, reboot, or platform-local maintenance reset after recovery. Upward command is slew-exempt. |
 | `request_shutdown` | Latch a shutdown-request condition, emit `TEVENT_SHUTDOWN_REQUEST`, and request maximum configured cooling. The platform decides whether that event maps to process exit, system power action, or no action. |
@@ -764,7 +764,7 @@ Aggregation uses valid samples only. For `max`, `avg`, and `weighted`, invalid s
 
 Sensor `max_staleness_ms` is enforced by the platform when building `thermal_input_snapshot_t`: if `(uint32_t)(now_ms - sample_ts_ms)` exceeds the configured age, the platform reports the sample with `valid = 0`. This lets slow sources such as DS18B20 probes reuse cached samples between conversions without confusing the core about freshness.
 
-Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero; stall detection ignores tach failures during the spin-up grace window.
+Fields such as `source`, `pwm_freq_hz`, and `tach_pulses_per_rev` are platform-loader fields. The core receives temperature in millidegrees C, tach as RPM, and actuator limits/state tables after platform conversion. For the reference 4-wire PC fan bench, PWM frequency is 25 kHz. `spinup_pwm`/`spinup_ms` apply whenever an actuator transitions from duty `0` to non-zero; the spin-up boost bypasses normal upward slew for its configured window, and stall detection ignores tach failures during the same grace window.
 
 Platform-only fields live in platform-specific configuration structures, such as `thermalcored_runtime_cfg_t` under `platform/linux/`. Examples include source URIs, `pwm_freq_hz`, `tach_pulses_per_rev`, `telemetry.transport`, `telemetry.signals`, and `control.listen`. Loaders convert these into `thermal_config_t` plus platform runtime config.
 
@@ -794,7 +794,9 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 - Units are explicit in field names or schema metadata; core units are millidegrees C, 0-255 PWM duty, RPM, milliseconds, and Q16.16 coefficients.
 - Curves are strictly increasing in their x-axis and have at least two points; interpolation uses the deterministic formula in §4.8.
 - Runtime curve edits must preserve the same strictly increasing x-axis invariant. `CMD_SET_CURVE_POINT` rejects edits that would make `x[point_idx - 1] < x[point_idx] < x[point_idx + 1]` false, returning `THERMAL_ERR_BOUNDS`.
-- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, and each entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. Spin-up PWM satisfies `pwm_min <= spinup_pwm <= pwm_max`.
+- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, is non-decreasing across cooling states, and each referenced non-zero entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. If `spinup_ms > 0`, `spinup_pwm` is non-zero and satisfies `pwm_min <= spinup_pwm <= pwm_max`.
+- A zone's `fallback_temp_mc` is at least the highest configured `CRITICAL` trip temperature, so loss of all valid sensors fails toward cooling rather than away from it.
+- Modifier `pwm_cap` values are in `0..255` and either `0` or at least each affected actuator's `pwm_min`. Modifier trip/setpoint offsets are validated at every curve point so adjusted trips remain valid and adjusted PID setpoints remain within their configured bounds; runtime curve/trip/setpoint commands are checked against the same invariants.
 - PID runtime bounds are present for every PID zone and satisfy `min <= current <= max` for gains and setpoints.
 - PID `dt_min_ms` and `dt_max_ms` are present for every PID zone and satisfy `0 < dt_min_ms <= control_period_ms <= dt_max_ms`.
 - PID zones must have at least one `critical` or `shutdown` trip as a safety floor.
@@ -858,6 +860,7 @@ The core emits `(timestamp, signal_id, value)` tuples through the optional `tele
 ```
 TSIG_ZONE_TEMP_SOC          0x0100
 TSIG_ZONE_TEMP_AMP          0x0101
+TSIG_ZONE_AGG_VALID_SOC     0x0140
 TSIG_ACTUATOR_PWM_MAIN_FAN  0x0200
 TSIG_ACTUATOR_RPM_MAIN_FAN  0x0201
 TSIG_PID_ERROR_SOC          0x0300
@@ -876,7 +879,7 @@ Signal IDs are fixed by type range plus configured slot, not by debug-name hash.
 
 | Range | Meaning |
 |---|---|
-| `0x0100..0x01FF` | Zone temperatures, current cooling state, and zone-level outputs, indexed by zone slot |
+| `0x0100..0x01FF` | Zone temperatures, current cooling state, aggregation validity, and zone-level outputs, indexed by zone slot |
 | `0x0200..0x02FF` | Actuator PWM/RPM/state, indexed by actuator slot |
 | `0x0300..0x03FF` | PID terms, indexed as `0x0300 + zone * 4 + term`, with `term = 0 error, 1 integral, 2 derivative, 3 output` |
 | `0x0400..0x04FF` | Context values, indexed by context slot |
@@ -885,7 +888,7 @@ Signal IDs are fixed by type range plus configured slot, not by debug-name hash.
 | `0x0700..0x07FF` | HIL-injected sensor temperature / tach RPM samples, indexed by slot (`TSIG_HIL_BASE`) |
 | `0x0800..0x08FF` | Fan-health detector (post-v1, PRD Appendix C) — delta / severity / baseline-source / confidence, indexed by actuator slot (`TSIG_FAN_HEALTH_BASE`) |
 
-Telemetry selectors such as `zone_temp_*` are expanded once by the loader after zones, actuators, context signals, and PID terms are registered. The resulting signal IDs are stored in `thermal_telemetry_cfg_t.enabled_signal_ids`; the core checks that list before calling `telemetry_emit()`. Unknown exact names are invalid config; wildcard selectors that match nothing are warnings in development mode and errors in release configs. Selected signals are emitted at most once per control step. `telemetry.period_ticks` sets the global cadence; default `1` means every control tick, while higher values decimate low-priority streams. Per-signal telemetry dividers are future work if measured bandwidth requires them.
+Telemetry selectors such as `zone_temp_*`, `zone_aggregation_valid_*`, and `actuator_pwm_*` are expanded once by the loader after zones, actuators, context signals, and PID terms are registered. The resulting signal IDs are stored in `thermal_telemetry_cfg_t.enabled_signal_ids`; the core checks that list before calling `telemetry_emit()`. Unknown exact names are invalid config; wildcard selectors that match nothing are warnings in development mode and errors in release configs. Selected signals are emitted at most once per control step. `telemetry.period_ticks` sets the global cadence; default `1` means every control tick, while higher values decimate low-priority streams. Per-signal telemetry dividers are future work if measured bandwidth requires them.
 
 Discrete event codes are separate from telemetry signals and are defined in `core/thermal_events.h`. Required v1 event examples:
 
@@ -897,6 +900,8 @@ TEVENT_SAFETY_OVERRIDE      0x1100
 TEVENT_SHUTDOWN_REQUEST     0x1101
 TEVENT_COMMAND_APPLIED      0x1200
 TEVENT_COMMAND_REJECTED     0x1201
+TEVENT_ZONE_FALLBACK_ENTER  0x1300
+TEVENT_ZONE_FALLBACK_EXIT   0x1301
 ```
 
 ### 7.2 Binary transport framing

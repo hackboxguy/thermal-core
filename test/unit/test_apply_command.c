@@ -108,7 +108,7 @@ static void build_cfg(thermal_config_t *cfg) {
     cfg->zones[0].governor = THERMAL_GOVERNOR_STEP_WISE;
     cfg->zones[0].actuator_count = 1;
     cfg->zones[0].actuator_ids[0] = 10;
-    cfg->zones[0].fallback_temp_mc = 50000;
+    cfg->zones[0].fallback_temp_mc = 85000;
     cfg->zones[0].trip_count = 3;
     cfg->zones[0].trips[0].temp_mc = 70000;
     cfg->zones[0].trips[0].hyst_mc = 2000;
@@ -130,7 +130,7 @@ static void build_cfg(thermal_config_t *cfg) {
     cfg->zones[1].governor = THERMAL_GOVERNOR_PID;
     cfg->zones[1].actuator_count = 1;
     cfg->zones[1].actuator_ids[0] = 10;
-    cfg->zones[1].fallback_temp_mc = 50000;
+    cfg->zones[1].fallback_temp_mc = 90000;
     cfg->zones[1].pid.kp_q16 = 4915;
     cfg->zones[1].pid.ki_q16 = 327;
     cfg->zones[1].pid.kd_q16 = 0;
@@ -342,6 +342,12 @@ TEST_CASE(apply_command_full_surface) {
         mock_reset();
         c = cmd_set_setpoint(1, 100000);  /* > setpoint_max_mc = 95000 */
         EXPECT_EQ(thermal_core_apply_command(&ctx, 500, &c, &r), THERMAL_ERR_BOUNDS);
+
+        /* S9b: raw setpoint at min is still rejected if the configured
+         * modifier offset can shift the effective setpoint below min. */
+        mock_reset();
+        c = cmd_set_setpoint(1, 50000);   /* acoustic offset reaches -8000 */
+        EXPECT_EQ(thermal_core_apply_command(&ctx, 600, &c, &r), THERMAL_ERR_BOUNDS);
     }
 
     /* ============================================================
@@ -387,6 +393,13 @@ TEST_CASE(apply_command_full_surface) {
         mock_reset();
         c = cmd_set_trip(0, 1, 70000, 6000);
         EXPECT_EQ(thermal_core_apply_command(&ctx, 600, &c, &r), THERMAL_ERR_BOUNDS);
+
+        /* S14b: CRITICAL trip raised above zone fallback is rejected.
+         * The fallback must remain at or above the highest CRITICAL trip
+         * so a lost probe fails toward cooling. */
+        mock_reset();
+        c = cmd_set_trip(0, 1, 90000, 2000);
+        EXPECT_EQ(thermal_core_apply_command(&ctx, 700, &c, &r), THERMAL_ERR_BOUNDS);
     }
 
     /* ============================================================
@@ -417,6 +430,19 @@ TEST_CASE(apply_command_full_surface) {
         mock_reset();
         c = cmd_set_curve(0, 1, 80, 200, 0);
         EXPECT_EQ(thermal_core_apply_command(&ctx, 400, &c, &r), THERMAL_ERR_BOUNDS);
+
+        /* S18b: cap values must be 0 or at least pwm_min; otherwise the
+         * cap silently turns into pwm_min at final clamp. */
+        mock_reset();
+        c = cmd_set_curve(0, 1, 35, 50, 0);  /* pwm_min = 80 */
+        EXPECT_EQ(thermal_core_apply_command(&ctx, 500, &c, &r), THERMAL_ERR_BOUNDS);
+
+        /* S18c: trip/setpoint offsets are bounded against all configured
+         * zones. Here the PID zone setpoint 75000 would shift below its
+         * setpoint_min_mc 50000. */
+        mock_reset();
+        c = cmd_set_curve(0, 1, 35, 200, -30000);
+        EXPECT_EQ(thermal_core_apply_command(&ctx, 600, &c, &r), THERMAL_ERR_BOUNDS);
     }
 
     /* ============================================================

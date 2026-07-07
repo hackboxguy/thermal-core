@@ -1667,6 +1667,18 @@ static thermal_status_t telemetry_expand_one(parse_ctx_t *ctx,
         }
         return THERMAL_OK;
     }
+    if (strcmp(sel, "zone_aggregation_valid_*") == 0) {
+        if (cfg->zone_count == 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                           "wildcard expanded to nothing");
+        }
+        for (uint8_t s = 0; s < cfg->zone_count; s++) {
+            thermal_status_t r = telemetry_append(ctx, t,
+                                                  TSIG_ZONE_AGGREGATION_VALID(s), path);
+            if (r != THERMAL_OK) return r;
+        }
+        return THERMAL_OK;
+    }
     if (strcmp(sel, "actuator_pwm_*") == 0) {
         if (cfg->actuator_count == 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
@@ -1798,6 +1810,16 @@ static thermal_status_t telemetry_expand_one(parse_ctx_t *ctx,
                             "unknown zone '%s'", rest);
         }
         return telemetry_append(ctx, t, TSIG_ZONE_TEMP((uint8_t)idx), path);
+    }
+    if (str_has_prefix(sel, "zone_aggregation_valid_", &rest)) {
+        int idx = resolve_name_in_zones(cfg, rest);
+        if (idx < 0) {
+            return set_errf(ctx, THERMAL_ERR_INVALID_ARG, path,
+                            "unknown zone '%s'", rest);
+        }
+        return telemetry_append(ctx, t,
+                                TSIG_ZONE_AGGREGATION_VALID((uint8_t)idx),
+                                path);
     }
     if (str_has_prefix(sel, "actuator_pwm_", &rest)) {
         int idx = resolve_name_in_actuators(cfg, rest);

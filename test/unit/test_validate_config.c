@@ -42,7 +42,7 @@ static void make_valid_config(thermal_config_t *cfg) {
     cfg->zones[0].governor = THERMAL_GOVERNOR_STEP_WISE;
     cfg->zones[0].actuator_count = 1;
     cfg->zones[0].actuator_ids[0] = 0;
-    cfg->zones[0].fallback_temp_mc = 85000;
+    cfg->zones[0].fallback_temp_mc = 90000;
     cfg->zones[0].trip_count = 2;
     cfg->zones[0].trips[0].temp_mc = 70000;
     cfg->zones[0].trips[0].hyst_mc = 2000;
@@ -147,6 +147,17 @@ TEST_CASE(validate_config) {
     cfg.actuators[0].spinup_pwm = 50;       /* would be invalid if spinup_ms > 0 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
+    /* === Rule 14: spinup_ms > 0 with spinup_pwm == 0 is invalid === */
+    make_valid_config(&cfg);
+    cfg.actuators[0].spinup_ms = 500;
+    cfg.actuators[0].spinup_pwm = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === L1: state_pwm[] must be non-decreasing with cooling state === */
+    make_valid_config(&cfg);
+    cfg.actuators[0].state_pwm[2] = 90;      /* below state_pwm[1] = 100 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
 #if THERMAL_MAX_CONTEXT_SIGNALS >= 2  /* needs a 2-context config; skipped under a maxima=1 profile */
     /* === Rule 15: duplicate context IDs === */
     make_valid_config(&cfg);
@@ -244,6 +255,11 @@ TEST_CASE(validate_config) {
     /* === Rule 27: unknown severity === */
     make_valid_config(&cfg);
     cfg.zones[0].trips[0].severity = 99;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === L1: fallback_temp_mc must reach the highest CRITICAL trip === */
+    make_valid_config(&cfg);
+    cfg.zones[0].fallback_temp_mc = 89999;   /* critical trip is 90000 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
     /* === Telemetry signal count > MAX -> NO_SPACE === */
@@ -487,6 +503,16 @@ TEST_CASE(validate_config) {
     cfg.modifiers[0].stages = (uint8_t)(
         THERMAL_MOD_STAGE_PRE_GOVERNOR_TRIP_OFFSET | 0x80u);
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* H3/L1: modifier pwm_cap values must be in range and honor pwm_min. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].curve[0].value0 = 50;   /* pwm_min is 80 */
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_BOUNDS);
+
+    /* H3: modifier trip offsets must keep adjusted trips in int32 range. */
+    MAKE_MODIFIER_CONFIG(cfg);
+    cfg.modifiers[0].curve[3].value1 = INT32_MAX;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_BOUNDS);
 
     /* Rule 44: enabled fault detector with unknown severity -> INVALID_CONFIG. */
     make_valid_config(&cfg);

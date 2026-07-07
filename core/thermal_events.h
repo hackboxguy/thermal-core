@@ -23,7 +23,11 @@ typedef enum {
 
     /* Command application (0x12xx) */
     TEVENT_COMMAND_APPLIED      = 0x1200,
-    TEVENT_COMMAND_REJECTED     = 0x1201
+    TEVENT_COMMAND_REJECTED     = 0x1201,
+
+    /* Zone aggregation fallback lifecycle (0x13xx) */
+    TEVENT_ZONE_FALLBACK_ENTER  = 0x1300,
+    TEVENT_ZONE_FALLBACK_EXIT   = 0x1301
 } thermal_event_code_t;
 
 #endif /* THERMAL_EVENTS_H */

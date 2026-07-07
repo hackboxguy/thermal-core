@@ -116,7 +116,7 @@ static void build_base_cfg(thermal_config_t *cfg) {
     cfg->zones[0].governor = THERMAL_GOVERNOR_STEP_WISE;
     cfg->zones[0].actuator_count = 1;
     cfg->zones[0].actuator_ids[0] = 10;
-    cfg->zones[0].fallback_temp_mc = 50000;
+    cfg->zones[0].fallback_temp_mc = 85000;
     cfg->zones[0].trip_count = 3;
     cfg->zones[0].trips[0].temp_mc = 70000;
     cfg->zones[0].trips[0].hyst_mc = 2000;
@@ -433,22 +433,25 @@ TEST_CASE(core_step_full_loop) {
 
     /* ============================================================
      * Telemetry cadence: emit once per tick when period_ticks=1.
-     * Configure 2 enabled signals (zone temp + actuator pwm) and
-     * verify both fire on each of 3 ticks.
+     * Configure 3 enabled signals (zone temp + aggregation_valid +
+     * actuator pwm) and verify all fire on each of 3 ticks.
      * ============================================================ */
     {
         build_base_cfg(&cfg);
         cfg.telemetry.enable = 1;
         cfg.telemetry.period_ticks = 1;
-        cfg.telemetry.enabled_signal_count = 2;
+        cfg.telemetry.enabled_signal_count = 3;
         cfg.telemetry.enabled_signal_ids[0] = TSIG_ZONE_TEMP_SOC;
-        cfg.telemetry.enabled_signal_ids[1] = TSIG_ACTUATOR_PWM_MAIN_FAN;
+        cfg.telemetry.enabled_signal_ids[1] = TSIG_ZONE_AGGREGATION_VALID(0);
+        cfg.telemetry.enabled_signal_ids[2] = TSIG_ACTUATOR_PWM_MAIN_FAN;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
         for (uint32_t i = 0; i < 3; i++) {
             step_t1(&ctx, 100 + i * 100, 50000, &out);
         }
-        EXPECT_EQ(mock_tlm_count, 6); /* 2 signals × 3 ticks */
+        EXPECT_EQ(mock_tlm_count, 9); /* 3 signals × 3 ticks */
+        EXPECT_EQ(mock_tlms[1].sig, TSIG_ZONE_AGGREGATION_VALID(0));
+        EXPECT_EQ(mock_tlms[1].val, 1);
     }
 
     /* ============================================================
@@ -598,6 +601,8 @@ TEST_CASE(core_step_full_loop) {
         step_t1(&ctx, 100, 60000, &out);
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
         EXPECT_EQ(state.zones[0].temp_mc, 60000);
+        EXPECT_EQ(state.zones[0].aggregation_valid, 1);
+        EXPECT_EQ(count_events(TEVENT_ZONE_FALLBACK_ENTER), 0);
         /* Tick 2 with no samples (NULL + count=0). */
         thermal_input_snapshot_t empty;
         empty.now_ms = 200;
@@ -607,6 +612,15 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
         /* Filter valid=0 -> aggregation falls back to fallback_temp_mc. */
         EXPECT_EQ(state.zones[0].temp_mc, 88000);
+        EXPECT_EQ(state.zones[0].aggregation_valid, 0);
+        EXPECT_EQ(count_events(TEVENT_ZONE_FALLBACK_ENTER), 1);
+        EXPECT_EQ(count_events(TEVENT_ZONE_FALLBACK_EXIT), 0);
+        step_t1(&ctx, 300, 60000, &out);
+        EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
+        EXPECT_EQ(state.zones[0].temp_mc, 60000);
+        EXPECT_EQ(state.zones[0].aggregation_valid, 1);
+        EXPECT_EQ(count_events(TEVENT_ZONE_FALLBACK_ENTER), 1);
+        EXPECT_EQ(count_events(TEVENT_ZONE_FALLBACK_EXIT), 1);
     }
 
     /* ============================================================
@@ -1002,4 +1016,34 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ(saw_z1, 1);
     }
 #endif  /* S25 */
+
+    /* ============================================================
+     * S26 -- First-class spin-up actuation. A low nonzero request from
+     * off drives spinup_pwm for spinup_ms and emits SPINUP, bypassing
+     * normal slew. Once the window expires, recovery to the requested
+     * duty obeys downward slew.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].spinup_pwm = 200;
+        cfg.actuators[0].spinup_ms = 300;  /* 3 ticks at 100 ms period */
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+
+        step_t1(&ctx, 100, 72000, &out);   /* WARN -> request 160 */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 200);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SPINUP);
+
+        step_t1(&ctx, 200, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 200);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SPINUP);
+
+        step_t1(&ctx, 300, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 200);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SPINUP);
+
+        step_t1(&ctx, 400, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 192);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_STEP);
+    }
 }
