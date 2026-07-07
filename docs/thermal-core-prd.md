@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.20
+**Document status:** Draft v0.21
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -434,6 +434,7 @@ typedef struct {
     uint16_t recovery_ticks;
     int32_t threshold0;
     int32_t threshold1;
+    int32_t threshold2;
     uint16_t correlated_context_id;
 } thermal_fault_detector_cfg_t;
 
@@ -613,12 +614,12 @@ Detector configuration is specified as global defaults per detector type, while 
 
 `thermal_fault_detector_cfg_t` uses generic threshold fields so all detector defaults fit one C shape. JSON uses descriptive names; the loader maps them as follows:
 
-| Detector | `threshold0` | `threshold1` | Notes |
-|---|---|---|---|
-| `stall` | `stall_rpm` | `stall_pwm_threshold` | Detector defaults are the single source for both thresholds in v1. |
-| `stuck_sensor` | `delta_mc` | `window_ticks` | `window_ticks` is stored as `int32_t` for the generic field and validated non-negative. |
-| `runaway` | `rise_mc_threshold` | `cooling_pwm_threshold` | Defaults chosen so runaway means rising temperature while cooling is high or increasing. |
-| `stale_context` | unused | unused | Timeout comes from the context signal config. |
+| Detector | `threshold0` | `threshold1` | `threshold2` | Notes |
+|---|---|---|---|---|
+| `stall` | `stall_rpm` | `stall_pwm_threshold` | unused | Detector defaults are the single source for both thresholds in v1. |
+| `stuck_sensor` | `delta_mc` | `window_ticks` | `correlated_delta_threshold` | `window_ticks` is stored as `int32_t` for the generic field and validated non-negative. |
+| `runaway` | `rise_mc_threshold` | `cooling_pwm_threshold` | unused | Defaults chosen so runaway means rising temperature while cooling is high or increasing. |
+| `stale_context` | unused | unused | unused | Timeout comes from the context signal config. |
 
 `enabled = 0` on a detector-type default means no instances of that detector type are created. `correlated_context_id` is used only by stuck-sensor detection. For stall, runaway, and stale-context defaults it is ignored and set to `0xFFFF` by convention. Tach-less actuators do not instantiate an active stall detector unless explicitly forced by a test scenario; otherwise missing tach would create false stall events.
 
@@ -635,8 +636,8 @@ Detector configuration is specified as global defaults per detector type, while 
 Required v1 detector behavior:
 
 - **Fan stall:** active when requested PWM is above `stall_pwm_threshold` and tach stays below `stall_rpm` for `persist_ticks`, excluding configured spin-up grace. Recovery requires tach above threshold for `recovery_ticks`.
-- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while the configured `correlated_context` changes during that same window. If no correlated context is configured (`0xFFFF` / JSON `null`), v1 runs in flatness-only mode and the same long flat sensor window is actionable.
-- **Thermal runaway:** active when temperature rises for `persist_ticks` while requested cooling is high or increasing. This fault is `CRITICAL` by default and overrides acoustic caps. A `force_pwm_max_and_latch` runaway escalates to a shutdown request if the runaway condition remains active for `recovery_ticks` after the latch.
+- **Stuck sensor:** active when a valid sensor changes by less than `delta_mc` across `window_ticks` while the configured `correlated_context` changes by at least `correlated_delta_threshold` during that same window. If no correlated context is configured (`0xFFFF` / JSON `null`), v1 runs in flatness-only mode and the same long flat sensor window is actionable.
+- **Thermal runaway:** active when temperature rises for `persist_ticks` while requested cooling is high or increasing. This fault is `CRITICAL` by default and overrides acoustic caps. A `force_pwm_max_and_latch` runaway escalates to a shutdown request if the runaway condition remains active for `recovery_ticks` after the latch. `recovery_ticks = 0` disables that escalation path.
 - **Stale context:** active when a context sample is invalid longer than its timeout. The configured context fail-safe value is applied and the policy emits telemetry so tests can prove the fallback occurred.
 
 Fault actions must be idempotent and bounded. A fault action may force an actuator command higher than the governor requested, but v1 must not silently command a lower cooling level during `CRITICAL` or `LATCHED` thermal faults.
@@ -648,7 +649,7 @@ Required v1 fault actions:
 | `mark_degraded` | Emit event/telemetry and keep normal governor output. |
 | `use_zone_fallback` | Replace the affected zone's computed temperature with the max of remaining valid zone sensors; if none exist, use the zone's configured `fallback_temp_mc`. Invalid config if neither is possible. Enter/exit edges emit `TEVENT_ZONE_FALLBACK_ENTER` / `TEVENT_ZONE_FALLBACK_EXIT`, and `aggregation_valid` is exposed as zone telemetry. |
 | `force_pwm_max_until_recovered` | Request maximum configured PWM for affected actuators until the detector reaches `NORMAL`. Upward command is slew-exempt. |
-| `force_pwm_max_and_latch` | Request maximum configured PWM, enter `LATCHED` after detection, and require `CMD_CLEAR_FAULT`, reboot, or platform-local maintenance reset after recovery. Upward command is slew-exempt. For runaway, continued active runaway for `recovery_ticks` while latched also emits `TEVENT_SHUTDOWN_REQUEST` and latches shutdown-requested state. |
+| `force_pwm_max_and_latch` | Request maximum configured PWM, enter `LATCHED` after detection, and require `CMD_CLEAR_FAULT`, reboot, or platform-local maintenance reset after recovery. Upward command is slew-exempt. For runaway, continued active runaway for non-zero `recovery_ticks` while latched also emits one `TEVENT_SHUTDOWN_REQUEST` and latches shutdown-requested state. |
 | `request_shutdown` | Latch a shutdown-request condition, emit `TEVENT_SHUTDOWN_REQUEST`, and request maximum configured cooling. The platform decides whether that event maps to process exit, system power action, or no action. |
 | `none` | Emit detector telemetry only. Useful for advisory detectors and experiments. |
 
@@ -814,7 +815,7 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 - Weighted sensor aggregation requires a `weights` array matching the sensor list length; weights use Q16.16 and must have a positive sum.
 - Fault actions are one of the v1 actions in §4.7; action-specific required fields such as `fallback_temp_mc` are present.
 - Expanded per-target fault detector instances fit within `THERMAL_MAX_FAULTS`.
-- Optional `correlated_context` values for stuck-sensor detection resolve to a configured context signal. If `correlated_context` is `null` or absent, the detector runs in flatness-only mode.
+- Optional `correlated_context` values for stuck-sensor detection resolve to a configured context signal. If a real context is configured, `correlated_delta_threshold` must be a positive integer. If `correlated_context` is `null` or absent, the detector runs in flatness-only mode and the correlated threshold is ignored.
 - Trip points are ordered by temperature and hysteresis does not overlap neighboring trips.
 - Trip `cooling_state < THERMAL_MAX_COOLING_STATES` and is valid for every affected actuator's `state_pwm` table.
 - Runtime tuning bounds are configured for every tunable value; commands outside those bounds return an error and leave state unchanged.
@@ -1094,6 +1095,7 @@ All scenarios are scripted (`scenarios/*.scn`) and run on three rigs: pure unit-
 | `step_load` | SoC temperature steps from 50°C to 85°C; capture step response, used for PID tuning. |
 | `fan_stall_recovery` | Force fan tach to 0 while PWM > 0; verify stall fault raised within configured `persist_ticks`, recover when tach restored. |
 | `stuck_sensor` | Freeze SoC sensor at 50°C while injecting load; verify stuck-sensor fault, fallback behavior. |
+| `stuck_sensor_correlated` | Freeze SoC sensor while stepping a configured context by more than `correlated_delta_threshold`; verifies the correlated stuck-sensor gate. |
 | `acoustic_mask_low_speed` | Vehicle speed = 0; verify PWM cap applied; temperature trends with cap engaged. |
 | `acoustic_mask_high_speed` | Vehicle speed sweep 0 → 130 km/h; verify cap releases, trip offset applied. |
 | `multi_zone_coupling` | Amp and tuner zones heat simultaneously, shared fan; verify v1 max-wins arbitration. This does not exercise multi-actuator load sharing, which is outside v1 scope. |
@@ -1206,6 +1208,7 @@ thermal-core/
 │   ├── step_load.scn
 │   ├── fan_stall_recovery.scn
 │   ├── stuck_sensor.scn
+│   ├── stuck_sensor_correlated.scn
 │   ├── acoustic_mask_low_speed.scn
 │   ├── acoustic_mask_high_speed.scn
 │   ├── multi_zone_coupling.scn
@@ -1313,13 +1316,15 @@ Migration notes:
 - The old ALS-Dimmer roots remain only as source references during the rewrite.
 - Keep the existing section-file numbering because it gives a useful writing checklist.
 
-Proposed section mapping:
+Current source mapping:
 
-| Template file | `thermal-core` content |
+| Source file | `thermal-core` content |
 |---|---|
 | `01-introduction.tex` | IVI thermal motivation, generic core boundary, project goals |
+| `01b-background.tex` | Related work and scope boundaries |
 | `02-environments.tex` | thermal operating environments: ambient ranges, idle cabin, moving vehicle, heat soak |
-| `03-human-vision.tex` | rename to acoustic perception / cabin noise masking |
+| `03-human-vision.tex` | acoustic perception / cabin noise masking |
+| `03b-control-model.tex` | closed-loop model, PID law, safety floors, fault interactions |
 | `04-zone-mapping.tex` | thermal zone modeling and sensor aggregation |
 | `05-curves.tex` | fan curves, trip curves, vehicle-speed policy curves |
 | `06-response-time.tex` | loop timing, slew limits, PID step response, stability considerations |
@@ -1329,10 +1334,11 @@ Proposed section mapping:
 | `10-json-config.tex` | Linux JSON schema and generated static MCU config |
 | `11-control-interface.tex` | telemetry, runtime tuning, scenario commands |
 | `12-deployment.tex` | Linux daemon, ESP32 modes, `car-can-emulator`, systemd/OpenWrt notes |
+| `12b-evaluation.tex` | scenario plots, CI/coverage, CH32 bring-up and fan-health measurements |
 | `13-summary.tex` | results summary, recommendations, limitations, future work |
 | `appendices.tex` | full configs, OBD-II frame reference, BOM, build reference |
 
-A `Makefile` in `docs/paper/` will codify the build:
+The `Makefile` in `docs/paper/` codifies the build:
 
 ```
 make -C docs/paper           # full build
@@ -1650,4 +1656,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.20*
+*End of PRD v0.21*

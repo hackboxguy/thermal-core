@@ -18,8 +18,8 @@ Initial fault detectors:
 
 \begin{itemize}[leftmargin=*]
     \item fan stall while PWM is above a configured threshold;
-    \item stuck sensor over a configured observation window, gated either by a correlated context value changing during the same window or by flatness-only mode when no correlate is configured;
-    \item thermal runaway when temperature rises despite requested cooling; a latched force-max runaway escalates to a shutdown request if the condition remains active while latched;
+    \item stuck sensor over a configured observation window, gated either by a correlated context value moving by at least its configured threshold during the same window or by flatness-only mode when no correlate is configured;
+    \item thermal runaway when temperature rises despite requested cooling; a latched force-max runaway escalates once to a shutdown request if the condition remains active while latched and the escalation tick count is non-zero;
     \item stale context input --- for example a speed-source timeout, which drives acoustic-mask fail-safe behavior.
 \end{itemize}
 
@@ -56,7 +56,7 @@ All four detectors share one state machine (Figure~\ref{fig:fault-fsm}), anchore
             {clear for \texttt{recovery\_ticks}}
         (n.north);
 \end{tikzpicture}
-\caption{Common fault-detector state machine shared by the stall, stuck-sensor, runaway, and stale-context detectors. \textsc{Active} is reported as either \texttt{DEGRADED} or \texttt{CRITICAL} per the detector's configured severity and is what triggers the configured safety action (e.g.\ \texttt{force\_pwm\_max\_until\_recovered}). A latching variant --- when the action is \texttt{force\_pwm\_max\_and\_latch} or \texttt{request\_shutdown} --- enters a fourth \textsc{Latched} state on the same persist trigger and never auto-clears; it is reset only by an explicit \texttt{apply\_command} once the condition has been inactive for \texttt{recovery\_ticks}.}
+\caption{Common fault-detector state machine shared by the stall, stuck-sensor, runaway, and stale-context detectors. \textsc{Active} is reported as either \texttt{DEGRADED} or \texttt{CRITICAL} per the detector's configured severity and is what triggers the configured safety action (e.g.\ \texttt{force\_pwm\_max\_until\_recovered}). A latching variant --- when the action is \texttt{force\_pwm\_max\_and\_latch} or \texttt{request\_shutdown} --- enters a fourth \textsc{Latched} state on the same persist trigger and never auto-clears; it is reset only by an explicit \texttt{apply\_command} once the condition has been inactive for \texttt{recovery\_ticks}. For runaway, non-zero \texttt{recovery\_ticks} also defines the latched-active escalation delay for the one-shot shutdown-request event.}
 \label{fig:fault-fsm}
 \end{figure}
 

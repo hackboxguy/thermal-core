@@ -216,13 +216,15 @@ def apply_commands(commands: list, now_ms: int, dt_ms: int,
         # Unknown commands already rejected by the parser.
 
 
-def resolve_paths(daemon_cfg: dict) -> tuple[list, list, list]:
-    """Return (sensor_paths, actuator_pwm_paths, actuator_tach_paths)
-    aligned with the daemon's slot order."""
+def resolve_paths(daemon_cfg: dict) -> tuple[list, list, list, list]:
+    """Return paths aligned with the daemon's slot order."""
     sensors = daemon_cfg.get("sensors", [])
+    contexts = daemon_cfg.get("context_signals", [])
     actuators = daemon_cfg.get("actuators", [])
     return (
         [Path(s["source"]) for s in sensors],
+        [None if str(c.get("source", "")).startswith("canbus:")
+         else Path(c["source"]) for c in contexts],
         [Path(a["pwm"]) for a in actuators],
         [Path(a.get("tach", "")) if a.get("tach") else None
          for a in actuators],
@@ -335,7 +337,7 @@ def main(argv=None) -> int:
     # === Setup =========================================================
     setup_tmpfs(daemon_cfg, zones)
 
-    sensor_paths, pwm_paths, tach_paths = resolve_paths(daemon_cfg)
+    sensor_paths, context_paths, pwm_paths, tach_paths = resolve_paths(daemon_cfg)
 
     telem_uri = daemon_cfg["telemetry"]["transport"]
     udp_host, udp_port = parse_telemetry_uri(telem_uri)
@@ -420,7 +422,16 @@ def main(argv=None) -> int:
                     write_int_file(sensor_paths[i],
                                     plant.zone_temp_mc(i))
 
-            # 5. Tach overrides (no plant model for tach in v1; default
+            # 5. Context-file overrides use the same freeze_input grammar
+            #    as sensors; CAN-backed contexts are driven by emulator
+            #    commands and have no file path.
+            contexts = daemon_cfg.get("context_signals", [])
+            for i, c in enumerate(contexts):
+                if c["name"] in overrides.sensors and context_paths[i]:
+                    write_int_file(context_paths[i],
+                                    overrides.sensors[c["name"]])
+
+            # 6. Tach overrides (no plant model for tach in v1; default
             #    is 1500 from setup_tmpfs; override if frozen).
             actuators = daemon_cfg.get("actuators", [])
             for i, a in enumerate(actuators):
@@ -428,14 +439,14 @@ def main(argv=None) -> int:
                     write_int_file(tach_paths[i],
                                     overrides.tachs[a["name"]])
 
-            # 6. TICK; wait for daemon DONE handshake.  Explicit
+            # 7. TICK; wait for daemon DONE handshake.  Explicit
             #    handshake replaces the prior SETTLE_MS wall-clock
             #    sleep that raced under CI runner load (see
             #    recv_done docstring).
             clk.sendall(f"TICK {now_ms}\n".encode("ascii"))
             recv_done(clk)
 
-            # 7. Drain.
+            # 8. Drain.
             recorder.drain()
             now_ms += control_period_ms
 

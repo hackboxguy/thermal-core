@@ -1,8 +1,8 @@
 /* test/unit/test_fault_stuck_sensor.c
  *
  * Unit tests for thermal_fault_stuck_sensor_step. Covers window-based
- * detection, flatness-only mode (no correlated context), load-change
- * gating, and varying-sensor negative case.
+ * detection, flatness-only mode (no correlated context), correlated
+ * context min/max gating, and varying-sensor negative case.
  */
 #include <stdint.h>
 #include <string.h>
@@ -20,6 +20,7 @@ static void make_cfg_basic(thermal_fault_detector_cfg_t *cfg) {
     cfg->recovery_ticks = 2;
     cfg->threshold0 = 100;        /* delta_mc */
     cfg->threshold1 = 10;         /* window_ticks */
+    cfg->threshold2 = 50;         /* correlated_delta_threshold */
     cfg->correlated_context_id = 7;  /* configured -> not advisory */
 }
 
@@ -33,30 +34,32 @@ TEST_CASE(fault_stuck_sensor) {
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
     EXPECT_EQ(s.window_tick_count, 0);
 
-    /* === Constant sensor + load_changing for window_ticks -> DEGRADED ===
-     * Sensor value 75000 mc constant; load_changing = 1 every tick;
-     * window_ticks = 10; delta = 0 < delta_threshold = 100. */
+    /* === Constant sensor + material context delta -> DEGRADED ===
+     * Sensor value 75000 mc constant; context moves by 100 over the
+     * same window, exceeding correlated_delta_threshold = 50. */
     for (int t = 0; t < 10; t++) {
+        int32_t ctx_value = (t < 5) ? 0 : 100;
         thermal_fault_stuck_sensor_step(&s, &cfg,
                                         75000, /*valid*/1,
-                                        /*load_changing*/1,
+                                        /*context_valid*/1,
+                                        ctx_value,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
 
-    /* === One context change inside the window is enough.
-     * The core passes a per-tick value-delta boolean; the detector
-     * accumulates it across the same flatness window. */
+    /* === Small context twitch below threshold does not arm the fault. */
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 10; t++) {
+        int32_t ctx_value = (t == 3) ? 1 : 0;
         thermal_fault_stuck_sensor_step(&s, &cfg,
                                         75000, 1,
-                                        (uint8_t)(t == 3),
+                                        1,
+                                        ctx_value,
                                         (uint32_t)(t * 100));
     }
-    EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
+    EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
 
-    /* === Constant sensor + NO load_changing: stays NORMAL ===
+    /* === Constant sensor + no valid context: stays NORMAL ===
      * Stuck-sensor detector requires the load to be changing to call
      * the sensor "stuck" -- a constant reading on a constant load is
      * just normal idle behavior. */
@@ -64,17 +67,19 @@ TEST_CASE(fault_stuck_sensor) {
     for (int t = 0; t < 30; t++) {
         thermal_fault_stuck_sensor_step(&s, &cfg,
                                         75000, 1,
-                                        /*load_changing*/0,
+                                        /*context_valid*/0,
+                                        0,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
 
-    /* === Varying sensor + load_changing: stays NORMAL ===
+    /* === Varying sensor + material context change: stays NORMAL ===
      * Sensor value swings beyond delta_threshold within the window. */
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 30; t++) {
         int32_t v = 75000 + ((t & 1) ? 500 : -500);   /* +/- 500 mc swing */
-        thermal_fault_stuck_sensor_step(&s, &cfg, v, 1, 1,
+        int32_t ctx_value = (t % 10 < 5) ? 0 : 100;
+        thermal_fault_stuck_sensor_step(&s, &cfg, v, 1, 1, ctx_value,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
@@ -86,7 +91,7 @@ TEST_CASE(fault_stuck_sensor) {
     adv_cfg.correlated_context_id = 0xFFFF;
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 10; t++) {
-        thermal_fault_stuck_sensor_step(&s, &adv_cfg, 75000, 1, 0,
+        thermal_fault_stuck_sensor_step(&s, &adv_cfg, 75000, 1, 0, 0,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_DEGRADED);
@@ -94,7 +99,8 @@ TEST_CASE(fault_stuck_sensor) {
     /* === sensor_valid = 0 doesn't accumulate window === */
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 30; t++) {
-        thermal_fault_stuck_sensor_step(&s, &cfg, 75000, /*valid*/0, 1,
+        thermal_fault_stuck_sensor_step(&s, &cfg, 75000, /*valid*/0,
+                                        1, 100,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
@@ -106,7 +112,7 @@ TEST_CASE(fault_stuck_sensor) {
     off_cfg.enabled = 0;
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 30; t++) {
-        thermal_fault_stuck_sensor_step(&s, &off_cfg, 75000, 1, 1,
+        thermal_fault_stuck_sensor_step(&s, &off_cfg, 75000, 1, 1, 100,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_NORMAL);
@@ -117,7 +123,9 @@ TEST_CASE(fault_stuck_sensor) {
     latch_cfg.action = THERMAL_FAULT_ACTION_FORCE_PWM_MAX_AND_LATCH;
     thermal_fault_stuck_sensor_reset(&s);
     for (int t = 0; t < 10; t++) {
+        int32_t ctx_value = (t < 5) ? 0 : 100;
         thermal_fault_stuck_sensor_step(&s, &latch_cfg, 75000, 1, 1,
+                                        ctx_value,
                                         (uint32_t)(t * 100));
     }
     EXPECT_EQ(s.state, THERMAL_FAULT_LATCHED);

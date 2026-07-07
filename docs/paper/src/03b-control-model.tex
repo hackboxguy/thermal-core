@@ -78,7 +78,7 @@ After arbitration and safety actions, each actuator applies lifetime and startab
 
 All detector windows are expressed in control ticks, and filters apply their IIR coefficient once per control tick. This is deterministic and MCU-cheap, but it means the same numeric window has different real-time latency at 100\,ms and 1\,s control periods. Configurations are therefore period-relative artefacts, not unitless policies.
 
-Sensor aggregation is fail-toward-cooling. When all sensors in a zone are invalid, the core substitutes the zone's configured fallback temperature; enter and exit edges are logged, and \texttt{aggregation\_valid} is available as telemetry. Stuck-sensor detection uses a flatness window plus either a correlated context-value change inside that same window, or flatness-only mode when no correlate is configured. A runaway configured as \texttt{force\_pwm\_max\_and\_latch} escalates to a shutdown request if the runaway remains active while latched.
+Sensor aggregation is fail-toward-cooling. When all sensors in a zone are invalid, the core substitutes the zone's configured fallback temperature; enter and exit edges are logged, and \texttt{aggregation\_valid} is available as telemetry. Stuck-sensor detection uses a flatness window plus either a correlated context-value change that exceeds the configured threshold inside that same window, or flatness-only mode when no correlate is configured. A runaway configured as \texttt{force\_pwm\_max\_and\_latch} escalates to a shutdown request if the runaway remains active while latched and the escalation tick count is non-zero.
 
 \subsection{Arbitration}
 

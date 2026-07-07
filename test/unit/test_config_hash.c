@@ -187,6 +187,24 @@ TEST_CASE(config_hash) {
         }
     }
 
+    /* === Scenario 4b: fault threshold2 sensitivity ================ */
+    {
+        thermal_config_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        init_minimal_valid(&a);
+        init_minimal_valid(&b);
+        b.faults.stuck_sensor_defaults.threshold2 = 1;
+        uint8_t ha[32], hb[32];
+        thermal_config_hash(&a, ha);
+        thermal_config_hash(&b, hb);
+        if (bytes_equal(ha, hb, 32)) {
+            fprintf(stderr,
+                    "threshold2 change did not affect digest\n");
+            exit(1);
+        }
+    }
+
 #if THERMAL_MAX_SENSORS >= 2  /* bumps sensor_count to 2; skipped under a maxima=1 profile */
     /* === Scenario 5: count sensitivity =========================== */
     {

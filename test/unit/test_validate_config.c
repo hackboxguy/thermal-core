@@ -563,6 +563,25 @@ TEST_CASE(validate_config) {
     cfg.faults.stuck_sensor_defaults.correlated_context_id = 77;  /* not configured */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+    /* Rule 46: configured correlated context requires a positive context delta. */
+    make_valid_config(&cfg);
+    cfg.context_count = 1;
+    cfg.contexts[0].id = 7;
+    cfg.contexts[0].unit = THERMAL_CONTEXT_UNIT_KMH;
+    cfg.contexts[0].iir_alpha_q16 = 2048;
+    cfg.contexts[0].timeout_ms = 3000;
+    cfg.contexts[0].fail_safe = THERMAL_FAILSAFE_ASSUME_STATIONARY;
+    cfg.faults.stuck_sensor_defaults.enabled = 1;
+    cfg.faults.stuck_sensor_defaults.severity = THERMAL_FAULT_SEVERITY_DEGRADED;
+    cfg.faults.stuck_sensor_defaults.action = THERMAL_FAULT_ACTION_USE_ZONE_FALLBACK;
+    cfg.faults.stuck_sensor_defaults.correlated_context_id = 7;
+    cfg.faults.stuck_sensor_defaults.threshold2 = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* Rule 46: configured correlated context + positive delta -> OK. */
+    cfg.faults.stuck_sensor_defaults.threshold2 = 5;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
     /* Rule 46: 0xFFFF advisory -> OK. */
     make_valid_config(&cfg);
     cfg.faults.stuck_sensor_defaults.enabled = 1;

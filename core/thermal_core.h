@@ -99,6 +99,7 @@ typedef struct {
     uint16_t recovery_ticks;
     int32_t  threshold0;
     int32_t  threshold1;
+    int32_t  threshold2;
     uint16_t correlated_context_id;
 } thermal_fault_detector_cfg_t;
 

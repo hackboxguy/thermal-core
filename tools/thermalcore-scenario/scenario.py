@@ -13,8 +13,8 @@ Stage 12 12c grammar (extends 12b's idle-only subset):
     plant zone <z> <field> <int>                   # per-zone (any field)
     plant zone <z> coupling <neighbor> <q16>       # special form (2 args)
 
-    <ms> freeze_input          <sensor_name>   <int_mc>
-    <ms> unfreeze_input        <sensor_name>
+    <ms> freeze_input          <input_name>    <int_value>
+    <ms> unfreeze_input        <input_name>
     <ms> freeze_tach           <actuator_name> <rpm>
     <ms> unfreeze_tach         <actuator_name>
     <ms> set_plant_load_w_q16  <zone_idx> <q16>

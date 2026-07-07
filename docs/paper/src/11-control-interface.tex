@@ -59,6 +59,6 @@ The command surface is verified at three levels. Per-command scenarios in \textt
 
 The \texttt{TC} binary wire codec is implemented in the \texttt{protocol/} module: a twelve-byte header (magic, version, opcode, sequence number, payload length, timestamp), the per-opcode payload, and a trailing CRC-16/CCITT-FALSE. The same codec carries UDP telemetry on Linux and the hardware-in-the-loop frame stream over USB-Serial-JTAG (Section~\ref{sec:deployment}). The decoder is fuzz-tested in CI.
 
-\texttt{thermalcore-probe} is the reference observer: it binds the telemetry UDP port, decodes \texttt{TELEM\_SAMPLE} and \texttt{TELEM\_EVENT} frames, and writes a byte-stable CSV. That byte-stability is what the determinism gate hashes (Section~\ref{sec:evaluation}). The canonical scenario files ship under \texttt{scenarios/}; ten of them are exercised by the scenario and determinism gates.
+\texttt{thermalcore-probe} is the reference observer: it binds the telemetry UDP port, decodes \texttt{TELEM\_SAMPLE} and \texttt{TELEM\_EVENT} frames, and writes a byte-stable CSV. That byte-stability is what the determinism gate hashes (Section~\ref{sec:evaluation}). The canonical scenario files ship under \texttt{scenarios/}; eleven of them are exercised by the scenario and determinism gates.
 
 \endinput

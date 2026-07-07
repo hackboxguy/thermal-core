@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.21
+**Document status:** Draft v0.22
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.20)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.21)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -337,12 +337,12 @@ The multiplication is performed in `int64_t`; the shift back is by 16; the final
 
 **Stage 9 actual deliverables vs deferrals (post codex-v4 review):**
 
-- **Shipped 9a–9d:** JSON loader (`platform/linux/config_jsmn.c` backed by vendored `jsmn`), runtime cfg sibling struct (`platform/linux/runtime_cfg.h`), `bsp_mock_tmpfs` for sensor/actuator file I/O, `thermalcored` daemon with wall + scenario clocks, syslog-based `log_event`, UDP telemetry via an in-daemon `telem_wire.c` encoder, canonical SHA-256 config hash in `support/`, padding-poison test, `tools/json2static.py`, libFuzzer `fuzz-json` job, and a Python smoke harness. PRD §5.1 `fault_detection` schema (descriptive thresholds + `correlated_context: null` advisory mode) landed in the codex-v4 carryover commit.
+- **Shipped 9a–9d:** JSON loader (`platform/linux/config_jsmn.c` backed by vendored `jsmn`), runtime cfg sibling struct (`platform/linux/runtime_cfg.h`), `bsp_mock_tmpfs` for sensor/actuator file I/O, `thermalcored` daemon with wall + scenario clocks, syslog-based `log_event`, UDP telemetry via an in-daemon `telem_wire.c` encoder, canonical SHA-256 config hash in `support/`, padding-poison test, `tools/json2static.py`, libFuzzer `fuzz-json` job, and a Python smoke harness. PRD §5.1 `fault_detection` schema (descriptive thresholds + `correlated_context: null` advisory mode) landed in the codex-v4 carryover commit; the later Fable-v2 fix added `correlated_delta_threshold` and same-window context min/max tracking for correlated stuck-sensor mode.
 - **Deferred to Stage 10:** `platform/linux/bsp_telemetry_udp.c` and the wire-encoder hoist into `protocol/thermal_wire.c` (with CRC, sequence numbers, and the opcode registry). Stage 9 ships the encoder inline as `platform/linux/telem_wire.c`, explicitly labelled a stopgap; the daemon emits observable frames today, but the encoder is the only place that knows the v1 layout. Stage 10 replaces it.
 - **Deferred to Stage 10 / 11:** `tools/thermalcore-probe`. The smoke test currently decodes the stopgap frame directly; once the probe lands the smoke harness will consume the same decoder as the user-facing tool.
 - **Deferred to Stage 12:** `tools/config_hash.py` (Python-side canonical encoder). Lands when scenario-determinism actually needs cross-language hash parity. The C hash is verified against itself today by the `json2static` round-trip test.
 - **Smoke scope:** the current harness drives five ticks against `test/smoke/smoke-config.json` (a tmpfs-pathed copy of the reference config, so it runs as a normal user) and asserts ≥ 3 telemetry frames plus exit code 0. The originally-planned per-tick frame audit + reference-config use will land alongside the probe so the smoke decoder is shared with `thermalcore-probe`.
-- **Stuck-sensor `correlated_load_changing` simplification:** the v1 full-loop step in `core/thermal_core.c` (step 9, comments around `cfg->faults.stuck_sensor_defaults`) treats any valid configured context as "load changing". Proper delta-over-window tracking is future work tracked alongside scenario-injection support; the detector itself takes a correct boolean input, and advisory mode (PRD §4.7 line 632) is now expressible via `"correlated_context": null` thanks to the codex-v4 fix.
+- **Review closeout:** Fable-v2 N1 is closed. The full loop now passes the configured context's filtered value into the stuck-sensor detector; the detector tracks context min/max across the same flatness window and requires `correlated_delta_threshold` before a flat sensor is actionable. `scenarios/stuck_sensor.scn` keeps the flatness-only `correlated_context: null` case, while `scenarios/stuck_sensor_correlated.scn` covers the named-context path.
 
 **Exit gate:** unit + replay + property + asan + clang-tidy + cppcheck + smoke + fuzz-json green.
 
@@ -419,7 +419,7 @@ There is **no duplicate Python plant model**. If the Python orchestrator ever ne
 - **Commands:** sent over the existing UDP control channel (`127.0.0.1:9002`), drained at the start of the next tick by the deterministic loop order in Stage 9.
 - **Telemetry:** captured from the existing UDP telemetry channel (`127.0.0.1:9001`) by `thermalcore-probe --log`; the SHA-256 over the resulting CSV is the determinism gate.
 
-All ten canonical scenarios from PRD §9.1 implemented. Assertion grammar per PRD §7.6.
+All eleven canonical scenarios from PRD §9.1 implemented. Assertion grammar per PRD §7.6.
 
 **Tests added:**
 - **Scenario (new test type):** every canonical `.scn` file runs in CI, assertions decide pass/fail.
@@ -530,7 +530,7 @@ ts_ms, row_type, id, value, flags_or_status, a1, a2, a3, a4
 
 The canonical column projection and the row-ordering contract live in `tools/thermalcore-probe/canonical.py` and a matching C-side serializer; both Stage 12 (host determinism) and Stage 15 (host-vs-target parity) hash from the same projection.
 
-2. **Physical HIL tolerance (nightly / on-demand, never PR-gating).** All ten canonical scenarios on real hardware (ESP32 standalone OR Linux + ESP32-HIL). Telemetry is compared against the host-simulator reference using **behavioral tolerance bands**, not SHA equality:
+2. **Physical HIL tolerance (nightly / on-demand, never PR-gating).** All eleven canonical scenarios on real hardware (ESP32 standalone OR Linux + ESP32-HIL). Telemetry is compared against the host-simulator reference using **behavioral tolerance bands**, not SHA equality:
    - settling time within ±10% of reference
    - max overshoot within ±5% of reference
    - fault detection latency within the documented envelope (e.g., stall raised within 3 s)
@@ -682,9 +682,11 @@ The canonical column projection and the row-ordering contract live in `tools/the
 - **Shipped 20b:** docs catch-up. `README.md` Repository-status gains a Stage 20 bullet, and the CH32V003 STANDALONE quick-start gets a fan-health subsection (the per-actuator `fan_health` block + the sweep workflow). The white-paper Evaluation section's CH32 subsection gains a paragraph + a PWM-to-RPM sweep figure rendered from the committed sweep CSV, noting the post-v1 fan-health detector is now compiled into the chip with a baseline measured on the deployed unit — the first MCU build to compile the gate on.
 - **Shipped 20c:** a second reference fan baseline added as a side-by-side worked example. `platform/ch32v003/configs/ch32v003-standalone-arctic-p8.json` carries an 8-point Arctic P8 PWM PST baseline (`field` provenance, `fan_model: arctic-p8-pwm-pst`) captured on the deployed unit across three sweep runs; the runs are committed at `docs/paper/data/ch32v003-arctic-p8-pst-sweep-run{1,2,3}.csv` as repeatability evidence. The CH32 `Makefile` gains a `CH32_CONFIG=` knob so an alternate config builds as a drop-in (`make build-ch32 CH32_TELEMETRY=1 CH32_CONFIG=configs/ch32v003-standalone-arctic-p8.json`); both reference configs link at 14 168 B with the detector compiled in. The Evaluation section's sweep figure now overlays both fans, showing the same firmware and the same portable `core/` handle substantially different fan curves (NF-A8 ~2 250 RPM full-duty, Arctic ~3 070 RPM, different spin-up characteristic — the Arctic has an unstable zone between duty 28 and 41 that the step-wise governor never holds steady).
 
-**Stage 20 status:** the Stage 17 fan-health detector is enabled in the CH32V003 STANDALONE firmware with a real, on-rig PWM-to-RPM baseline; the `build-ch32` matrix exercises the default (fan-health off), telemetry, and command variants on the active NF-A8 config plus a fourth `arctic` leg that links the Arctic P8 alt config with `--enable-fan-health` — two reference fan configs (NF-A8 active, Arctic P8 PWM PST as a drop-in alt) ship as worked examples. The shipping default firmware is byte-for-byte unchanged. Stage 20 is closed — and with it the first slice of the Stage 17 follow-on (a host-tool baseline-capture sweep + the MCU enablement) is shipped; the remainder (scenario directives, NVS persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection, the 2D temperature-compensated baseline) stays deferred.
+**Stage 20 status:** the Stage 17 fan-health detector is enabled in the CH32V003 STANDALONE firmware with a real, on-rig PWM-to-RPM baseline; the `build-ch32` matrix exercises the default (fan-health off), telemetry, and command variants on the active NF-A8 config plus a fourth `arctic` leg that links the Arctic P8 alt config with `--enable-fan-health` — two reference fan configs (NF-A8 active, Arctic P8 PWM PST as a drop-in alt) ship as worked examples. After the Fable-v2 review, the command/bypass bench image now keeps fan-health compiled out by default because its job is PWM/RPM sweep control, while the telemetry and arctic legs still compile the detector in. Current measured sizes are: default 13 300 B flash / 1 044 B SRAM, telemetry+fan-health 15 428 B flash / 1 444 B SRAM, command 15 092 B flash / 1 512 B SRAM. Stage 20 is closed — and with it the first slice of the Stage 17 follow-on (a host-tool baseline-capture sweep + the MCU enablement) is shipped; the remainder (scenario directives, NVS persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection, the 2D temperature-compensated baseline) stays deferred.
 
-- **Post-review diagnostic update:** the CH32 telemetry tap now reports ring overflow as `TSIG_PLATFORM_CH32_TELEMETRY_DROPS`, a cumulative canonical sample emitted on the next drain after records are dropped. Current measured build sizes are: default 13 104 B flash / 1 044 B SRAM, `CH32_TELEMETRY=1` 15 256 B flash / 1 444 B SRAM, and `CH32_COMMAND=1` 16 276 B flash / 1 508 B SRAM. The default image remains unchanged; the command build is still under the 16 KB hard budget but above the soft target.
+- **Post-review diagnostic update:** the CH32 telemetry tap reports ring overflow as `TSIG_PLATFORM_CH32_TELEMETRY_DROPS`, a cumulative canonical sample emitted on the next drain after records are dropped. The telemetry+fan-health leg is above the PRD soft target but under the 16 KB hard budget; the command leg is back under both the hard budget and the old near-overflow risk because fan-health is no longer part of that bench-control image unless explicitly requested with `CH32_COMMAND_FAN_HEALTH=1`.
+
+**M6/M4 planning constraint:** proceed with M6 before M4. M6 should use static, compile-time governor selection (e.g. a `static const` ops table or direct `switch`) rather than runtime registration, and any new governor path must be compile-gated for tiny MCU builds. M4 PID refinements such as a D-term filter or linearization table must remain PID-only and should not perturb the CH32 step-wise build unless `THERMALCORE_ENABLE_PID` is intentionally enabled.
 
 ---
 
@@ -692,7 +694,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 The white paper is not a Stage-16-only deliverable. Conceptual sections draft in parallel with code; results-bearing sections fill in as benchmarks land. This table maps stages to paper sections that can credibly advance once that stage lands.
 
-The PRD §12.2 paper structure is the reference for section numbers. PRD §12.4 maps those numbers to the `01-…`–`13-…` source files under `docs/paper/src/`.
+PRD §12.4 records the current `docs/paper/src/` file mapping, including split sections such as `01b-background.tex`, `03b-control-model.tex`, and `12b-evaluation.tex`.
 
 | Stage that lands | Paper sections that can advance | Trigger / outcome used |
 |---|---|---|
@@ -821,4 +823,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.21*
+*End of implementation plan v0.22*

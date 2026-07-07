@@ -155,35 +155,51 @@ void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s) {
     s->entered_ts_ms = 0;
     s->window_value_min = 0;
     s->window_value_max = 0;
+    s->window_context_min = 0;
+    s->window_context_max = 0;
     s->window_tick_count = 0;
-    s->window_correlated_seen_change = 0;
+    s->window_context_count = 0;
 }
 
 void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
                                      const thermal_fault_detector_cfg_t *cfg,
                                      int32_t  sensor_filtered_value,
                                      uint8_t  sensor_valid,
-                                     uint8_t  correlated_load_changing,
+                                     uint8_t  correlated_context_valid,
+                                     int32_t  correlated_context_value,
                                      uint32_t now_ms) {
     if (!cfg->enabled) return;
 
     uint16_t window_ticks = (uint16_t)cfg->threshold1;
     int32_t  delta_threshold = cfg->threshold0;
+    int32_t  context_delta_threshold = cfg->threshold2;
+    uint8_t flatness_only_mode = (cfg->correlated_context_id == 0xFFFF);
 
     /* Window accumulation (valid samples only). */
     if (sensor_valid) {
         if (s->window_tick_count == 0) {
             s->window_value_min = sensor_filtered_value;
             s->window_value_max = sensor_filtered_value;
-            s->window_correlated_seen_change = 0;
+            s->window_context_count = 0;
         } else {
             if (sensor_filtered_value < s->window_value_min)
                 s->window_value_min = sensor_filtered_value;
             if (sensor_filtered_value > s->window_value_max)
                 s->window_value_max = sensor_filtered_value;
         }
-        if (correlated_load_changing) {
-            s->window_correlated_seen_change = 1;
+        if (!flatness_only_mode && correlated_context_valid) {
+            if (s->window_context_count == 0) {
+                s->window_context_min = correlated_context_value;
+                s->window_context_max = correlated_context_value;
+            } else {
+                if (correlated_context_value < s->window_context_min)
+                    s->window_context_min = correlated_context_value;
+                if (correlated_context_value > s->window_context_max)
+                    s->window_context_max = correlated_context_value;
+            }
+            if (s->window_context_count < 0xFFFF) {
+                s->window_context_count++;
+            }
         }
         s->window_tick_count++;
     }
@@ -193,9 +209,17 @@ void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
     /* Window check fires once per window_ticks. Window_ticks == 0 is a
      * config bug; defensive: skip the check. */
     if (window_ticks > 0 && s->window_tick_count >= window_ticks) {
-        uint8_t flatness_only_mode = (cfg->correlated_context_id == 0xFFFF);
+        uint8_t correlated_material_change = 0;
+        if (!flatness_only_mode && s->window_context_count > 0) {
+            uint32_t context_delta =
+                (uint32_t)s->window_context_max -
+                (uint32_t)s->window_context_min;
+            if (context_delta >= (uint32_t)context_delta_threshold) {
+                correlated_material_change = 1;
+            }
+        }
 
-        if (flatness_only_mode || s->window_correlated_seen_change) {
+        if (flatness_only_mode || correlated_material_change) {
             int32_t delta = s->window_value_max - s->window_value_min;
             if (delta < delta_threshold) {
                 condition_active = 1;
@@ -206,9 +230,11 @@ void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
         s->window_value_min = sensor_filtered_value;
         s->window_value_max = sensor_filtered_value;
         s->window_tick_count = sensor_valid ? 1 : 0;
-        s->window_correlated_seen_change = 0;
-        if (sensor_valid && correlated_load_changing) {
-            s->window_correlated_seen_change = 1;
+        s->window_context_count = 0;
+        if (sensor_valid && !flatness_only_mode && correlated_context_valid) {
+            s->window_context_min = correlated_context_value;
+            s->window_context_max = correlated_context_value;
+            s->window_context_count = 1;
         }
     }
 

@@ -563,6 +563,7 @@ TEST_CASE(core_step_full_loop) {
         cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
         cfg.faults.stuck_sensor_defaults.threshold0 = 5;    /* delta_mc */
         cfg.faults.stuck_sensor_defaults.threshold1 = 5;    /* window_ticks */
+        cfg.faults.stuck_sensor_defaults.threshold2 = 4;    /* context delta */
         cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
@@ -774,6 +775,7 @@ TEST_CASE(core_step_full_loop) {
         cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
         cfg.faults.stuck_sensor_defaults.threshold0 = 5;
         cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold2 = 4;
         cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
@@ -889,6 +891,7 @@ TEST_CASE(core_step_full_loop) {
         cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
         cfg.faults.stuck_sensor_defaults.threshold0 = 5;
         cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold2 = 4;
         cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
@@ -936,6 +939,7 @@ TEST_CASE(core_step_full_loop) {
         cfg.faults.stuck_sensor_defaults.recovery_ticks = 3;
         cfg.faults.stuck_sensor_defaults.threshold0 = 5;
         cfg.faults.stuck_sensor_defaults.threshold1 = 5;
+        cfg.faults.stuck_sensor_defaults.threshold2 = 4;
         cfg.faults.stuck_sensor_defaults.correlated_context_id = 100;
         mock_reset();
         EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
@@ -1093,6 +1097,27 @@ TEST_CASE(core_step_full_loop) {
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
     }
 
+    /* Safety bypass: off-dwell must not hold back a CRITICAL turn-on. */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].slew_per_tick = 255;
+        cfg.actuators[0].min_off_ticks = 3;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+
+        step_t1(&ctx, 100, 72000, &out);   /* WARN -> on */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
+        step_t1(&ctx, 200, 50000, &out);   /* below WARN -> off */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 0);
+        step_t1(&ctx, 300, 72000, &out);   /* min_off tick -> held off */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 0);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_DWELL);
+        step_t1(&ctx, 400, 86000, &out);   /* CRITICAL bypasses dwell */
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
+        EXPECT_EQ(out.actuator_cmds[0].reason,
+                  THERMAL_ACT_REASON_GOVERNOR_STEP);
+    }
+
     /* ============================================================
      * S28 -- Latched runaway escalation. A runaway configured as
      * FORCE_PWM_MAX_AND_LATCH first forces max PWM, then escalates to
@@ -1118,7 +1143,7 @@ TEST_CASE(core_step_full_loop) {
         }
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
         EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_SAFETY_SHUTDOWN);
-        EXPECT_EQ(count_events(TEVENT_SHUTDOWN_REQUEST) >= 1, 1);
+        EXPECT_EQ(count_events(TEVENT_SHUTDOWN_REQUEST), 1);
         EXPECT_STATUS_OK(thermal_core_get_state(&ctx, &state));
         EXPECT_EQ((state.flags & THERMAL_STATE_SHUTDOWN_REQUESTED) != 0, 1);
     }

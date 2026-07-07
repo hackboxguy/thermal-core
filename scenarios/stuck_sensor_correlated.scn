@@ -1,0 +1,18 @@
+# scenarios/stuck_sensor_correlated.scn
+#
+# Correlated-mode companion to stuck_sensor.scn. The sensor stays flat,
+# but vehicle_speed must move by at least correlated_delta_threshold
+# within the same window before the flatness is actionable.
+
+config test/integration/scenario-config-stuck_sensor-correlated.json
+
+plant ambient_mc      50000
+plant initial_temp_mc 50000
+plant duration_ms     12000
+
+0 freeze_input soc 50000
+0 freeze_input vehicle_speed 0
+1000 freeze_input vehicle_speed 50
+
+assert within 11000 fault_active stuck_sensor 0
+assert eventually actuator_pwm 0 >= 100 within 12000

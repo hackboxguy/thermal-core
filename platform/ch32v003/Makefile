@@ -63,15 +63,23 @@ endif
 
 # Stage 18e: CH32_TELEMETRY=1 builds the canonical-CSV telemetry tap
 # (USART1 PD5/PD6) into the firmware. Stage 20 also enables the
-# advisory fan-health detector in this gate -- the detector produces
-# telemetry-only output, so it rides the tap, and json2static emits
-# the per-actuator fan_health baseline. The default (CH32_TELEMETRY
-# unset) firmware stays byte-for-byte unchanged.
+# advisory fan-health detector in the telemetry-only gate -- the
+# detector produces telemetry-only output, so it rides the tap, and
+# json2static emits the per-actuator fan_health baseline. The
+# CH32_COMMAND bench-control image keeps fan-health compiled out by
+# default to preserve flash headroom; set CH32_COMMAND_FAN_HEALTH=1
+# only for local diagnostics that can tolerate the larger image. The
+# default (CH32_TELEMETRY unset) firmware stays byte-for-byte unchanged.
 # CH32_TELEMETRY_BAUD= overrides the 9600 default baud (e.g. =115200).
 ifeq ($(CH32_TELEMETRY),1)
-EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1 \
-                -DTHERMALCORE_ENABLE_FAN_HEALTH=1
+EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY=1
+ifneq ($(CH32_COMMAND),1)
+EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_FAN_HEALTH=1
 JSON2STATIC_FLAGS += --enable-fan-health
+else ifeq ($(CH32_COMMAND_FAN_HEALTH),1)
+EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_FAN_HEALTH=1
+JSON2STATIC_FLAGS += --enable-fan-health
+endif
 endif
 ifdef CH32_TELEMETRY_BAUD
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_TELEMETRY_BAUD=$(CH32_TELEMETRY_BAUD)
@@ -90,10 +98,10 @@ endif
 # command parser (ch32_command.c) + a control-loop bypass mode in
 # main.c, driven by tools/thermal-telemetry-tool to capture a PWM->RPM
 # sweep. The implication block above turns CH32_TELEMETRY on (so the
-# telemetry block adds its defines and the fan-health detector). A
-# bench/characterisation build, NOT the shipping firmware -- default
-# off; with it off the firmware is byte-for-byte the standard
-# STANDALONE regulator.
+# telemetry block adds its defines). Fan-health stays out unless
+# CH32_COMMAND_FAN_HEALTH=1 is set. A bench/characterisation build,
+# NOT the shipping firmware -- default off; with it off the firmware
+# is the standard STANDALONE regulator.
 ifeq ($(CH32_COMMAND),1)
 EXTRA_CFLAGS += -DTHERMALCORE_CH32_COMMAND=1
 endif

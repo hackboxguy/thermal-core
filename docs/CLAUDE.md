@@ -24,10 +24,10 @@ is the public artefact; the PRD + implementation plan are the spec.
 
 | file | purpose |
 |---|---|
-| `docs/thermal-core-prd.md` (v0.20+) | the spec — wire formats, signal IDs, numeric constants |
-| `docs/thermal-core-implementation-plan.md` (v0.21+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
+| `docs/thermal-core-prd.md` (v0.21+) | the spec — wire formats, signal IDs, numeric constants |
+| `docs/thermal-core-implementation-plan.md` (v0.22+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
 | `README.md` | quick-start + how to build / test / flash each target |
-| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.11+) | the public-facing description |
+| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.12+) | the public-facing description |
 | `git log --oneline -20` | recent commits — the most current state |
 
 The Stages summary table in §9 of the impl-plan gives current state at
@@ -42,7 +42,7 @@ a glance.
   - Stage 20: fan-health enabled on CH32 with a real measured baseline; two
     reference fan configs (NF-A8 active, Arctic P8 PWM PST alt).
 - Two Codex review rounds (v14, v15) consumed and folded in.
-- Impl-plan **v0.21**; paper **Draft 0.11**; PRD **v0.20**.
+- Impl-plan **v0.22**; paper **Draft 0.12**; PRD **v0.21**.
 
 ## 3. Workflow conventions (the most important section)
 
@@ -66,8 +66,11 @@ are easy to forget.
 - **The byte-for-byte invariant**. Build-gated CH32 features are supposed
   to leave the shipping default `make build-ch32` firmware byte-for-byte
   identical when their flags are off. Verify by git-stash-comparing the
-  `main.bin` sha256. The current default sha after the Fable v1
-  core-behavior fixes is `16dd6d67812066d...` (13 104 B). If a change
+  `main.bin` sha256. The current default sha after the Fable v2
+  core-behavior fixes is
+  `706089e8dd4747e0dc5672d74192216262a4e1138c86f49609675897d888049a`
+  (13 300 B).
+  If a change
   unrelated to default control behavior perturbs the default, gate it
   behind a build flag.
 - **Don't commit**: `.claude/`, `tmp*/`, `build/`, `generated/`,
@@ -116,7 +119,7 @@ make test                  # host unit suite (auto-discovers test_*.c)
 make replay                # C + Python-reference replay parity
 make verify-portability    # no-heap/no-syscall scan of core/
 make test-tiny-profile     # the unit suite under the constrained MCU profile
-make scenario              # 10 PRD §9.1 scenarios on the sim plant
+make scenario              # 11 PRD §9.1 scenarios on the sim plant
 make determinism           # scenarios * 2 + gcc-vs-clang SHA-256 parity
 make build-esp32           # ESP32-C3 firmware (3 build modes via env)
 make build-ch32            # CH32V003 STANDALONE (default, no features)
@@ -143,7 +146,9 @@ out the same way:
 - **Build flags**: `CH32_COMMAND=1` implies `CH32_TELEMETRY=1` at the
   platform Makefile via a single-place resolution block — but never
   forward feature flags as **explicit blanks** from a sub-make (this
-  bit us in v14 F-1).
+  bit us in v14 F-1). The command/bypass image keeps fan-health
+  compiled out by default for flash headroom; use the telemetry or
+  Arctic legs to exercise fan-health on the chip.
 - **Tio baud must match `CH32_TELEMETRY_BAUD`** — the default is
   `9600`; we typically use `=115200`. A mismatch shows as a clean
   repeating garbage pattern.

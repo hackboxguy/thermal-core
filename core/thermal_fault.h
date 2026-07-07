@@ -79,8 +79,10 @@ typedef struct {
     uint32_t entered_ts_ms;
     int32_t  window_value_min;
     int32_t  window_value_max;
+    int32_t  window_context_min;
+    int32_t  window_context_max;
     uint16_t window_tick_count;      /* ticks accumulated in current window */
-    uint8_t  window_correlated_seen_change;
+    uint16_t window_context_count;
 } thermal_fault_stuck_sensor_state_t;
 
 void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s);
@@ -88,19 +90,21 @@ void thermal_fault_stuck_sensor_reset(thermal_fault_stuck_sensor_state_t *s);
 /* Cfg fields used:
  *   threshold0 = delta_mc
  *   threshold1 = window_ticks
+ *   threshold2 = correlated_delta_threshold
  *   persist_ticks, recovery_ticks
  *   severity, action
  *   correlated_context_id  (0xFFFF -> flatness-only mode)
  *
- * `correlated_load_changing` is a caller-supplied boolean; the caller
- * (Stage 7 wiring) computes it from a configured context signal's
- * value delta. The detector accumulates it across the same sensor
- * flatness window. */
+ * When correlated_context_id is configured, the caller passes that
+ * context's filtered value and validity. The detector tracks context
+ * min/max across the same window as sensor flatness and requires a
+ * material delta before a flat sensor is actionable. */
 void thermal_fault_stuck_sensor_step(thermal_fault_stuck_sensor_state_t *s,
                                      const thermal_fault_detector_cfg_t *cfg,
                                      int32_t  sensor_filtered_value,
                                      uint8_t  sensor_valid,
-                                     uint8_t  correlated_load_changing,
+                                     uint8_t  correlated_context_valid,
+                                     int32_t  correlated_context_value,
                                      uint32_t now_ms);
 
 int thermal_fault_stuck_sensor_clear_allowed(

@@ -339,7 +339,7 @@ static thermal_status_t parse_sensor(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -412,7 +412,7 @@ static thermal_status_t parse_context_signal(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -724,7 +724,7 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -893,7 +893,7 @@ static thermal_status_t parse_trip(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -955,7 +955,7 @@ static thermal_status_t parse_pid(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1060,7 +1060,7 @@ static thermal_status_t parse_zone(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1268,7 +1268,7 @@ static thermal_status_t parse_curve_point(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1313,7 +1313,7 @@ static thermal_status_t parse_modifier(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1404,12 +1404,12 @@ static thermal_status_t parse_modifier(parse_ctx_t *ctx,
  * for the other three detectors it is set to 0xFFFF by convention.
  * Per-detector threshold key naming comes from PRD §5 line 611:
  *
- *   detector       | threshold0           | threshold1
- *   ---            | ---                  | ---
- *   stall          | stall_rpm            | stall_pwm_threshold
- *   stuck_sensor   | delta_mc             | window_ticks
- *   runaway        | rise_mc_threshold    | cooling_pwm_threshold
- *   stale_context  | (unused)             | (unused)
+ *   detector       | threshold0           | threshold1             | threshold2
+ *   ---            | ---                  | ---                    | ---
+ *   stall          | stall_rpm            | stall_pwm_threshold    | (unused)
+ *   stuck_sensor   | delta_mc             | window_ticks           | correlated_delta_threshold
+ *   runaway        | rise_mc_threshold    | cooling_pwm_threshold  | (unused)
+ *   stale_context  | (unused)             | (unused)               | (unused)
  */
 typedef enum {
     DET_STALL = 0,
@@ -1449,7 +1449,7 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1529,6 +1529,17 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
                                "expected non-negative integer");
             }
             out->threshold1 = (int32_t)val;
+        } else if (tok_str_eq(ctx, k, "correlated_delta_threshold")) {
+            if (kind != DET_STUCK_SENSOR) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "correlated_delta_threshold only valid for stuck_sensor detector");
+            }
+            long long val;
+            if (tok_parse_int_range(ctx, v, 1, INT32_MAX, &val) != 0) {
+                return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
+                               "expected positive integer");
+            }
+            out->threshold2 = (int32_t)val;
         } else if (tok_str_eq(ctx, k, "rise_mc_threshold")) {
             if (kind != DET_RUNAWAY) {
                 return set_err(ctx, THERMAL_ERR_INVALID_ARG, sub_path,
@@ -1578,6 +1589,12 @@ static thermal_status_t parse_fault_detector(parse_ctx_t *ctx,
         }
         k = skip_token(ctx->toks, v);
     }
+    if (kind == DET_STUCK_SENSOR &&
+        out->correlated_context_id != 0xFFFFu &&
+        out->threshold2 <= 0) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path,
+                       "correlated_delta_threshold required when correlated_context is set");
+    }
     return THERMAL_OK;
 }
 
@@ -1595,7 +1612,7 @@ static thermal_status_t parse_fault_detection_object(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1884,7 +1901,7 @@ static thermal_status_t parse_telemetry_object(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -1957,7 +1974,7 @@ static thermal_status_t parse_control_object(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -2013,7 +2030,7 @@ static thermal_status_t parse_hil_object(parse_ctx_t *ctx,
     for (int i = 0; i < n; i++) {
         int v = k + 1;
         char sub_path[PATH_MAX_LEN];
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "non-string key");
         }
@@ -2133,7 +2150,7 @@ static thermal_status_t pass_b_top_level(parse_ctx_t *ctx,
 
     for (int i = 0; i < n; i++) {
         int v = k + 1;
-        char key_str[THERMAL_NAME_MAX];
+        char key_str[64];
         if (tok_str_copy(ctx, k, key_str, sizeof(key_str)) != 0) {
             return set_err(ctx, THERMAL_ERR_INVALID_ARG, "$", "non-string top-level key");
         }

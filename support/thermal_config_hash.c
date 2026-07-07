@@ -258,6 +258,7 @@ static void w_fault_detector(sha256_ctx_t *s, const thermal_fault_detector_cfg_t
     w_u16(s, f->recovery_ticks);
     w_i32(s, f->threshold0);
     w_i32(s, f->threshold1);
+    w_i32(s, f->threshold2);
     w_u16(s, f->correlated_context_id);
 }
 

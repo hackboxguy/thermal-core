@@ -182,7 +182,7 @@ make flash-ch32                                          # build + flash via WCH
 
 `make build-ch32` cross-compiles the firmware and asserts the
 PRD Appendix D.2 budget (flash ≤ 16 KB, SRAM ≤ 2 KB).  The
-current STANDALONE build links at 13 104 B flash / 1 044 B SRAM.
+current STANDALONE build links at 13 300 B flash / 1 044 B SRAM.
 
 Expected pin map (see [`configs/ch32v003-standalone.json`](platform/ch32v003/configs/ch32v003-standalone.json)):
 
@@ -263,6 +263,9 @@ It is a bench / characterisation build, **not** shipping firmware:
 the regulation-disable command is absent from the default image.
 `CH32_COMMAND=1`
 forces `CH32_TELEMETRY=1` on -- command responses share the USART1 tap.
+Fan-health is compiled out of this bench-control image by default to
+preserve flash headroom; the telemetry image below is the normal
+fan-health runtime build.
 
 The host side is [`thermal-telemetry-tool`](tools/thermal-telemetry-tool),
 a self-contained C++ tool:
@@ -328,9 +331,10 @@ make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
 ```
 
 The detector remains compiled out of the default no-telemetry firmware,
-which currently links at 13 104 B of 16 KB. The telemetry build (with
-the detector and drop counter) sits at 15 256 B of 16 KB; the
-`CH32_COMMAND=1` bench variant sits at 16 276 B.
+which currently links at 13 300 B of 16 KB. The telemetry build (with
+the detector and drop counter) sits at 15 428 B of 16 KB; the
+`CH32_COMMAND=1` bench variant, with fan-health compiled out by default,
+sits at 15 092 B.
 
 ## Build + test (host-side)
 
@@ -343,7 +347,7 @@ for the scenario / probe tooling.
 make build              # build daemon
 make test               # host unit test suite
 make replay             # byte-equal replay against committed goldens
-make scenario           # 10 canonical PRD §9.1 scenarios on a sim plant
+make scenario           # 11 canonical PRD §9.1 scenarios on a sim plant
 make determinism        # same scenarios x2 + gcc-vs-clang SHA-256 parity
 make integration-can    # SocketCAN integration via car-can-emulator
                         # (auto-SKIPs if vcan0 isn't available)
@@ -414,8 +418,9 @@ Recent stages:
   CH32V003 STANDALONE firmware. The Stage 17 detector now compiles
   on a 10-cent MCU with a real PWM-to-RPM baseline measured on the
   deployed fan via `thermal-telemetry-tool --action=pwmsweep`. The
-  `build-ch32` telemetry and command matrix legs both exercise the
-  detector; the default no-telemetry image keeps the detector compiled
+  `build-ch32` telemetry and Arctic matrix legs exercise the detector;
+  the command bench-control image keeps it compiled out by default for
+  flash headroom, and the default no-telemetry image keeps it compiled
   out.
 
 ## Documentation

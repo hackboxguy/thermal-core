@@ -116,8 +116,6 @@ typedef struct {
     thermal_fault_stale_context_state_t  stale_context_states[THERMAL_MAX_CONTEXT_SIGNALS];
     uint16_t                             runaway_latched_active_ticks[THERMAL_MAX_ZONES];
     uint8_t                              runaway_escalated_shutdown[THERMAL_MAX_ZONES];
-    int32_t                              stuck_context_prev_value[THERMAL_MAX_CONTEXT_SIGNALS];
-    uint8_t                              stuck_context_prev_valid[THERMAL_MAX_CONTEXT_SIGNALS];
 
 #if THERMALCORE_ENABLE_FAN_HEALTH
     /* Stage 17 (PRD Appendix C): per-actuator fan-health detector. */
@@ -526,9 +524,13 @@ static thermal_status_t validate_fault_defaults(const thermal_config_t *cfg,
     /* Rule 46 (codex-C v1-#8): stuck_sensor's correlated_context_id
      * (when not advisory 0xFFFF) must resolve to a configured context. */
     if (needs_correlated_ctx_resolution &&
-        fc->correlated_context_id != 0xFFFFu &&
-        find_context_slot(cfg, fc->correlated_context_id) < 0) {
-        return THERMAL_ERR_INVALID_CONFIG;
+        fc->correlated_context_id != 0xFFFFu) {
+        if (find_context_slot(cfg, fc->correlated_context_id) < 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
+        if (fc->threshold2 <= 0) {
+            return THERMAL_ERR_INVALID_CONFIG;
+        }
     }
     return THERMAL_OK;
 }
@@ -1345,23 +1347,15 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
     uint8_t zone_stuck_mask[THERMAL_MAX_ZONES] = { 0 };
     if (cfg->faults.stuck_sensor_defaults.enabled) {
         const thermal_fault_detector_cfg_t *fc = &cfg->faults.stuck_sensor_defaults;
-        /* Derive correlated_load_changing once per tick from the
-         * configured correlated context's value delta. The detector
-         * accumulates this boolean across its sensor-flatness window, so
-         * a single load/context transition inside the window is enough
-         * to make a flat sensor actionable. With 0xFFFF, the detector
-         * runs in flatness-only mode. */
-        uint8_t correlated_load_changing = 0;
+        uint8_t correlated_context_valid = 0;
+        int32_t correlated_context_value = 0;
         if (fc->correlated_context_id != 0xFFFF) {
             int ctx_slot = find_context_slot(cfg, fc->correlated_context_id);
             if (ctx_slot >= 0) {
-                uint8_t curr_valid = core->context_filters[ctx_slot].valid;
-                int32_t curr_value = core->context_filters[ctx_slot].filtered_value;
-                if (curr_valid &&
-                    core->stuck_context_prev_valid[ctx_slot] &&
-                    curr_value != core->stuck_context_prev_value[ctx_slot]) {
-                    correlated_load_changing = 1;
-                }
+                correlated_context_valid =
+                    core->context_filters[ctx_slot].valid;
+                correlated_context_value =
+                    core->context_filters[ctx_slot].filtered_value;
             }
         }
         for (uint8_t s = 0; s < cfg->sensor_count; s++) {
@@ -1369,7 +1363,8 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
             thermal_fault_stuck_sensor_step(&core->stuck_sensor_states[s], fc,
                                             core->filters[s].filtered_value,
                                             core->filters[s].valid,
-                                            correlated_load_changing,
+                                            correlated_context_valid,
+                                            correlated_context_value,
                                             in->now_ms);
             emit_fault_transition(core, THERMAL_FAULT_TYPE_STUCK_SENSOR,
                                   cfg->sensors[s].id, prev,
@@ -1404,15 +1399,6 @@ thermal_status_t thermal_core_step(thermal_core_t *ctx,
                         }
                     }
                 }
-            }
-        }
-        if (fc->correlated_context_id != 0xFFFF) {
-            int ctx_slot = find_context_slot(cfg, fc->correlated_context_id);
-            if (ctx_slot >= 0) {
-                core->stuck_context_prev_value[ctx_slot] =
-                    core->context_filters[ctx_slot].filtered_value;
-                core->stuck_context_prev_valid[ctx_slot] =
-                    core->context_filters[ctx_slot].valid;
             }
         }
     }

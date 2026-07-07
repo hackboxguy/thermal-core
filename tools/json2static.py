@@ -205,7 +205,9 @@ FAULT_DETECTION_ALLOWED = {"stall", "stuck_sensor", "runaway", "stale_context"}
 DETECTOR_COMMON = {"enabled", "severity", "action", "persist_ticks", "recovery_ticks"}
 DETECTOR_ALLOWED = {
     "stall":         DETECTOR_COMMON | {"stall_rpm", "stall_pwm_threshold"},
-    "stuck_sensor":  DETECTOR_COMMON | {"delta_mc", "window_ticks", "correlated_context"},
+    "stuck_sensor":  DETECTOR_COMMON | {"delta_mc", "window_ticks",
+                                        "correlated_context",
+                                        "correlated_delta_threshold"},
     "runaway":       DETECTOR_COMMON | {"rise_mc_threshold", "cooling_pwm_threshold"},
     "stale_context": DETECTOR_COMMON,
 }
@@ -675,12 +677,17 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
         elif kind == "stuck_sensor":
             t0 = d.get("delta_mc",     0)
             t1 = d.get("window_ticks", 0)
+            t2 = d.get("correlated_delta_threshold", 0)
         elif kind == "runaway":
             t0 = d.get("rise_mc_threshold",     0)
             t1 = d.get("cooling_pwm_threshold", 0)
+            t2 = 0
         else:  # stale_context
             t0 = 0
             t1 = 0
+            t2 = 0
+        if kind == "stall":
+            t2 = 0
 
         # correlated_context: only meaningful for stuck_sensor.  null /
         # absent → 0xFFFF (advisory; PRD §4.7 line 632).
@@ -692,6 +699,11 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             elif isinstance(cc_raw, str):
                 cc_id = contexts[find_slot(contexts, cc_raw, "context",
                                             f"fault_detection.stuck_sensor.correlated_context")]["id"]
+                if int(t2) <= 0:
+                    raise ConfigError(
+                        "fault_detection.stuck_sensor.correlated_delta_threshold: "
+                        "required positive integer when correlated_context is set"
+                    )
             else:
                 raise ConfigError(
                     f"fault_detection.stuck_sensor.correlated_context: "
@@ -710,6 +722,7 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             "recovery_ticks":        int(d.get("recovery_ticks", 0)),
             "threshold0":            int(t0),
             "threshold1":            int(t1),
+            "threshold2":            int(t2),
             "correlated_context_id": int(cc_id),
         }
 
@@ -958,6 +971,7 @@ def emit_detector(d):
             f".action = {d['action']}, .persist_ticks = {d['persist_ticks']}, "
             f".recovery_ticks = {d['recovery_ticks']}, "
             f".threshold0 = {d['threshold0']}, .threshold1 = {d['threshold1']}, "
+            f".threshold2 = {d['threshold2']}, "
             f".correlated_context_id = {d['correlated_context_id']} "
             "}")
 

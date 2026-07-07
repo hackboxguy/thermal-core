@@ -3,8 +3,9 @@
  * Stage 7 commit 7d full-step replay golden driver. Runs
  * thermal_core_step() through a 60-second (600-tick @ 100ms) scenario
  * that exercises every wired path: cold start, WARN under acoustic
- * cap, speed ramp relaxing cap, CRITICAL bypass + override, recovery
- * downward slew, runaway, SHUTDOWN. Emits one CSV row per tick from
+ * cap, anti-short-cycle dwell, CRITICAL dwell bypass + override,
+ * speed ramp relaxing cap, recovery downward slew, runaway, SHUTDOWN.
+ * Emits one CSV row per tick from
  * the output frame + thermal_core_get_state() snapshot.
  *
  * The CSV is the canonical "did anything change anywhere in the loop"
@@ -36,7 +37,11 @@
 /* ------------------------------------------------------------------ */
 static int32_t synth_temp(int t) {
     if (t < 100) {
-        /* Phase 1: cold start, 40°C flat. */
+        /* Phase 1: cold start, plus an early dwell wedge:
+         * WARN turn-on, cold min-on hold, slew-to-off, WARN min-off
+         * hold, CRITICAL safety bypass. */
+        if (t == 20 || t == 47) return 72000;
+        if (t == 48) return 86000;
         return 40000;
     } else if (t < 200) {
         /* Phase 2: linear ramp 40 -> 75°C over 100 ticks. */
@@ -103,6 +108,8 @@ static void build_cfg(thermal_config_t *cfg) {
     cfg->actuators[0].slew_per_tick = 8;
     cfg->actuators[0].spinup_pwm = 200;
     cfg->actuators[0].spinup_ms = 300;
+    cfg->actuators[0].min_on_ticks = 2;
+    cfg->actuators[0].min_off_ticks = 3;
     cfg->actuators[0].state_pwm[0] = 0;
     cfg->actuators[0].state_pwm[1] = 100;
     cfg->actuators[0].state_pwm[2] = 160;

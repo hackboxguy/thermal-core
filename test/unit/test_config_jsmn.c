@@ -391,7 +391,86 @@ TEST_CASE(config_jsmn) {
         EXPECT_STATUS_OK(s);
         EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold0, 100);
         EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold1, 600);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold2, 0);
         EXPECT_EQ(cfg.faults.stuck_sensor_defaults.correlated_context_id, 0xFFFFu);
+    }
+
+    /* === Scenario 14b: stuck_sensor correlated_context threshold === */
+    {
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
+            "                \"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"context_signals\":[{\"id\":100,\"name\":\"vehicle_speed\","
+            "                         \"unit\":\"kmh\","
+            "                         \"iir_alpha_q16\":65536,"
+            "                         \"timeout_ms\":3000,"
+            "                         \"fail_safe\":\"assume_stationary\"}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0,100,160,220,255]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\",\"cooling_state\":1}] }],"
+            "  \"fault_detection\":{ \"stuck_sensor\":{"
+            "       \"enabled\":true, \"severity\":\"degraded\","
+            "       \"action\":\"use_zone_fallback\","
+            "       \"persist_ticks\":5, \"recovery_ticks\":10,"
+            "       \"delta_mc\":100, \"window_ticks\":600,"
+            "       \"correlated_context\":\"vehicle_speed\","
+            "       \"correlated_delta_threshold\":5 } } }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        if (s != THERMAL_OK) {
+            fprintf(stderr, "scenario 14b: status=%d err='%s'\n", (int)s, err);
+        }
+        EXPECT_STATUS_OK(s);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.threshold2, 5);
+        EXPECT_EQ(cfg.faults.stuck_sensor_defaults.correlated_context_id, 100u);
+    }
+
+    /* === Scenario 14c: missing correlated delta is rejected ====== */
+    {
+        const char *json =
+            "{ \"config_version\":1, \"control_period_ms\":100,"
+            "  \"sensors\":[{\"id\":0,\"name\":\"soc\","
+            "                \"iir_alpha_q16\":16384,"
+            "                \"max_staleness_ms\":500}],"
+            "  \"context_signals\":[{\"id\":100,\"name\":\"vehicle_speed\","
+            "                         \"unit\":\"kmh\","
+            "                         \"iir_alpha_q16\":65536,"
+            "                         \"timeout_ms\":3000,"
+            "                         \"fail_safe\":\"assume_stationary\"}],"
+            "  \"actuators\":[{\"id\":0,\"name\":\"f\","
+            "                  \"pwm_min\":80,\"pwm_max\":255,"
+            "                  \"state_pwm\":[0,100,160,220,255]}],"
+            "  \"zones\":[{ \"name\":\"z\","
+            "               \"sensors\":[\"soc\"],"
+            "               \"aggregation\":\"max\","
+            "               \"fallback_temp_mc\":85000,"
+            "               \"governor\":\"step_wise\","
+            "               \"actuators\":[\"f\"],"
+            "               \"trips\":[{\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                           \"severity\":\"warn\",\"cooling_state\":1}] }],"
+            "  \"fault_detection\":{ \"stuck_sensor\":{"
+            "       \"enabled\":true, \"severity\":\"degraded\","
+            "       \"action\":\"use_zone_fallback\","
+            "       \"persist_ticks\":5, \"recovery_ticks\":10,"
+            "       \"delta_mc\":100, \"window_ticks\":600,"
+            "       \"correlated_context\":\"vehicle_speed\" } } }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        EXPECT_EQ(s, THERMAL_ERR_INVALID_ARG);
+        if (strstr(err, "correlated_delta_threshold") == NULL) {
+            fprintf(stderr, "scenario 14c: err did not name threshold: '%s'\n", err);
+            exit(1);
+        }
     }
 
     /* === Scenario 15: legacy `faults` key is now rejected ======= */
