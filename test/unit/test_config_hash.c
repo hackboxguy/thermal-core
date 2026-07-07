@@ -83,6 +83,11 @@ static void init_minimal_valid(thermal_config_t *cfg)
     cfg->actuators[0].state_pwm[2]  = 160;
     cfg->actuators[0].state_pwm[3]  = 220;
     cfg->actuators[0].state_pwm[4]  = 255;
+#if THERMALCORE_ENABLE_PID
+    memset(cfg->actuators[0].duty_linearization, 0,
+           sizeof(cfg->actuators[0].duty_linearization));
+    cfg->actuators[0].duty_linearization_count = 0;
+#endif
 
     cfg->context_count  = 0;
     cfg->zone_count     = 0;
@@ -204,6 +209,98 @@ TEST_CASE(config_hash) {
             exit(1);
         }
     }
+
+#if THERMALCORE_ENABLE_PID
+    /* === Scenario 4c: active PID D-filter sensitivity ============= */
+    {
+        thermal_config_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        init_minimal_valid(&a);
+        init_minimal_valid(&b);
+        a.zone_count = 1;
+        b.zone_count = 1;
+        b.zones[0].pid.d_filter_alpha_q16 = 32768;
+        uint8_t ha[32], hb[32];
+        thermal_config_hash(&a, ha);
+        thermal_config_hash(&b, hb);
+        if (bytes_equal(ha, hb, 32)) {
+            fprintf(stderr,
+                    "active d_filter_alpha_q16 change did not affect digest\n");
+            exit(1);
+        }
+    }
+
+    /* === Scenario 4d: inactive PID D-filter slot is zero-filled ==== */
+    {
+        thermal_config_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        init_minimal_valid(&a);
+        init_minimal_valid(&b);
+        b.zones[0].pid.d_filter_alpha_q16 = 32768;
+        uint8_t ha[32], hb[32];
+        thermal_config_hash(&a, ha);
+        thermal_config_hash(&b, hb);
+        if (!bytes_equal(ha, hb, 32)) {
+            fprintf(stderr,
+                    "inactive d_filter_alpha_q16 leaked into digest\n");
+            exit(1);
+        }
+    }
+#endif
+
+#if THERMALCORE_ENABLE_PID
+    /* === Scenario 4e: active duty linearization sensitivity ======== */
+    {
+        thermal_config_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        init_minimal_valid(&a);
+        init_minimal_valid(&b);
+        b.actuators[0].duty_linearization_count = 3;
+        b.actuators[0].duty_linearization[0].x = 0;
+        b.actuators[0].duty_linearization[0].value0 = 0;
+        b.actuators[0].duty_linearization[1].x = 99;
+        b.actuators[0].duty_linearization[1].value0 = 150;
+        b.actuators[0].duty_linearization[2].x = 255;
+        b.actuators[0].duty_linearization[2].value0 = 255;
+        uint8_t ha[32], hb[32];
+        thermal_config_hash(&a, ha);
+        thermal_config_hash(&b, hb);
+        if (bytes_equal(ha, hb, 32)) {
+            fprintf(stderr,
+                    "active duty_linearization change did not affect digest\n");
+            exit(1);
+        }
+    }
+
+    /* === Scenario 4f: inactive duty linearization is zero-filled === */
+    {
+        thermal_config_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        init_minimal_valid(&a);
+        init_minimal_valid(&b);
+        a.actuator_count = 0;
+        b.actuator_count = 0;
+        b.actuators[0].duty_linearization_count = 3;
+        b.actuators[0].duty_linearization[0].x = 0;
+        b.actuators[0].duty_linearization[0].value0 = 0;
+        b.actuators[0].duty_linearization[1].x = 99;
+        b.actuators[0].duty_linearization[1].value0 = 150;
+        b.actuators[0].duty_linearization[2].x = 255;
+        b.actuators[0].duty_linearization[2].value0 = 255;
+        uint8_t ha[32], hb[32];
+        thermal_config_hash(&a, ha);
+        thermal_config_hash(&b, hb);
+        if (!bytes_equal(ha, hb, 32)) {
+            fprintf(stderr,
+                    "inactive duty_linearization leaked into digest\n");
+            exit(1);
+        }
+    }
+#endif
 
 #if THERMAL_MAX_SENSORS >= 2  /* bumps sensor_count to 2; skipped under a maxima=1 profile */
     /* === Scenario 5: count sensitivity =========================== */

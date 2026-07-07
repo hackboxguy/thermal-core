@@ -44,11 +44,19 @@ typedef struct {
     uint16_t min_on_ticks;      /* 0 disables anti-short-cycle on dwell */
     uint16_t min_off_ticks;     /* 0 disables anti-short-cycle off dwell */
     uint8_t  state_pwm[THERMAL_MAX_COOLING_STATES];
+#if THERMALCORE_ENABLE_PID
+    thermal_curve_point_t duty_linearization[THERMAL_MAX_CURVE_POINTS];
+    uint8_t  duty_linearization_count;
+#endif
 } thermal_actuator_cfg_t;
 
 /* === Per-zone PID config (gains + bounds + dt clamp) === */
 typedef struct {
-    int32_t  kp_q16, ki_q16, kd_q16, setpoint_mc;
+    int32_t  kp_q16, ki_q16, kd_q16;
+#if THERMALCORE_ENABLE_PID
+    int32_t  d_filter_alpha_q16;
+#endif
+    int32_t  setpoint_mc;
     int32_t  kp_min_q16, kp_max_q16;
     int32_t  ki_min_q16, ki_max_q16;
     int32_t  kd_min_q16, kd_max_q16;

@@ -25,13 +25,17 @@ TEST_CASE(pid) {
     /* === Lifecycle: reset clears state === */
     s.integral_q16 = 12345;
     s.prev_temp_mc = 99999;
+    s.d_filtered_q16 = -54321;
     s.prev_now_ms  = 7777;
     s.initialized  = 1;
+    s.d_filter_initialized = 1;
     thermal_pid_reset(&s);
     EXPECT_EQ(s.integral_q16, 0);
     EXPECT_EQ(s.prev_temp_mc, 0);
+    EXPECT_EQ(s.d_filtered_q16, 0);
     EXPECT_EQ(s.prev_now_ms, 0);
     EXPECT_EQ(s.initialized, 0);
+    EXPECT_EQ(s.d_filter_initialized, 0);
 
     /* === First call: dt = dt_min, D = 0 ===
      * kp=0, ki=327 (0.005), kd=0 (so we can see I alone).
@@ -117,6 +121,46 @@ TEST_CASE(pid) {
     thermal_pid_step(&s, 0, 0, 655, 0, 70000, 0, 100, 500, 0, 255, &r);
     thermal_pid_step(&s, 0, 0, 655, 0, 70000, 100, 100, 500, 0, 255, &r);
     EXPECT_EQ(r.d_term_q16, 0);
+
+    /* === D filter off: filtered API is byte-identical to legacy step === */
+    thermal_pid_reset(&s);
+    thermal_pid_step_filtered(&s, 0, 0, 655, /*d_filter*/0,
+                              0, 70000, 0, 100, 500, 0, 255, &r);
+    thermal_pid_step_filtered(&s, 0, 0, 655, /*d_filter*/0,
+                              0, 71000, 100, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, 6550000);
+    EXPECT_EQ(r.output_pwm, 99);
+    EXPECT_EQ(s.d_filter_initialized, 0);
+
+    /* === D filter on: first derivative initializes directly, then IIRs === */
+    thermal_pid_reset(&s);
+    thermal_pid_step_filtered(&s, 0, 0, 655, /*alpha 0.5*/32768,
+                              0, 70000, 0, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, 0);
+    EXPECT_EQ(s.d_filter_initialized, 0);
+    thermal_pid_step_filtered(&s, 0, 0, 655, 32768,
+                              0, 71000, 100, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, 6550000);
+    EXPECT_EQ(s.d_filter_initialized, 1);
+    EXPECT_EQ(r.output_pwm, 99);
+    thermal_pid_step_filtered(&s, 0, 0, 655, 32768,
+                              0, 71000, 200, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, 3275000);
+    EXPECT_EQ(r.output_pwm, 49);
+    thermal_pid_step_filtered(&s, 0, 0, 655, 32768,
+                              0, 69000, 300, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, -4912500);
+    EXPECT_EQ(r.output_pwm, 0);
+    EXPECT_EQ(r.saturated_low, 1);
+
+    /* === Reset clears filtered derivative history === */
+    thermal_pid_reset(&s);
+    EXPECT_EQ(s.d_filter_initialized, 0);
+    thermal_pid_step_filtered(&s, 0, 0, 655, 32768,
+                              0, 70000, 0, 100, 500, 0, 255, &r);
+    thermal_pid_step_filtered(&s, 0, 0, 655, 32768,
+                              0, 71000, 100, 100, 500, 0, 255, &r);
+    EXPECT_EQ(r.d_term_q16, 6550000);
 
     /* === dt clamping: dt < dt_min === */
     thermal_pid_reset(&s);

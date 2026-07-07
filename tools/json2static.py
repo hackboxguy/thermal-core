@@ -164,6 +164,7 @@ CONTEXT_ALLOWED = {
 ACTUATOR_ALLOWED = {
     "id", "name", "pwm_min", "pwm_max", "slew_per_tick",
     "spinup_pwm", "spinup_ms", "min_on_ticks", "min_off_ticks", "state_pwm",
+    "duty_linearization",
     "pwm", "tach", "pwm_freq_hz", "tach_pulses_per_rev",   # platform-only
     "fan_health",                       # Stage 17, --enable-fan-health only
 }
@@ -189,6 +190,7 @@ TRIP_ALLOWED = {
 
 PID_ALLOWED = {
     "kp_q16", "ki_q16", "kd_q16", "setpoint_mc",
+    "d_filter_alpha_q16",
     "kp_min_q16", "kp_max_q16", "ki_min_q16", "ki_max_q16",
     "kd_min_q16", "kd_max_q16", "setpoint_min_mc", "setpoint_max_mc",
     "dt_min_ms", "dt_max_ms",
@@ -378,6 +380,26 @@ def normalise_fan_health(fh_raw, actuator_raw, idx, has_mcu_tach=False):
 
 # === Loader (mirrors config_jsmn.c semantics) ========================
 
+def normalise_duty_linearization(raw_points, where: str) -> list[dict]:
+    if raw_points is None:
+        return []
+    if not isinstance(raw_points, list):
+        raise ConfigError(f"{where}: expected array")
+    if len(raw_points) > MAX_CURVE_POINTS:
+        raise ConfigError(f"{where}: too many curve points")
+    out = []
+    for i, p in enumerate(raw_points):
+        if (not isinstance(p, list)) or len(p) != 2:
+            raise ConfigError(f"{where}[{i}]: expected [input_pwm, output_pwm]")
+        x = int(p[0])
+        y = int(p[1])
+        if x < 0 or x > 255:
+            raise ConfigError(f"{where}[{i}]: input PWM out of [0, 255]")
+        if y < 0 or y > 255:
+            raise ConfigError(f"{where}[{i}]: output PWM out of [0, 255]")
+        out.append({"x": x, "value0": y, "value1": 0})
+    return out
+
 def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
     """Mirror telemetry_expand_one in config_jsmn.c."""
     actuator_count = len(cfg["actuators"])
@@ -469,7 +491,8 @@ def expand_signal(sel: str, cfg, enable_fan_health=False) -> list[int]:
     raise ConfigError(f"unknown telemetry selector '{sel}'")
 
 
-def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
+def normalise(raw: dict, enable_fan_health: bool = False,
+              enable_pid: bool = True) -> dict:
     """Pull CORE-owned fields out of `raw` (the JSON document) into a
     normalised dict that mirrors thermal_config_t.  Platform-only
     fields are dropped (json2static is for CORE only; the daemon's
@@ -522,11 +545,14 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
     fan_health = []      # one entry per actuator (Stage 17); zeroed if absent
     for i, a in enumerate(raw.get("actuators", [])):
         reject_unknown(a, ACTUATOR_ALLOWED, f"actuators[{i}]")
+        if not enable_pid and "duty_linearization" in a:
+            raise ConfigError(
+                f"actuators[{i}].duty_linearization: requires PID support")
         sp = a["state_pwm"]
         if len(sp) > MAX_COOLING_STATES:
             raise ConfigError(f"actuators[{i}].state_pwm: too many cooling states")
         state_pwm_lens.append(len(sp))
-        actuators.append({
+        act = {
             "id":             int(a["id"]),
             "name":           a["name"],
             "pwm_min":        int(a["pwm_min"]),
@@ -537,7 +563,13 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             "min_on_ticks":   int(a.get("min_on_ticks", 0)),
             "min_off_ticks":  int(a.get("min_off_ticks", 0)),
             "state_pwm":      [int(x) for x in sp] + [0] * (MAX_COOLING_STATES - len(sp)),
-        })
+        }
+        if enable_pid and "duty_linearization" in a:
+            act["duty_linearization"] = normalise_duty_linearization(
+                a.get("duty_linearization"),
+                f"actuators[{i}].duty_linearization")
+            act["duty_linearization_count"] = len(act["duty_linearization"])
+        actuators.append(act)
         # When --enable-fan-health is off, any fan_health block in
         # the JSON is silently ignored: the same MCU config supports
         # both the default no-telemetry build and the telemetry
@@ -602,6 +634,30 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
                         f"length {state_pwm_lens[slot]}"
                     )
 
+        if (not enable_pid and
+                int(pid.get("d_filter_alpha_q16", 0)) != 0):
+            raise ConfigError(
+                f"zones[{zi}].pid.d_filter_alpha_q16: requires PID support")
+        pid_out = {
+            "kp_q16":          int(pid.get("kp_q16", 0)),
+            "ki_q16":          int(pid.get("ki_q16", 0)),
+            "kd_q16":          int(pid.get("kd_q16", 0)),
+            "setpoint_mc":     int(pid.get("setpoint_mc", 0)),
+            "kp_min_q16":      int(pid.get("kp_min_q16", 0)),
+            "kp_max_q16":      int(pid.get("kp_max_q16", 0)),
+            "ki_min_q16":      int(pid.get("ki_min_q16", 0)),
+            "ki_max_q16":      int(pid.get("ki_max_q16", 0)),
+            "kd_min_q16":      int(pid.get("kd_min_q16", 0)),
+            "kd_max_q16":      int(pid.get("kd_max_q16", 0)),
+            "setpoint_min_mc": int(pid.get("setpoint_min_mc", 0)),
+            "setpoint_max_mc": int(pid.get("setpoint_max_mc", 0)),
+            "dt_min_ms":       int(pid.get("dt_min_ms", 0)),
+            "dt_max_ms":       int(pid.get("dt_max_ms", 0)),
+        }
+        d_filter_alpha_q16 = int(pid.get("d_filter_alpha_q16", 0))
+        if enable_pid and d_filter_alpha_q16 != 0:
+            pid_out["d_filter_alpha_q16"] = d_filter_alpha_q16
+
         zones.append({
             "name":               z["name"],
             "sensor_ids":         sens_ids,
@@ -610,22 +666,7 @@ def normalise(raw: dict, enable_fan_health: bool = False) -> dict:
             "aggregation":        aggregation,
             "fallback_temp_mc":   int(z["fallback_temp_mc"]),
             "governor":           pop_enum(z["governor"], GOVERNOR_MAP, f"zones[{zi}].governor"),
-            "pid": {
-                "kp_q16":          int(pid.get("kp_q16", 0)),
-                "ki_q16":          int(pid.get("ki_q16", 0)),
-                "kd_q16":          int(pid.get("kd_q16", 0)),
-                "setpoint_mc":     int(pid.get("setpoint_mc", 0)),
-                "kp_min_q16":      int(pid.get("kp_min_q16", 0)),
-                "kp_max_q16":      int(pid.get("kp_max_q16", 0)),
-                "ki_min_q16":      int(pid.get("ki_min_q16", 0)),
-                "ki_max_q16":      int(pid.get("ki_max_q16", 0)),
-                "kd_min_q16":      int(pid.get("kd_min_q16", 0)),
-                "kd_max_q16":      int(pid.get("kd_max_q16", 0)),
-                "setpoint_min_mc": int(pid.get("setpoint_min_mc", 0)),
-                "setpoint_max_mc": int(pid.get("setpoint_max_mc", 0)),
-                "dt_min_ms":       int(pid.get("dt_min_ms", 0)),
-                "dt_max_ms":       int(pid.get("dt_max_ms", 0)),
-            },
+            "pid":            pid_out,
             "actuator_ids":   act_ids,
             "actuator_count": len(act_ids),
             "trips":          trips,
@@ -885,6 +926,15 @@ def emit_state_pwm(arr):
     return "{ " + ", ".join(str(int(x)) for x in arr) + " }"
 
 
+def emit_curve_points(points):
+    if not points:
+        return "{0}"
+    return "{ " + ", ".join(
+        f"{{ .x = {p['x']}, .value0 = {p['value0']}, .value1 = {p['value1']} }}"
+        for p in points
+    ) + " }"
+
+
 def emit_sensor(s, indent="        "):
     return (f"{{ .id = {s['id']}, .name = {emit_name(s['name'])},"
             f" .iir_alpha_q16 = {s['iir_alpha_q16']},"
@@ -898,19 +948,28 @@ def emit_context(c):
 
 
 def emit_actuator(a):
-    return (f"{{ .id = {a['id']}, .name = {emit_name(a['name'])},"
-            f" .pwm_min = {a['pwm_min']}, .pwm_max = {a['pwm_max']},"
-            f" .slew_per_tick = {a['slew_per_tick']},"
-            f" .spinup_pwm = {a['spinup_pwm']}, .spinup_ms = {a['spinup_ms']},"
-            f" .min_on_ticks = {a['min_on_ticks']},"
-            f" .min_off_ticks = {a['min_off_ticks']},"
-            f" .state_pwm = {emit_state_pwm(a['state_pwm'])} }}")
+    s = (f"{{ .id = {a['id']}, .name = {emit_name(a['name'])},"
+         f" .pwm_min = {a['pwm_min']}, .pwm_max = {a['pwm_max']},"
+         f" .slew_per_tick = {a['slew_per_tick']},"
+         f" .spinup_pwm = {a['spinup_pwm']}, .spinup_ms = {a['spinup_ms']},"
+         f" .min_on_ticks = {a['min_on_ticks']},"
+         f" .min_off_ticks = {a['min_off_ticks']},"
+         f" .state_pwm = {emit_state_pwm(a['state_pwm'])}")
+    if "duty_linearization" in a:
+        s += (f", .duty_linearization = {emit_curve_points(a['duty_linearization'])},"
+              f" .duty_linearization_count = {a['duty_linearization_count']}")
+    return s + " }"
 
 
 def emit_pid(p):
+    d_filter = ""
+    if int(p.get("d_filter_alpha_q16", 0)) != 0:
+        d_filter = f".d_filter_alpha_q16 = {p['d_filter_alpha_q16']}, "
     return ("{ "
             f".kp_q16 = {p['kp_q16']}, .ki_q16 = {p['ki_q16']}, "
-            f".kd_q16 = {p['kd_q16']}, .setpoint_mc = {p['setpoint_mc']}, "
+            f".kd_q16 = {p['kd_q16']}, "
+            f"{d_filter}"
+            f".setpoint_mc = {p['setpoint_mc']}, "
             f".kp_min_q16 = {p['kp_min_q16']}, .kp_max_q16 = {p['kp_max_q16']}, "
             f".ki_min_q16 = {p['ki_min_q16']}, .ki_max_q16 = {p['ki_max_q16']}, "
             f".kd_min_q16 = {p['kd_min_q16']}, .kd_max_q16 = {p['kd_max_q16']}, "
@@ -1123,11 +1182,16 @@ def main(argv=None):
                    help="Mirror the THERMALCORE_ENABLE_FAN_HEALTH compile "
                         "gate: parse and emit per-actuator fan_health blocks "
                         "(Stage 17, PRD Appendix C)")
+    p.add_argument("--disable-pid", dest="enable_pid", action="store_false",
+                   default=True,
+                   help="Mirror THERMALCORE_ENABLE_PID=0: reject and omit "
+                        "PID-only actuator linearization fields")
     args = p.parse_args(argv)
 
     src = Path(args.config)
     raw = json.loads(src.read_text())
-    cfg = normalise(raw, enable_fan_health=args.enable_fan_health)
+    cfg = normalise(raw, enable_fan_health=args.enable_fan_health,
+                    enable_pid=args.enable_pid)
     if args.pinmap_prefix == "ch32":
         validate_ch32_pinmap(cfg.get("mcu_pinmap"))
     text = emit_static(cfg, symbol=args.symbol, source_path=str(src),

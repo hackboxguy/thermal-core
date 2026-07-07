@@ -698,6 +698,48 @@ static thermal_status_t parse_fan_health(parse_ctx_t *ctx, int obj_idx,
 }
 #endif /* THERMALCORE_ENABLE_FAN_HEALTH */
 
+#if THERMALCORE_ENABLE_PID
+static thermal_status_t parse_duty_linearization(parse_ctx_t *ctx,
+                                                 int arr_idx,
+                                                 thermal_actuator_cfg_t *out,
+                                                 const char *path)
+{
+    if (ctx->toks[arr_idx].type != JSMN_ARRAY) {
+        return set_err(ctx, THERMAL_ERR_INVALID_ARG, path, "expected array");
+    }
+    int n = ctx->toks[arr_idx].size;
+    if (n > THERMAL_MAX_CURVE_POINTS) {
+        return set_err(ctx, THERMAL_ERR_NO_SPACE, path, "too many curve points");
+    }
+    int pk = arr_idx + 1;
+    for (int j = 0; j < n; j++) {
+        char elem_path[PATH_MAX_LEN + 32];
+        snprintf(elem_path, sizeof(elem_path), "%s[%d]", path, j);
+        if (ctx->toks[pk].type != JSMN_ARRAY || ctx->toks[pk].size != 2) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                           "expected [input_pwm, output_pwm]");
+        }
+        int vk = pk + 1;
+        long long x, y;
+        if (tok_parse_int_range(ctx, vk, 0, 255, &x) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                           "expected input PWM in [0, 255]");
+        }
+        vk = skip_token(ctx->toks, vk);
+        if (tok_parse_int_range(ctx, vk, 0, 255, &y) != 0) {
+            return set_err(ctx, THERMAL_ERR_INVALID_ARG, elem_path,
+                           "expected output PWM in [0, 255]");
+        }
+        out->duty_linearization[j].x = (int32_t)x;
+        out->duty_linearization[j].value0 = (int32_t)y;
+        out->duty_linearization[j].value1 = 0;
+        pk = skip_token(ctx->toks, pk);
+    }
+    out->duty_linearization_count = (uint8_t)n;
+    return THERMAL_OK;
+}
+#endif /* THERMALCORE_ENABLE_PID */
+
 static thermal_status_t parse_actuator(parse_ctx_t *ctx,
                                        int obj_idx,
                                        uint8_t slot,
@@ -812,6 +854,12 @@ static thermal_status_t parse_actuator(parse_ctx_t *ctx,
              * §5.3 line 805). */
             ctx->state_pwm_lens[slot] = (uint8_t)sn;
             seen |= F_STATES;
+#if THERMALCORE_ENABLE_PID
+        } else if (tok_str_eq(ctx, k, "duty_linearization")) {
+            thermal_status_t s =
+                parse_duty_linearization(ctx, v, out, sub_path);
+            if (s != THERMAL_OK) return s;
+#endif
         } else if (tok_str_eq(ctx, k, "pwm")) {
             if (r_out) {
                 if (tok_str_copy(ctx, v, r_out->pwm, sizeof(r_out->pwm)) != 0) {
@@ -968,6 +1016,11 @@ static thermal_status_t parse_pid(parse_ctx_t *ctx,
         if      (tok_str_eq(ctx, k, "kp_q16"))           dst32 = &out->kp_q16;
         else if (tok_str_eq(ctx, k, "ki_q16"))           dst32 = &out->ki_q16;
         else if (tok_str_eq(ctx, k, "kd_q16"))           dst32 = &out->kd_q16;
+#if THERMALCORE_ENABLE_PID
+        else if (tok_str_eq(ctx, k, "d_filter_alpha_q16")) {
+            dst32 = &out->d_filter_alpha_q16;
+        }
+#endif
         else if (tok_str_eq(ctx, k, "setpoint_mc"))      dst32 = &out->setpoint_mc;
         else if (tok_str_eq(ctx, k, "kp_min_q16"))       dst32 = &out->kp_min_q16;
         else if (tok_str_eq(ctx, k, "kp_max_q16"))       dst32 = &out->kp_max_q16;

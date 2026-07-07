@@ -114,6 +114,54 @@ TEST_CASE(config_jsmn) {
         free(json);
     }
 
+#if THERMALCORE_ENABLE_PID
+    /* === Scenario 1b: PID D-filter alpha parses when present ===== */
+    {
+        const char *json =
+            "{ \"config_version\": 1,"
+            "  \"control_period_ms\": 100,"
+            "  \"sensors\": [{\"id\":0, \"name\":\"soc\","
+            "                 \"iir_alpha_q16\":16384,"
+            "                 \"max_staleness_ms\":500}],"
+            "  \"actuators\": [{\"id\":0, \"name\":\"f\","
+            "                   \"pwm_min\":80, \"pwm_max\":255,"
+            "                   \"state_pwm\":[0,100,160,220,255],"
+            "                   \"duty_linearization\":[[0,0],[99,150],[255,255]]}],"
+            "  \"zones\": [{ \"name\":\"z\","
+            "                \"sensors\":[\"soc\"],"
+            "                \"aggregation\":\"max\","
+            "                \"fallback_temp_mc\":95000,"
+            "                \"governor\":\"pid\","
+            "                \"pid\": {"
+            "                  \"kp_q16\":4915, \"ki_q16\":327,"
+            "                  \"kd_q16\":655, \"d_filter_alpha_q16\":32768,"
+            "                  \"setpoint_mc\":75000,"
+            "                  \"kp_min_q16\":0, \"kp_max_q16\":327680,"
+            "                  \"ki_min_q16\":0, \"ki_max_q16\":65536,"
+            "                  \"kd_min_q16\":0, \"kd_max_q16\":65536,"
+            "                  \"setpoint_min_mc\":50000,"
+            "                  \"setpoint_max_mc\":95000,"
+            "                  \"dt_min_ms\":50, \"dt_max_ms\":500 },"
+            "                \"actuators\":[\"f\"],"
+            "                \"trips\":["
+            "                  {\"temp_mc\":70000,\"hyst_mc\":2000,"
+            "                   \"severity\":\"warn\",\"cooling_state\":1},"
+            "                  {\"temp_mc\":90000,\"hyst_mc\":2000,"
+            "                   \"severity\":\"critical\",\"cooling_state\":4}"
+            "                ] }] }";
+        thermal_status_t s = thermal_config_jsmn_parse(json, strlen(json),
+                                                       &cfg, NULL, err, sizeof(err));
+        if (s != THERMAL_OK) {
+            fprintf(stderr, "scenario 1b: status=%d err='%s'\n", (int)s, err);
+        }
+        EXPECT_STATUS_OK(s);
+        EXPECT_EQ(cfg.zones[0].pid.d_filter_alpha_q16, 32768);
+        EXPECT_EQ(cfg.actuators[0].duty_linearization_count, 3);
+        EXPECT_EQ(cfg.actuators[0].duty_linearization[1].x, 99);
+        EXPECT_EQ(cfg.actuators[0].duty_linearization[1].value0, 150);
+    }
+#endif
+
     /* === Scenario 2: missing config_version =================== */
     {
         const char *json =

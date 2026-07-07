@@ -53,6 +53,7 @@ ifeq ($(CH32_ENABLE_PID),1)
 EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_PID=1
 else
 EXTRA_CFLAGS += -DTHERMALCORE_ENABLE_PID=0
+JSON2STATIC_FLAGS += --disable-pid
 CORE_SRCS := $(filter-out ../../core/thermal_pid.c,$(CORE_SRCS))
 endif
 

@@ -3,7 +3,7 @@
 **Project/repo name:** `thermal-core`
 **Linux daemon binary:** `thermalcored`
 **Repository (planned):** `github.com/hackboxguy/thermal-core`
-**Document status:** Draft v0.22
+**Document status:** Draft v0.23
 **Author:** Albert David
 **License (code):** MIT  **License (paper/doc):** CC-BY-4.0
 
@@ -384,10 +384,18 @@ typedef struct {
     uint16_t min_on_ticks;
     uint16_t min_off_ticks;
     uint8_t state_pwm[THERMAL_MAX_COOLING_STATES];
+#if THERMALCORE_ENABLE_PID
+    thermal_curve_point_t duty_linearization[THERMAL_MAX_CURVE_POINTS];
+    uint8_t duty_linearization_count;
+#endif
 } thermal_actuator_cfg_t;
 
 typedef struct {
-    int32_t kp_q16, ki_q16, kd_q16, setpoint_mc;
+    int32_t kp_q16, ki_q16, kd_q16;
+#if THERMALCORE_ENABLE_PID
+    int32_t d_filter_alpha_q16;
+#endif
+    int32_t setpoint_mc;
     int32_t kp_min_q16, kp_max_q16;
     int32_t ki_min_q16, ki_max_q16;
     int32_t kd_min_q16, kd_max_q16;
@@ -679,7 +687,8 @@ The implementation must make governor math reproducible across targets:
 - **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A platform that passes measured wall time lets the core observe missing or extremely late ticks through that clamped `dt`; a platform that passes scheduled time must emit a platform diagnostic when the observed wall-clock wakeup overruns the scheduled deadline.
 - **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic. The Linux daemon deliberately keeps scheduled-time `now_ms` in wall-clock mode for deterministic control math and emits `TEVENT_PLATFORM_TICK_OVERRUN` when `CLOCK_MONOTONIC` shows it woke late by more than its overrun threshold.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
-- **Derivative:** derivative is computed on measured temperature, not error. v1 has no derivative-filter parameter; deployments with noisy sensors should set `kd_q16 = 0` or keep it conservative. A first-order D-filter is future work and would require an explicit config/API field.
+- **Derivative:** derivative is computed on measured temperature, not error. `d_filter_alpha_q16` is an optional first-order IIR over the D term; `0` disables it and preserves the unfiltered PID math exactly, while non-zero values are Q16.16 coefficients in `[0, Q16_ONE]`. The first real derivative sample initializes the filtered value directly, matching the sensor-filter lifecycle and avoiding a synthetic startup ramp.
+- **PID actuator linearization:** an actuator may carry an optional `duty_linearization` table, compiled only when PID support is enabled. PID zones map their continuous `0..255` demand through this per-actuator monotonic curve before comparing it with any active safety floor (`max(linearized_pid, state_pwm[cooling_state])`). Step-wise zones never use this table; their `state_pwm[]` staircases remain literal.
 - **Feed-forward:** v1 PID is feedback-only: `u = P + I + D`, with no load/power term. A future feed-forward extension should enter as a typed load or power context signal with an explicit gain/curve and should share validation and telemetry conventions with policy modifiers rather than placing platform-specific load logic inside the governor.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
 - **Step-state mapping:** v1 maps `cooling_state` to PWM through the per-actuator `state_pwm` table in actuator config. There is no zone-local cooling-state curve in v1.
@@ -713,13 +722,15 @@ Linux daemon loads JSON at startup via `jsmn` (small, no-malloc parser, vendored
      "pwm_min": 80, "pwm_max": 255, "slew_per_tick": 8,
      "pwm_freq_hz": 25000, "tach_pulses_per_rev": 2, "spinup_pwm": 180, "spinup_ms": 500,
      "min_on_ticks": 0, "min_off_ticks": 0,
-     "state_pwm": [0, 100, 160, 220, 255]}
+     "state_pwm": [0, 100, 160, 220, 255],
+     "duty_linearization": [[0, 0], [100, 150], [255, 255]]}
   ],
   "zones": [
     {"name": "soc", "sensors": ["soc"], "aggregation": "max",
      "fallback_temp_mc": 85000,
      "governor": "pid",
-     "pid": {"kp_q16": 4915, "ki_q16": 327, "kd_q16": 0, "setpoint_mc": 75000,
+     "pid": {"kp_q16": 4915, "ki_q16": 327, "kd_q16": 0,
+             "d_filter_alpha_q16": 0, "setpoint_mc": 75000,
              "kp_min_q16": 0, "kp_max_q16": 327680,
              "ki_min_q16": 0, "ki_max_q16": 65536,
              "kd_min_q16": 0, "kd_max_q16": 65536,
@@ -806,10 +817,10 @@ MCU-target configs additionally carry an optional `mcu_pinmap` section — a tar
 - Units are explicit in field names or schema metadata; core units are millidegrees C, 0-255 PWM duty, RPM, milliseconds, and Q16.16 coefficients.
 - Curves are strictly increasing in their x-axis and have at least two points; interpolation uses the deterministic formula in §4.8.
 - Runtime curve edits must preserve the same strictly increasing x-axis invariant. `CMD_SET_CURVE_POINT` rejects edits that would make `x[point_idx - 1] < x[point_idx] < x[point_idx + 1]` false, returning `THERMAL_ERR_BOUNDS`.
-- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, is non-decreasing through the highest referenced cooling state for each affected actuator, and each referenced non-zero entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. Shorter JSON `state_pwm` arrays are valid when no trip references the zero-padded tail. If `spinup_ms > 0`, `spinup_pwm` is non-zero and satisfies `pwm_min <= spinup_pwm <= pwm_max`. `min_on_ticks` and `min_off_ticks` are unsigned 16-bit tick counts; zero disables each dwell.
+- PWM bounds satisfy `0 <= pwm_min <= pwm_max <= 255`; `state_pwm` has an entry for every referenced `cooling_state`, is non-decreasing through the highest referenced cooling state for each affected actuator, and each referenced non-zero entry is within bounds; conventionally `state_pwm[0] = 0`, but configs may choose a non-zero idle state. Shorter JSON `state_pwm` arrays are valid when no trip references the zero-padded tail. If present, `duty_linearization` has 2..`THERMAL_MAX_CURVE_POINTS` `[input_pwm, output_pwm]` pairs, starts at `[0,0]`, ends at `[255,255]`, and is monotonic in both axes. If `spinup_ms > 0`, `spinup_pwm` is non-zero and satisfies `pwm_min <= spinup_pwm <= pwm_max`. `min_on_ticks` and `min_off_ticks` are unsigned 16-bit tick counts; zero disables each dwell.
 - A zone's `fallback_temp_mc` is at least the highest configured `CRITICAL` trip temperature; if the zone has no `CRITICAL` trip, fallback reaches the highest configured trip so loss of all valid sensors fails toward cooling rather than away from it.
 - Modifier `pwm_cap` values are in `0..255` and either `0` or at least each affected actuator's `pwm_min`. Modifier trip/setpoint offsets are validated at every curve point so adjusted trips remain valid and adjusted PID setpoints remain within their configured bounds; runtime curve/trip/setpoint commands are checked against the same invariants.
-- PID runtime bounds are present for every PID zone and satisfy `min <= current <= max` for gains and setpoints.
+- PID runtime bounds are present for every PID zone and satisfy `min <= current <= max` for gains and setpoints; `d_filter_alpha_q16` is in `[0, Q16_ONE]`.
 - PID `dt_min_ms` and `dt_max_ms` are present for every PID zone and satisfy `0 < dt_min_ms <= control_period_ms <= dt_max_ms`.
 - PID zones must have at least one `critical` or `shutdown` trip as a safety floor.
 - v1 has exactly one policy modifier and it must be `acoustic_mask`; plural `policy_modifiers` exists for schema forward compatibility.
@@ -1657,4 +1668,4 @@ Implementation is tracked as Stage 18 of the implementation plan.
 
 ---
 
-*End of PRD v0.22*
+*End of PRD v0.23*

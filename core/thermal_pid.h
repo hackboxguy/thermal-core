@@ -25,8 +25,10 @@
 typedef struct {
     int32_t  integral_q16;   /* accumulated I term in Q16.16 PWM */
     int32_t  prev_temp_mc;   /* for derivative on measurement */
+    int32_t  d_filtered_q16; /* filtered D term in Q16.16 PWM */
     uint32_t prev_now_ms;    /* for dt computation */
     uint8_t  initialized;    /* 1 once first sample has been seen */
+    uint8_t  d_filter_initialized;
 } thermal_pid_state_t;
 
 typedef struct {
@@ -68,5 +70,20 @@ void thermal_pid_step(thermal_pid_state_t *state,
                       uint16_t dt_min_ms, uint16_t dt_max_ms,
                       uint8_t pwm_min, uint8_t pwm_max,
                       thermal_pid_step_result_t *out);
+
+/* Same as thermal_pid_step(), with an optional first-order IIR on the
+ * derivative term. d_filter_alpha_q16 == 0 is a strict compatibility
+ * mode: derivative math and output remain byte-identical to
+ * thermal_pid_step(). Nonzero alpha is Q16.16 in [0, Q16_ONE], validated
+ * at config load; the first real derivative sample initializes the
+ * filtered value directly, matching thermal_filter_step() lifecycle. */
+void thermal_pid_step_filtered(thermal_pid_state_t *state,
+                               int32_t kp_q16, int32_t ki_q16,
+                               int32_t kd_q16, int32_t d_filter_alpha_q16,
+                               int32_t setpoint_mc, int32_t temp_mc,
+                               uint32_t now_ms,
+                               uint16_t dt_min_ms, uint16_t dt_max_ms,
+                               uint8_t pwm_min, uint8_t pwm_max,
+                               thermal_pid_step_result_t *out);
 
 #endif /* THERMAL_PID_H */

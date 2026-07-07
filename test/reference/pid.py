@@ -20,6 +20,7 @@ TICK_MS  = 100
 KP_Q16   = 819
 KI_Q16   = 327
 KD_Q16   = 0
+D_FILTER_ALPHA_Q16 = 0
 SETPOINT = 75000
 DT_MIN   = 50
 DT_MAX   = 500
@@ -45,12 +46,21 @@ def clamp_i32(v: int) -> int:
     return v
 
 
+def iir_q16_step(prev: int, sample: int, alpha_q16: int) -> int:
+    product = alpha_q16 * (sample - prev)
+    if product >= 0:
+        delta = (product + 32768) >> 16
+    else:
+        delta = -(((-product) + 32768) >> 16)
+    return clamp_i32(prev + delta)
+
+
 def synth_temp(t: int) -> int:
     return 50000 if t < 10 else 85000
 
 
-def pid_step(state, kp, ki, kd, setpoint, temp, now_ms, dt_min, dt_max,
-             pwm_min, pwm_max):
+def pid_step(state, kp, ki, kd, d_filter_alpha, setpoint, temp, now_ms,
+             dt_min, dt_max, pwm_min, pwm_max):
     # dt
     if state["initialized"]:
         dt = (now_ms - state["prev_now_ms"]) & UINT32_MASK
@@ -71,6 +81,19 @@ def pid_step(state, kp, ki, kd, setpoint, temp, now_ms, dt_min, dt_max,
     if state["initialized"]:
         d_temp = temp - state["prev_temp_mc"]
         d_q16 = trunc_div(kd * d_temp * 1000, dt)
+        if d_filter_alpha > 0:
+            raw_d = clamp_i32(d_q16)
+            if not state["d_filter_initialized"]:
+                state["d_filtered_q16"] = raw_d
+                state["d_filter_initialized"] = 1
+            else:
+                state["d_filtered_q16"] = iir_q16_step(
+                    state["d_filtered_q16"], raw_d, d_filter_alpha)
+            d_q16 = state["d_filtered_q16"]
+        else:
+            state["d_filter_initialized"] = 0
+    else:
+        state["d_filter_initialized"] = 0
 
     output_q16 = clamp_i32(p_q16 + i_tent + d_q16)
     output_pwm = output_q16 >> 16
@@ -109,13 +132,14 @@ def pid_step(state, kp, ki, kd, setpoint, temp, now_ms, dt_min, dt_max,
 def main() -> None:
     state = {
         "integral_q16": 0, "prev_temp_mc": 0, "prev_now_ms": 0, "initialized": 0,
+        "d_filtered_q16": 0, "d_filter_initialized": 0,
     }
     print("tick,now_ms,temp_mc,error_mc,p_q16,i_q16,d_q16,output_pwm,sat_hi,sat_lo")
     for t in range(N_TICKS):
         now_ms = t * TICK_MS
         temp = synth_temp(t)
-        r = pid_step(state, KP_Q16, KI_Q16, KD_Q16, SETPOINT, temp,
-                     now_ms, DT_MIN, DT_MAX, PWM_MIN, PWM_MAX)
+        r = pid_step(state, KP_Q16, KI_Q16, KD_Q16, D_FILTER_ALPHA_Q16,
+                     SETPOINT, temp, now_ms, DT_MIN, DT_MAX, PWM_MIN, PWM_MAX)
         print(f"{t},{now_ms},{temp},{temp - SETPOINT},"
               f"{r['p']},{r['i']},{r['d']},"
               f"{r['output_pwm']},{r['sat_hi']},{r['sat_lo']}")

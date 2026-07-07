@@ -427,6 +427,10 @@ Recent stages:
   for host/ESP32 builds but is compile-gated by `THERMALCORE_ENABLE_PID`;
   the CH32 tiny profile builds step-wise-only by default and can opt
   back in with `CH32_ENABLE_PID=1`.
+- **M4** (post-v1) — PID zones can opt into a default-off D-term IIR
+  (`d_filter_alpha_q16`) and per-actuator static duty linearization.
+  Step-wise `state_pwm[]` output is untouched, and CH32 PID-off builds
+  reject/omit the PID-only table during static config generation.
 
 ## Documentation
 

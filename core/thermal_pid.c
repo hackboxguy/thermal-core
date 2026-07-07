@@ -2,20 +2,38 @@
 #include <stdint.h>
 #include "thermal_pid.h"
 
+static int32_t clamp_i32_i64(int64_t v) {
+    if (v > INT32_MAX) return INT32_MAX;
+    if (v < INT32_MIN) return INT32_MIN;
+    return (int32_t)v;
+}
+
+static int32_t iir_q16_step(int32_t prev, int32_t sample, int32_t alpha_q16) {
+    int64_t product = (int64_t)alpha_q16 *
+                      ((int64_t)sample - (int64_t)prev);
+    int64_t delta = (product >= 0)
+                  ?  ((product + 32768) >> 16)
+                  : -(((-product) + 32768) >> 16);
+    return clamp_i32_i64((int64_t)prev + delta);
+}
+
 void thermal_pid_reset(thermal_pid_state_t *state) {
     state->integral_q16 = 0;
     state->prev_temp_mc = 0;
+    state->d_filtered_q16 = 0;
     state->prev_now_ms = 0;
     state->initialized = 0;
+    state->d_filter_initialized = 0;
 }
 
-void thermal_pid_step(thermal_pid_state_t *state,
-                      int32_t kp_q16, int32_t ki_q16, int32_t kd_q16,
-                      int32_t setpoint_mc, int32_t temp_mc,
-                      uint32_t now_ms,
-                      uint16_t dt_min_ms, uint16_t dt_max_ms,
-                      uint8_t pwm_min, uint8_t pwm_max,
-                      thermal_pid_step_result_t *out) {
+void thermal_pid_step_filtered(thermal_pid_state_t *state,
+                               int32_t kp_q16, int32_t ki_q16,
+                               int32_t kd_q16, int32_t d_filter_alpha_q16,
+                               int32_t setpoint_mc, int32_t temp_mc,
+                               uint32_t now_ms,
+                               uint16_t dt_min_ms, uint16_t dt_max_ms,
+                               uint8_t pwm_min, uint8_t pwm_max,
+                               thermal_pid_step_result_t *out) {
     /* dt: first call -> dt_min_ms; otherwise (now_ms - prev_now_ms) clamped. */
     uint32_t dt_ms;
     if (state->initialized) {
@@ -49,6 +67,22 @@ void thermal_pid_step(thermal_pid_state_t *state,
     if (state->initialized) {
         int32_t d_temp = temp_mc - state->prev_temp_mc;
         d_term_q16 = (int64_t)kd_q16 * (int64_t)d_temp * 1000 / (int64_t)dt_ms;
+        if (d_filter_alpha_q16 > 0) {
+            int32_t raw_d_q16 = clamp_i32_i64(d_term_q16);
+            if (!state->d_filter_initialized) {
+                state->d_filtered_q16 = raw_d_q16;
+                state->d_filter_initialized = 1;
+            } else {
+                state->d_filtered_q16 =
+                    iir_q16_step(state->d_filtered_q16, raw_d_q16,
+                                 d_filter_alpha_q16);
+            }
+            d_term_q16 = (int64_t)state->d_filtered_q16;
+        } else {
+            state->d_filter_initialized = 0;
+        }
+    } else {
+        state->d_filter_initialized = 0;
     }
 
     /* Sum in Q16.16 PWM, saturate to int32 before shifting back. */
@@ -90,4 +124,17 @@ void thermal_pid_step(thermal_pid_state_t *state,
     out->effective_dt_ms = (uint16_t)dt_ms;
     out->saturated_high = sat_hi;
     out->saturated_low = sat_lo;
+}
+
+void thermal_pid_step(thermal_pid_state_t *state,
+                      int32_t kp_q16, int32_t ki_q16, int32_t kd_q16,
+                      int32_t setpoint_mc, int32_t temp_mc,
+                      uint32_t now_ms,
+                      uint16_t dt_min_ms, uint16_t dt_max_ms,
+                      uint8_t pwm_min, uint8_t pwm_max,
+                      thermal_pid_step_result_t *out) {
+    thermal_pid_step_filtered(state, kp_q16, ki_q16, kd_q16, 0,
+                              setpoint_mc, temp_mc, now_ms,
+                              dt_min_ms, dt_max_ms,
+                              pwm_min, pwm_max, out);
 }

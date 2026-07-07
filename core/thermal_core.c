@@ -25,6 +25,7 @@
 #include "thermal_filter.h"
 #include "thermal_zone.h"
 #include "thermal_governor.h"
+#include "thermal_curve.h"
 #if THERMALCORE_ENABLE_PID
 #include "thermal_pid.h"
 #endif
@@ -226,6 +227,10 @@ static thermal_status_t governor_validate_pid(
     if (p->kd_q16 < p->kd_min_q16 || p->kd_q16 > p->kd_max_q16) {
         return THERMAL_ERR_INVALID_CONFIG;
     }
+    if (p->d_filter_alpha_q16 < 0 ||
+        p->d_filter_alpha_q16 > Q16_ONE) {
+        return THERMAL_ERR_INVALID_CONFIG;
+    }
     if (p->setpoint_mc < p->setpoint_min_mc ||
         p->setpoint_mc > p->setpoint_max_mc) {
         return THERMAL_ERR_INVALID_CONFIG;
@@ -264,16 +269,17 @@ static void governor_eval_pid(zone_runtime_t *zr,
                               uint32_t now_ms) {
     int32_t setpoint_eff = zr->shadow_pid.setpoint_mc + trip_offset_mc;
     thermal_pid_step_result_t pr;
-    thermal_pid_step(&zr->pid,
-                     zr->shadow_pid.kp_q16,
-                     zr->shadow_pid.ki_q16,
-                     zr->shadow_pid.kd_q16,
-                     setpoint_eff, zr->temp_mc,
-                     now_ms,
-                     zr->shadow_pid.dt_min_ms,
-                     zr->shadow_pid.dt_max_ms,
-                     0, 255,
-                     &pr);
+    thermal_pid_step_filtered(&zr->pid,
+                              zr->shadow_pid.kp_q16,
+                              zr->shadow_pid.ki_q16,
+                              zr->shadow_pid.kd_q16,
+                              zr->shadow_pid.d_filter_alpha_q16,
+                              setpoint_eff, zr->temp_mc,
+                              now_ms,
+                              zr->shadow_pid.dt_min_ms,
+                              zr->shadow_pid.dt_max_ms,
+                              0, 255,
+                              &pr);
     zr->pwm_this_tick = (uint8_t)pr.output_pwm;
     zr->effective_setpoint_mc = setpoint_eff;
     zr->pid_error_mc   = zr->temp_mc - setpoint_eff;
@@ -301,7 +307,17 @@ static void governor_eval_pid(zone_runtime_t *zr,
 static uint8_t governor_demand_pid(const zone_runtime_t *zr,
                                    const thermal_actuator_cfg_t *actuator) {
     uint8_t floor = actuator->state_pwm[zr->cooling_state];
-    return (floor > zr->pwm_this_tick) ? floor : zr->pwm_this_tick;
+    uint8_t demand = zr->pwm_this_tick;
+    if (actuator->duty_linearization_count > 0) {
+        int32_t mapped = thermal_curve_eval_y0(
+            actuator->duty_linearization,
+            actuator->duty_linearization_count,
+            (int32_t)demand);
+        if (mapped < 0) mapped = 0;
+        if (mapped > 255) mapped = 255;
+        demand = (uint8_t)mapped;
+    }
+    return (floor > demand) ? floor : demand;
 }
 
 static int32_t governor_effective_setpoint_pid(const zone_runtime_t *zr) {
@@ -423,6 +439,40 @@ static thermal_status_t validate_actuators(const thermal_config_t *cfg) {
                 return THERMAL_ERR_INVALID_CONFIG;
             }
         }
+#if THERMALCORE_ENABLE_PID
+        if (a->duty_linearization_count != 0) {
+            if (a->duty_linearization_count < 2 ||
+                a->duty_linearization_count > THERMAL_MAX_CURVE_POINTS) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+            for (uint8_t p = 0; p < a->duty_linearization_count; p++) {
+                const thermal_curve_point_t *pt = &a->duty_linearization[p];
+                if (pt->x < 0 || pt->x > 255 ||
+                    pt->value0 < 0 || pt->value0 > 255 ||
+                    pt->value1 != 0) {
+                    return THERMAL_ERR_INVALID_CONFIG;
+                }
+                if (p > 0) {
+                    const thermal_curve_point_t *prev =
+                        &a->duty_linearization[p - 1];
+                    if (pt->x <= prev->x || pt->value0 < prev->value0) {
+                        return THERMAL_ERR_INVALID_CONFIG;
+                    }
+                }
+            }
+            if (a->duty_linearization[0].x != 0 ||
+                a->duty_linearization[0].value0 != 0) {
+                return THERMAL_ERR_INVALID_CONFIG;
+            }
+            {
+                const thermal_curve_point_t *last =
+                    &a->duty_linearization[a->duty_linearization_count - 1];
+                if (last->x != 255 || last->value0 != 255) {
+                    return THERMAL_ERR_INVALID_CONFIG;
+                }
+            }
+        }
+#endif
     }
     for (uint8_t i = 0; i < cfg->actuator_count; i++) {
         for (uint8_t j = (uint8_t)(i + 1); j < cfg->actuator_count; j++) {

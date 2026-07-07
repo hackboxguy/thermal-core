@@ -153,6 +153,66 @@ TEST_CASE(validate_config) {
     cfg.actuators[0].spinup_pwm = 0;
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
+#if THERMALCORE_ENABLE_PID
+    /* === M4: PID duty-linearization table is optional and monotonic. === */
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 3;
+    cfg.actuators[0].duty_linearization[0].x = 0;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    cfg.actuators[0].duty_linearization[1].x = 99;
+    cfg.actuators[0].duty_linearization[1].value0 = 150;
+    cfg.actuators[0].duty_linearization[2].x = 255;
+    cfg.actuators[0].duty_linearization[2].value0 = 255;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
+
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 1;
+    cfg.actuators[0].duty_linearization[0].x = 0;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 3;
+    cfg.actuators[0].duty_linearization[0].x = 0;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    cfg.actuators[0].duty_linearization[1].x = 99;
+    cfg.actuators[0].duty_linearization[1].value0 = 150;
+    cfg.actuators[0].duty_linearization[2].x = 98;
+    cfg.actuators[0].duty_linearization[2].value0 = 255;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 3;
+    cfg.actuators[0].duty_linearization[0].x = 0;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    cfg.actuators[0].duty_linearization[1].x = 99;
+    cfg.actuators[0].duty_linearization[1].value0 = 150;
+    cfg.actuators[0].duty_linearization[2].x = 255;
+    cfg.actuators[0].duty_linearization[2].value0 = 149;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 3;
+    cfg.actuators[0].duty_linearization[0].x = 1;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    cfg.actuators[0].duty_linearization[1].x = 99;
+    cfg.actuators[0].duty_linearization[1].value0 = 150;
+    cfg.actuators[0].duty_linearization[2].x = 255;
+    cfg.actuators[0].duty_linearization[2].value0 = 255;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    make_valid_config(&cfg);
+    cfg.actuators[0].duty_linearization_count = 3;
+    cfg.actuators[0].duty_linearization[0].x = 0;
+    cfg.actuators[0].duty_linearization[0].value0 = 0;
+    cfg.actuators[0].duty_linearization[1].x = 99;
+    cfg.actuators[0].duty_linearization[1].value0 = 150;
+    cfg.actuators[0].duty_linearization[1].value1 = 1;
+    cfg.actuators[0].duty_linearization[2].x = 255;
+    cfg.actuators[0].duty_linearization[2].value0 = 255;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+#endif
+
     /* === M2: optional period-relative guard must match control period. === */
     make_valid_config(&cfg);
     cfg.period_relative_to_ms = 100;
@@ -349,6 +409,19 @@ TEST_CASE(validate_config) {
     MAKE_PID_CONFIG(cfg);
     cfg.zones[0].pid.kd_q16 = -100;     /* below kd_min_q16 = 0 */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    /* === Rule 28b: D-filter alpha must be in [0, Q16_ONE] === */
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.d_filter_alpha_q16 = -1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.d_filter_alpha_q16 = Q16_ONE + 1;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
+
+    MAKE_PID_CONFIG(cfg);
+    cfg.zones[0].pid.d_filter_alpha_q16 = Q16_ONE;
+    EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_OK);
 
     /* === Rule 29: setpoint above bounds === */
     MAKE_PID_CONFIG(cfg);

@@ -114,6 +114,8 @@ static void w_i32_array(sha256_ctx_t *s, const int32_t *arr,
 
 /* === Compound writers ============================================== */
 
+static void w_curve_point(sha256_ctx_t *s, const thermal_curve_point_t *c, int active);
+
 static void w_sensor(sha256_ctx_t *s, const thermal_sensor_cfg_t *c, int active)
 {
     if (!active) { uint8_t z[THERMAL_NAME_MAX + 2 + 4 + 4] = {0};
@@ -141,7 +143,14 @@ static void w_actuator(sha256_ctx_t *s, const thermal_actuator_cfg_t *c, int act
     if (!active) {
         uint8_t z[THERMAL_NAME_MAX + 2 + 1 + 1 + 1 + 1 + 4 + 2 + 2 +
                   THERMAL_MAX_COOLING_STATES] = {0};
-        sha256_update(s, z, sizeof(z)); return;
+        sha256_update(s, z, sizeof(z));
+#if THERMALCORE_ENABLE_PID
+        for (size_t i = 0; i < THERMAL_MAX_CURVE_POINTS; i++) {
+            w_curve_point(s, NULL, 0);
+        }
+        w_u8(s, 0);
+#endif
+        return;
     }
     w_u16(s, c->id);
     w_name(s, c->name);
@@ -155,6 +164,13 @@ static void w_actuator(sha256_ctx_t *s, const thermal_actuator_cfg_t *c, int act
     w_u8_array(s, c->state_pwm,
                (uint8_t)THERMAL_MAX_COOLING_STATES,
                (size_t)THERMAL_MAX_COOLING_STATES);
+#if THERMALCORE_ENABLE_PID
+    for (size_t i = 0; i < THERMAL_MAX_CURVE_POINTS; i++) {
+        w_curve_point(s, &c->duty_linearization[i],
+                      i < c->duty_linearization_count);
+    }
+    w_u8(s, c->duty_linearization_count);
+#endif
 }
 
 static void w_pid(sha256_ctx_t *s, const thermal_pid_cfg_t *p)
@@ -162,6 +178,9 @@ static void w_pid(sha256_ctx_t *s, const thermal_pid_cfg_t *p)
     w_i32(s, p->kp_q16);
     w_i32(s, p->ki_q16);
     w_i32(s, p->kd_q16);
+#if THERMALCORE_ENABLE_PID
+    w_i32(s, p->d_filter_alpha_q16);
+#endif
     w_i32(s, p->setpoint_mc);
     w_i32(s, p->kp_min_q16);  w_i32(s, p->kp_max_q16);
     w_i32(s, p->ki_min_q16);  w_i32(s, p->ki_max_q16);
@@ -186,7 +205,7 @@ static void w_zone(sha256_ctx_t *s, const thermal_zone_cfg_t *z, int active)
 {
     if (!active) {
         /* name + sensor_ids + sensor_weights + count + aggregation +
-         * fallback + governor + pid(56) + actuator_ids + count +
+         * fallback + governor + pid + actuator_ids + count +
          * trips(4 * 10) + count */
         w_name(s, NULL);
         w_u16_array(s, NULL, 0, THERMAL_MAX_SENSORS_PER_ZONE);

@@ -24,10 +24,10 @@ is the public artefact; the PRD + implementation plan are the spec.
 
 | file | purpose |
 |---|---|
-| `docs/thermal-core-prd.md` (v0.22+) | the spec — wire formats, signal IDs, numeric constants |
-| `docs/thermal-core-implementation-plan.md` (v0.23+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
+| `docs/thermal-core-prd.md` (v0.23+) | the spec — wire formats, signal IDs, numeric constants |
+| `docs/thermal-core-implementation-plan.md` (v0.24+) | stage-by-stage roll-out + the **Shipped Nx bullets** are the project's narrative |
 | `README.md` | quick-start + how to build / test / flash each target |
-| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.13+) | the public-facing description |
+| `docs/paper/output/thermal-core-spec.pdf` (Draft 0.14+) | the public-facing description |
 | `git log --oneline -20` | recent commits — the most current state |
 
 The Stages summary table in §9 of the impl-plan gives current state at
@@ -42,7 +42,7 @@ a glance.
   - Stage 20: fan-health enabled on CH32 with a real measured baseline; two
     reference fan configs (NF-A8 active, Arctic P8 PWM PST alt).
 - Two Codex review rounds (v14, v15) consumed and folded in.
-- Impl-plan **v0.23**; paper **Draft 0.13**; PRD **v0.22**.
+- Impl-plan **v0.24**; paper **Draft 0.14**; PRD **v0.23**.
 
 ## 3. Workflow conventions (the most important section)
 

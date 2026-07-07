@@ -506,6 +506,58 @@ TEST_CASE(core_step_full_loop) {
         step_t1(&ctx, 100, 86000, &out);
         EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 255);
     }
+
+    /* ============================================================
+     * S10b -- actuator duty linearization applies to PID only.
+     * The same per-actuator table leaves step-wise state_pwm[]
+     * untouched, then remaps a PID raw demand of 100 -> 150.
+     * ============================================================ */
+    {
+        build_base_cfg(&cfg);
+        cfg.actuators[0].slew_per_tick = 255;
+        cfg.actuators[0].duty_linearization_count = 3;
+        cfg.actuators[0].duty_linearization[0].x = 0;
+        cfg.actuators[0].duty_linearization[0].value0 = 0;
+        cfg.actuators[0].duty_linearization[1].x = 100;
+        cfg.actuators[0].duty_linearization[1].value0 = 150;
+        cfg.actuators[0].duty_linearization[2].x = 255;
+        cfg.actuators[0].duty_linearization[2].value0 = 255;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        step_t1(&ctx, 100, 72000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 160);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_STEP);
+
+        build_base_cfg(&cfg);
+        cfg.actuators[0].slew_per_tick = 255;
+        cfg.actuators[0].duty_linearization_count = 3;
+        cfg.actuators[0].duty_linearization[0].x = 0;
+        cfg.actuators[0].duty_linearization[0].value0 = 0;
+        cfg.actuators[0].duty_linearization[1].x = 100;
+        cfg.actuators[0].duty_linearization[1].value0 = 150;
+        cfg.actuators[0].duty_linearization[2].x = 255;
+        cfg.actuators[0].duty_linearization[2].value0 = 255;
+        cfg.zones[0].governor = THERMAL_GOVERNOR_PID;
+        cfg.zones[0].pid.kp_q16 = 1311;     /* 5000 mc error -> 100 PWM */
+        cfg.zones[0].pid.ki_q16 = 0;
+        cfg.zones[0].pid.kd_q16 = 0;
+        cfg.zones[0].pid.setpoint_mc = 75000;
+        cfg.zones[0].pid.kp_min_q16 = 0;
+        cfg.zones[0].pid.kp_max_q16 = 65536;
+        cfg.zones[0].pid.ki_min_q16 = 0;
+        cfg.zones[0].pid.ki_max_q16 = 65536;
+        cfg.zones[0].pid.kd_min_q16 = 0;
+        cfg.zones[0].pid.kd_max_q16 = 65536;
+        cfg.zones[0].pid.setpoint_min_mc = 50000;
+        cfg.zones[0].pid.setpoint_max_mc = 95000;
+        cfg.zones[0].pid.dt_min_ms = 50;
+        cfg.zones[0].pid.dt_max_ms = 500;
+        mock_reset();
+        EXPECT_STATUS_OK(thermal_core_init(&ctx, &cfg, &MOCK_CB));
+        step_t1(&ctx, 100, 80000, &out);
+        EXPECT_EQ(out.actuator_cmds[0].duty_0_255, 150);
+        EXPECT_EQ(out.actuator_cmds[0].reason, THERMAL_ACT_REASON_GOVERNOR_PID);
+    }
 #endif
 
     /* ============================================================

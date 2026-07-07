@@ -1,8 +1,8 @@
 # thermal-core — Implementation Plan
 
-**Document status:** Draft v0.23
+**Document status:** Draft v0.24
 **Author:** Albert David
-**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.22)
+**Companion to:** [thermal-core-prd.md](thermal-core-prd.md) (v0.23)
 
 This document describes how to build `thermal-core` incrementally, stage by stage, with the test automation that prevents regressions evolving alongside the code. Stages are ordered by dependency, not by calendar time — each stage closes with a green CI gate, and the next stage starts from that green main.
 
@@ -249,7 +249,7 @@ The multiplication is performed in `int64_t`; the shift back is by 16; the final
 ---
 
 ### Stage 5 — PID governor (Q16.16)
-**Deliverable:** `core/thermal_pid.c`. Anti-windup per PRD §4.8. dt clamping. Derivative on measurement. No D-filter is part of v1; adding one needs an explicit config/API field. Saturation telemetry on overflow.
+**Deliverable:** `core/thermal_pid.c`. Anti-windup per PRD §4.8. dt clamping. Derivative on measurement. Saturation telemetry on overflow. M4 later adds the explicit `d_filter_alpha_q16` config field and a PID-only per-actuator duty-linearization table without changing default PID replay behavior.
 
 **Tests added:**
 - **Unit:** step response, settling time, anti-windup under sustained saturation, `dt_min_ms`/`dt_max_ms` clamp on missing or extremely late tick, non-monotonic `now_ms` jump (per PRD §4.8 — should clamp via dt, not crash; diagnostic event emitted), gain-change resets integral+derivative (per `CMD_SET_PID` contract), PID-trip-floor interaction (critical trip floors output via `state_pwm[cooling_state]`).
@@ -688,7 +688,7 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Shipped M6:** governor-specific behavior in `core/thermal_core.c` now runs through a closed static ops table indexed by the existing governor enum: validation, runtime reset, step-6 evaluation, step-7 actuator demand, reason selection, and state effective-setpoint reporting are centralized behind the table. PID remains default-on for host/ESP32 builds, but `THERMALCORE_ENABLE_PID=0` removes the PID ops row and the CH32 Makefile omits `thermal_pid.c` by default (`CH32_ENABLE_PID=1` opts back in). This turns the M6 refactor into a CH32 flash win instead of a size risk.
 
-**M4 planning constraint:** PID refinements such as a D-term filter or linearization table must remain PID-only and should not perturb the CH32 step-wise build unless `THERMALCORE_ENABLE_PID` is intentionally enabled.
+**Shipped M4:** PID zones now support two opt-in refinements. `d_filter_alpha_q16` is a default-off first-order IIR over the D term, with `0` preserving byte-identical unfiltered PID math; the C PID unit tests and Python reference both lock the filtered and unfiltered paths. Actuators may also carry a PID-only `duty_linearization` table of `[input_pwm, output_pwm]` pairs, validated as a monotonic endpoint-preserving curve and evaluated with `thermal_curve_eval_y0()` before PID safety floors and arbitration. Step-wise `state_pwm[]` output is untouched. The table lives behind `THERMALCORE_ENABLE_PID`; CH32 PID-off generation passes `json2static.py --disable-pid`, so the step-wise tiny profile does not pay config-size flash for M4.
 
 ---
 
@@ -825,4 +825,4 @@ Items deliberately deferred from this plan; resolve when the relevant stage star
 
 ---
 
-*End of implementation plan v0.23*
+*End of implementation plan v0.24*
