@@ -673,8 +673,8 @@ The implementation must make governor math reproducible across targets:
 - **PID governor:** error is `zone_temp_mc - effective_setpoint_mc`; positive error increases cooling demand. Output units are PWM duty `0..255` before arbitration and policy modifiers.
 - **Trips with PID:** PID remains the normal continuous controller. Trips on PID zones provide telemetry and safety floors: `warn` is informational, `critical` floors output via `state_pwm[cooling_state]`, and `shutdown` requests maximum configured cooling plus shutdown event.
 - **PID state snapshot:** `thermal_zone_state_t.cooling_state` is `0` for PID zones while no safety trip floor is active; it becomes the highest active safety trip's `cooling_state` while a `critical` or `shutdown` floor is affecting output.
-- **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A missing or extremely late tick emits telemetry and uses the clamped value.
-- **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic.
+- **PID timestep:** `dt` is derived from `thermal_input_snapshot_t.now_ms` and clamped to configured min/max bounds. A platform that passes measured wall time lets the core observe missing or extremely late ticks through that clamped `dt`; a platform that passes scheduled time must emit a platform diagnostic when the observed wall-clock wakeup overruns the scheduled deadline.
+- **Timestamp behavior:** `now_ms` must be monotonic non-decreasing within a wrap window. Non-monotonic jumps are platform bugs; PID `dt` clamping limits damage but the platform should emit a diagnostic. The Linux daemon deliberately keeps scheduled-time `now_ms` in wall-clock mode for deterministic control math and emits `TEVENT_PLATFORM_TICK_OVERRUN` when `CLOCK_MONOTONIC` shows it woke late by more than its overrun threshold.
 - **Anti-windup:** v1 uses bounded integral state. The integral is not increased further when output is saturated and the error would drive it deeper into saturation.
 - **Derivative:** derivative is computed on measured temperature by default. Derivative filtering is deferred; v1 deployments should set `kd_q16 = 0` or keep it conservative when sensor noise is high.
 - **Fixed-point arithmetic:** Q16.16 is the default representation for gains and PID terms. All multiplies, adds, clamps, and conversions use explicit saturating helpers; overflow is a fault in tests and a logged event in release builds.
@@ -893,8 +893,11 @@ Signal IDs are fixed by type range plus configured slot, not by debug-name hash.
 | `0x0600..0x06FF` | Fault detector counters/states, indexed by detector slot |
 | `0x0700..0x07FF` | HIL-injected sensor temperature / tach RPM samples, indexed by slot (`TSIG_HIL_BASE`) |
 | `0x0800..0x08FF` | Fan-health detector (post-v1, PRD Appendix C) — delta / severity / baseline-source / confidence, indexed by actuator slot (`TSIG_FAN_HEALTH_BASE`) |
+| `0x0900..0x09FF` | Platform diagnostics emitted directly by platform telemetry sinks, not selected through core telemetry config (`TSIG_PLATFORM_BASE`) |
 
 Telemetry selectors such as `zone_temp_*`, `zone_aggregation_valid_*`, and `actuator_pwm_*` are expanded once by the loader after zones, actuators, context signals, and PID terms are registered. The resulting signal IDs are stored in `thermal_telemetry_cfg_t.enabled_signal_ids`; the core checks that list before calling `telemetry_emit()`. Unknown exact names are invalid config; wildcard selectors that match nothing are warnings in development mode and errors in release configs. Selected signals are emitted at most once per control step. `telemetry.period_ticks` sets the global cadence; default `1` means every control tick, while higher values decimate low-priority streams. Per-signal telemetry dividers are future work if measured bandwidth requires them.
+
+`TSIG_PLATFORM_CH32_TELEMETRY_DROPS` (`0x0900`) is a cumulative counter emitted by the CH32 UART telemetry tap when its nonblocking callback ring overflows. Captures with a non-zero value are lossy and should not be used as byte-complete evidence.
 
 Discrete event codes are separate from telemetry signals and are defined in `core/thermal_events.h`. Required v1 event examples:
 
@@ -908,7 +911,10 @@ TEVENT_COMMAND_APPLIED      0x1200
 TEVENT_COMMAND_REJECTED     0x1201
 TEVENT_ZONE_FALLBACK_ENTER  0x1300
 TEVENT_ZONE_FALLBACK_EXIT   0x1301
+TEVENT_PLATFORM_TICK_OVERRUN  0x1400
 ```
+
+`TEVENT_PLATFORM_TICK_OVERRUN` is emitted by the Linux wall-clock daemon, not by `thermal_core_step()`. Its args are `(late_ms, behind_ticks, period_ms, threshold_ms)` and its timestamp is the scheduled tick time.
 
 ### 7.2 Binary transport framing
 

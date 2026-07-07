@@ -232,6 +232,10 @@ the RX line carries the host-command channel of the bench build
 (below). The SWIO status line above is independent and stays
 available.
 
+If the CH32 telemetry callback ring overflows, the firmware emits
+`TSIG_PLATFORM_CH32_TELEMETRY_DROPS` (`0x0900`) as a cumulative
+canonical sample. Treat any non-zero value as a lossy capture.
+
 The live `tio` view may look stair-stepped — the canonical CSV
 uses `\n` line endings (no `\r`), and `tio`'s raw mode renders
 them without a carriage return. This is cosmetic: the logged
@@ -325,8 +329,8 @@ make flash-ch32 CH32_TELEMETRY=1 CH32_TELEMETRY_BAUD=115200
 
 The detector remains compiled out of the default no-telemetry firmware,
 which currently links at 13 104 B of 16 KB. The telemetry build (with
-the detector) sits at 15 168 B of 16 KB; the `CH32_COMMAND=1` bench
-variant sits at 16 188 B.
+the detector and drop counter) sits at 15 256 B of 16 KB; the
+`CH32_COMMAND=1` bench variant sits at 16 276 B.
 
 ## Build + test (host-side)
 

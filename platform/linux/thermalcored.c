@@ -15,7 +15,9 @@
  *   4. write actuator frame         (bsp_mock_tmpfs_write_frame)
  *
  * Clock modes:
- *   --clock=wall      monotonic + absolute clock_nanosleep
+ *   --clock=wall      monotonic + absolute clock_nanosleep; now_ms follows
+ *                     scheduled deadlines, with platform overrun events
+ *                     when observed wakeup latency exceeds threshold
  *   --clock=scenario  AF_UNIX SOCK_STREAM, reads "TICK <ms>\n" lines
  *                     from the scenario runner (default URI
  *                     unix:/tmp/thermalcored-clock.sock).
@@ -47,6 +49,7 @@
 #include "thermal_types.h"
 #include "thermal_config.h"
 #include "thermal_commands.h"
+#include "thermal_events.h"
 #include "config_jsmn.h"
 #include "runtime_cfg.h"
 #include "bsp_mock_tmpfs.h"
@@ -427,6 +430,14 @@ static void log_event_cb(uint32_t ts_ms, uint16_t code,
 static struct timespec g_t0;
 static uint64_t        g_period_ns;
 static uint64_t        g_next_deadline_ns;
+static uint64_t        g_overrun_threshold_ns;
+
+typedef struct {
+    uint8_t  overrun;
+    uint32_t late_ms;
+    uint32_t behind_ticks;
+    uint32_t threshold_ms;
+} wall_clock_diag_t;
 
 static uint64_t timespec_to_ns(const struct timespec *t)
 {
@@ -439,29 +450,68 @@ static void ns_to_timespec(uint64_t ns, struct timespec *t)
     t->tv_nsec = (long)(ns % 1000000000ull);
 }
 
+static uint64_t wall_clock_overrun_threshold(uint64_t period_ns)
+{
+    uint64_t threshold = period_ns / 10ull;
+    if (threshold < 5000000ull) {
+        threshold = 5000000ull;      /* tolerate ordinary scheduler jitter */
+    }
+    return threshold;
+}
+
+static uint32_t ns_to_ms_ceil_sat(uint64_t ns)
+{
+    uint64_t ms = (ns + 999999ull) / 1000000ull;
+    return (ms > 0xffffffffull) ? 0xffffffffu : (uint32_t)ms;
+}
+
 static int wall_clock_init(uint16_t period_ms)
 {
     if (clock_gettime(CLOCK_MONOTONIC, &g_t0) != 0) return -1;
-    g_period_ns        = (uint64_t)period_ms * 1000000ull;
-    g_next_deadline_ns = timespec_to_ns(&g_t0) + g_period_ns;
+    g_period_ns            = (uint64_t)period_ms * 1000000ull;
+    g_overrun_threshold_ns = wall_clock_overrun_threshold(g_period_ns);
+    g_next_deadline_ns     = timespec_to_ns(&g_t0) + g_period_ns;
     return 0;
 }
 
 /* Sleep until the next wall-clock tick, return now_ms (relative to t0). */
-static int wall_clock_next(uint32_t *now_ms_out)
+static int wall_clock_next(uint32_t *now_ms_out, wall_clock_diag_t *diag)
 {
+    if (diag != NULL) {
+        memset(diag, 0, sizeof(*diag));
+        diag->threshold_ms = ns_to_ms_ceil_sat(g_overrun_threshold_ns);
+    }
+    uint64_t deadline_ns = g_next_deadline_ns;
     struct timespec deadline;
-    ns_to_timespec(g_next_deadline_ns, &deadline);
+    ns_to_timespec(deadline_ns, &deadline);
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
                            &deadline, NULL) == EINTR) {
         if (!g_running) return -1;
     }
     if (!g_running) return -1;
 
+    if (diag != NULL) {
+        struct timespec actual;
+        if (clock_gettime(CLOCK_MONOTONIC, &actual) == 0) {
+            uint64_t actual_ns = timespec_to_ns(&actual);
+            if (actual_ns > deadline_ns) {
+                uint64_t late_ns = actual_ns - deadline_ns;
+                if (late_ns > g_overrun_threshold_ns) {
+                    uint64_t behind = (g_period_ns > 0)
+                                    ? (late_ns / g_period_ns) : 0;
+                    diag->overrun      = 1;
+                    diag->late_ms      = ns_to_ms_ceil_sat(late_ns);
+                    diag->behind_ticks = (behind > 0xffffffffull)
+                                       ? 0xffffffffu : (uint32_t)behind;
+                }
+            }
+        }
+    }
+
     /* now_ms = (next_deadline - t0) / 1ms */
-    uint64_t rel_ns = g_next_deadline_ns - timespec_to_ns(&g_t0);
+    uint64_t rel_ns = deadline_ns - timespec_to_ns(&g_t0);
     *now_ms_out = (uint32_t)(rel_ns / 1000000ull);
-    g_next_deadline_ns += g_period_ns;
+    g_next_deadline_ns = deadline_ns + g_period_ns;
     return 0;
 }
 
@@ -868,10 +918,18 @@ int main(int argc, char **argv)
     /* === Main loop ============================================== */
     while (g_running) {
         uint32_t now_ms;
+        wall_clock_diag_t clock_diag;
+        memset(&clock_diag, 0, sizeof(clock_diag));
         int rc = (opts.clock_mode == CLOCK_MODE_WALL)
-                   ? wall_clock_next(&now_ms)
+                   ? wall_clock_next(&now_ms, &clock_diag)
                    : scenario_clock_next(&now_ms);
         if (rc != 0) break;
+
+        if (opts.clock_mode == CLOCK_MODE_WALL && clock_diag.overrun) {
+            log_event_cb(now_ms, TEVENT_PLATFORM_TICK_OVERRUN,
+                         clock_diag.late_ms, clock_diag.behind_ticks,
+                         cfg.control_period_ms, clock_diag.threshold_ms);
+        }
 
         /* Step 1: drain queued commands (PRD §5 Stage 9). */
         drain_commands(&core, now_ms);

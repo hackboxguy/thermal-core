@@ -104,6 +104,7 @@ TSIG_CONTEXT_BASE    = 0x0400
 TSIG_MODIFIER_BASE   = 0x0500
 TSIG_FAULT_BASE      = 0x0600
 TSIG_FAN_HEALTH_BASE = 0x0800
+TSIG_PLATFORM_BASE   = 0x0900
 
 def tsig_zone_temp(slot):              return TSIG_ZONE_BASE + 0x00 + slot
 def tsig_zone_cooling_state(slot):     return TSIG_ZONE_BASE + 0x10 + slot

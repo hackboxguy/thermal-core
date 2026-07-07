@@ -1,8 +1,9 @@
 /* core/thermal_signals.h
  *
- * Telemetry signal IDs emitted by the core via thermal_core_callbacks_t.
- * Pinned by PRD §7.1 (lines 856-882). IDs are part of the wire contract
- * (TELEM_SAMPLE frames) — the PRD locks the broad type ranges and the
+ * Telemetry signal IDs emitted by the core via thermal_core_callbacks_t,
+ * plus platform-owned diagnostics emitted directly by platform telemetry
+ * sinks. Pinned by PRD §7.1. IDs are part of the wire contract
+ * (TELEM_SAMPLE frames) -- the PRD locks the broad type ranges and the
  * PID-term formula; within-range sub-signal layout is core's choice and
  * defined here.
  *
@@ -16,6 +17,10 @@
  *   0x0500..0x05FF  Modifier outputs (indexed by modifier slot + sub)
  *   0x0600..0x06FF  Fault detector states (indexed by per-detector-kind
  *                   slot + sub)
+ *   0x0700..0x07FF  HIL ingress samples (platform inbound)
+ *   0x0800..0x08FF  Fan-health detector outputs
+ *   0x0900..0x09FF  Platform diagnostics (emitted directly by platform
+ *                   telemetry sinks, not selected through core config)
  *
  * Within-range sub-signal layout (v1, 16 slots per sub-signal type):
  *   ZONE      0x00 temp_mc        0x10 cooling_state
@@ -54,6 +59,7 @@ typedef uint16_t thermal_telemetry_signal_t;
 #define TSIG_FAULT_BASE      0x0600u
 #define TSIG_HIL_BASE        0x0700u
 #define TSIG_FAN_HEALTH_BASE 0x0800u
+#define TSIG_PLATFORM_BASE   0x0900u
 
 /* === Sub-signal strides within each range === */
 #define TSIG_RANGE_SIZE      0x0100u
@@ -193,6 +199,15 @@ typedef uint16_t thermal_telemetry_signal_t;
     ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_BASELINE_SOURCE + (actuator_slot)))
 #define TSIG_FAN_HEALTH_CONFIDENCE(actuator_slot) \
     ((uint16_t)(TSIG_FAN_HEALTH_BASE + TSIG_FAN_HEALTH_SUB_CONFIDENCE + (actuator_slot)))
+
+/* === Platform diagnostics ===
+ * These are not emitted by thermal_core_step() and are therefore not
+ * valid entries in thermal_telemetry_cfg_t.enabled_signal_ids[]. They
+ * are reserved for platform-owned telemetry sinks that need to report
+ * loss or timing diagnostics in the same numeric stream.
+ */
+#define TSIG_PLATFORM_CH32_TELEMETRY_DROPS \
+    ((uint16_t)(TSIG_PLATFORM_BASE + 0x00u))
 
 /* === Backward-compatibility aliases for PRD §7.1 example named
  * constants. Defined in terms of slot 0/1 of their respective ranges;

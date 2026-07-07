@@ -46,7 +46,7 @@
       "name": "soc_zone",
       "sensors": ["soc"],
       "aggregation": "max",
-      "fallback_temp_mc": 85000,
+      "fallback_temp_mc": 90000,
       "governor": "step_wise",
       "actuators": ["main_fan"],
       "trips": [

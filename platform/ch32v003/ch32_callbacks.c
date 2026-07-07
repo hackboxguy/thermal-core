@@ -19,6 +19,7 @@
 #include "canonical.h"
 #include "bsp_ch32_uart.h"
 #include "thermal_config.h"
+#include "thermal_signals.h"
 
 /* Ring of pending telemetry records. thermal_core_step() emits every
  * enabled telemetry signal in one in-step burst before returning, and
@@ -50,6 +51,9 @@ typedef struct {
 static ch32_telem_rec_t s_ring[CH32_TELEM_RING];
 static uint8_t s_ring_head;   /* next slot to write */
 static uint8_t s_ring_tail;   /* next slot to read */
+static uint32_t s_ring_drops;
+static uint32_t s_ring_drops_reported;
+static uint32_t s_ring_last_drop_ts_ms;
 
 static uint8_t ring_next(uint8_t i)
 {
@@ -60,10 +64,21 @@ static void ring_push(const ch32_telem_rec_t *rec)
 {
     uint8_t next = ring_next(s_ring_head);
     if (next == s_ring_tail) {
+        if (s_ring_drops < 0xffffffffu) {
+            s_ring_drops++;
+        }
+        s_ring_last_drop_ts_ms = rec->ts_ms;
         return;   /* full: drop (PRD permits) */
     }
     s_ring[s_ring_head] = *rec;
     s_ring_head = next;
+}
+
+static int32_t drop_count_value(void)
+{
+    return (s_ring_drops > 0x7fffffffu)
+             ? (int32_t)0x7fffffff
+             : (int32_t)s_ring_drops;
 }
 
 void ch32_log_event_cb(uint32_t ts_ms, uint16_t code,
@@ -95,6 +110,11 @@ void ch32_telemetry_emit_cb(uint32_t ts_ms, uint16_t signal_id,
     ring_push(&rec);
 }
 
+uint32_t ch32_telemetry_drop_count(void)
+{
+    return s_ring_drops;
+}
+
 void ch32_telemetry_drain(void)
 {
     while (s_ring_tail != s_ring_head) {
@@ -114,6 +134,17 @@ void ch32_telemetry_drain(void)
         }
         s_ring_tail = ring_next(s_ring_tail);
     }
+    if (s_ring_drops != s_ring_drops_reported) {
+        char buf[128];
+        int n = thermalcore_canonical_sample(
+                    buf, sizeof buf, s_ring_last_drop_ts_ms,
+                    TSIG_PLATFORM_CH32_TELEMETRY_DROPS,
+                    drop_count_value(), 0);
+        if (n > 0) {
+            bsp_ch32_uart_puts(buf);
+            s_ring_drops_reported = s_ring_drops;
+        }
+    }
 }
 
 #else  /* telemetry build disabled: headless STANDALONE */
@@ -124,6 +155,11 @@ void ch32_log_event_cb(uint32_t ts_ms, uint16_t code,
 {
     (void)ts_ms; (void)code;
     (void)a1; (void)a2; (void)a3; (void)a4;
+}
+
+uint32_t ch32_telemetry_drop_count(void)
+{
+    return 0;
 }
 
 #endif /* THERMALCORE_CH32_TELEMETRY */

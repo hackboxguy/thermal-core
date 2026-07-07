@@ -1,8 +1,9 @@
 /* core/thermal_events.h
  *
- * Discrete event codes emitted by the core via thermal_core_callbacks_t
- * log_event(). Pinned by PRD §7.1 (lines 886-896). Codes are part of the
- * wire contract (TELEM_EVENT frames) — do not renumber existing entries.
+ * Discrete event codes emitted by the core or platform diagnostics via
+ * thermal_core_callbacks_t log_event(). Pinned by PRD §7.1. Codes are
+ * part of the wire contract (TELEM_EVENT frames) -- do not renumber
+ * existing entries.
  *
  * Separate namespace from thermal_telemetry_signal_t (PRD §4.4 line 534).
  */
@@ -27,7 +28,10 @@ typedef enum {
 
     /* Zone aggregation fallback lifecycle (0x13xx) */
     TEVENT_ZONE_FALLBACK_ENTER  = 0x1300,
-    TEVENT_ZONE_FALLBACK_EXIT   = 0x1301
+    TEVENT_ZONE_FALLBACK_EXIT   = 0x1301,
+
+    /* Platform diagnostics (0x14xx) */
+    TEVENT_PLATFORM_TICK_OVERRUN = 0x1400
 } thermal_event_code_t;
 
 #endif /* THERMAL_EVENTS_H */

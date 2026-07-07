@@ -586,7 +586,7 @@ TEST_CASE(validate_config) {
     cfg.telemetry.enable = 1;
     cfg.telemetry.period_ticks = 1;
     cfg.telemetry.enabled_signal_count = 1;
-    cfg.telemetry.enabled_signal_ids[0] = 0x0700;   /* no range covers this */
+    cfg.telemetry.enabled_signal_ids[0] = 0x0a00;   /* no range covers this */
     EXPECT_EQ(thermal_core_validate_config(&cfg), THERMAL_ERR_INVALID_CONFIG);
 
     /* Rule 49: enabled_signal_ids[i] in zone range but slot out of bounds. */

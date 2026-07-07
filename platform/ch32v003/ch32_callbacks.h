@@ -12,6 +12,8 @@
  *        the core step, formats the queued records as canonical CSV
  *        (test/parity/canonical.c) and pushes them over USART1, so
  *        the blocking UART writes stay out of the core's work path.
+ *        Ring overflow increments a cumulative drop counter, reported
+ *        on the next drain as TSIG_PLATFORM_CH32_TELEMETRY_DROPS.
  */
 #ifndef CH32_CALLBACKS_H
 #define CH32_CALLBACKS_H
@@ -26,6 +28,10 @@
 void ch32_log_event_cb(uint32_t ts_ms, uint16_t code,
                        uint32_t a1, uint32_t a2,
                        uint32_t a3, uint32_t a4);
+
+/* Cumulative count of records dropped by the nonblocking telemetry ring.
+ * Returns 0 in headless builds where the telemetry path is compiled out. */
+uint32_t ch32_telemetry_drop_count(void);
 
 #if THERMALCORE_CH32_TELEMETRY
 /* thermal_core_callbacks_t.telemetry_emit (telemetry build only) */

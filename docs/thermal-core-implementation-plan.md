@@ -684,6 +684,8 @@ The canonical column projection and the row-ordering contract live in `tools/the
 
 **Stage 20 status:** the Stage 17 fan-health detector is enabled in the CH32V003 STANDALONE firmware with a real, on-rig PWM-to-RPM baseline; the `build-ch32` matrix exercises the default (fan-health off), telemetry, and command variants on the active NF-A8 config plus a fourth `arctic` leg that links the Arctic P8 alt config with `--enable-fan-health` — two reference fan configs (NF-A8 active, Arctic P8 PWM PST as a drop-in alt) ship as worked examples. The shipping default firmware is byte-for-byte unchanged. Stage 20 is closed — and with it the first slice of the Stage 17 follow-on (a host-tool baseline-capture sweep + the MCU enablement) is shipped; the remainder (scenario directives, NVS persistence, the `thermalcore-fanhealth` CLI, scheduled-probe mode, BLOCKED detection, the 2D temperature-compensated baseline) stays deferred.
 
+- **Post-review diagnostic update:** the CH32 telemetry tap now reports ring overflow as `TSIG_PLATFORM_CH32_TELEMETRY_DROPS`, a cumulative canonical sample emitted on the next drain after records are dropped. Current measured build sizes are: default 13 104 B flash / 1 044 B SRAM, `CH32_TELEMETRY=1` 15 256 B flash / 1 444 B SRAM, and `CH32_COMMAND=1` 16 276 B flash / 1 508 B SRAM. The default image remains unchanged; the command build is still under the 16 KB hard budget but above the soft target.
+
 ---
 
 ## 6. Paper update cadence

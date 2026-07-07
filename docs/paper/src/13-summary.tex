@@ -13,10 +13,10 @@ This document describes a protocol-agnostic thermal-control core that has been i
     \item runtime tuning is a development surface and should remain local, authenticated, or disabled in production deployments;
     \item the acoustic reference policy's PWM-seconds metric is only a proxy until calibrated SPL measurements exist;
     \item fan-health does not yet compensate its PWM-to-RPM baseline for intake temperature;
-    \item CH32 UART telemetry can still drop records under sustained backpressure without a first-class drop counter;
+    \item CH32 UART telemetry can still drop records under sustained backpressure; the firmware now reports a cumulative drop counter, so captures must check it before being treated as complete evidence;
     \item v1 arbitration is max-wins only, with no strategy hook or actuator-load sharing;
     \item v1 governor dispatch is a closed two-value enum, not yet a pluggable governor interface;
-    \item Linux scheduled-time ticking keeps the core deterministic, but a daemon overrun diagnostic is still future work;
+    \item Linux scheduled-time ticking keeps the core deterministic and now reports overrun events, but fault windows still stretch in wall time if the process is stalled;
     \item RH850 is structurally planned but not hardware-validated in v1;
     \item the formal timing and acoustic benchmarks are not yet captured (Section~\ref{sec:eval-gaps}).
 \end{itemize}
@@ -31,8 +31,8 @@ This document describes a protocol-agnostic thermal-control core that has been i
     \item workload/power context and optional PID feed-forward;
     \item actuator linearization or an inner RPM loop for PID-controlled fans;
     \item a pluggable governor dispatch table before adding a third governor;
-    \item telemetry drop counters on constrained UART paths;
-    \item Linux tick-overrun diagnostics;
+    \item backpressure mitigation for constrained UART telemetry paths;
+    \item measured-time or skipped-period accounting modes for platforms that need wall-time-true fault windows;
     \item OEM CAN DBC integration outside the core;
     \item PID autotune;
     \item full RH850 validation;

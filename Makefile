@@ -173,6 +173,21 @@ build/test/test_ch32_command: \
 	    -o $@ test/unit/test_ch32_command.c \
 	    platform/ch32v003/ch32_command.c $(LDFLAGS_EXTRA)
 
+# --- Special: CH32 telemetry callback ring overflow test ---
+build/test/test_ch32_callbacks: \
+    test/unit/test_ch32_callbacks.c test/unit/harness.h \
+    platform/ch32v003/ch32_callbacks.c platform/ch32v003/ch32_callbacks.h \
+    platform/ch32v003/bsp_ch32_uart.h \
+    test/parity/canonical.c test/parity/canonical.h \
+    core/thermal_signals.h core/thermal_profile_tiny.h
+	@mkdir -p build/test
+	$(CC) $(CFLAGS_BASE) -DTHERMALCORE_CH32_TELEMETRY=1 \
+	    -include $(CURDIR)/core/thermal_profile_tiny.h \
+	    -I platform/ch32v003 -I test/parity \
+	    -o $@ test/unit/test_ch32_callbacks.c \
+	    platform/ch32v003/ch32_callbacks.c test/parity/canonical.c \
+	    $(LDFLAGS_EXTRA)
+
 # --- Special: thermal-plant simulator unit test (Stage 12 12a) ---
 # Plant lives at tools/thermalcore-scenario/plant.{c,h}; depends on
 # core/thermal_curve.c (via thermal_curve_eval_y0) which is already
