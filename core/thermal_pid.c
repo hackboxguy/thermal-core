@@ -17,6 +17,13 @@ static int32_t iir_q16_step(int32_t prev, int32_t sample, int32_t alpha_q16) {
     return clamp_i32_i64((int64_t)prev + delta);
 }
 
+static int32_t q16_floor_to_i32(int64_t v) {
+    if (v >= 0) {
+        return (int32_t)(v >> 16);
+    }
+    return (int32_t)(-(((-v) + 65535) >> 16));
+}
+
 void thermal_pid_reset(thermal_pid_state_t *state) {
     state->integral_q16 = 0;
     state->prev_temp_mc = 0;
@@ -90,8 +97,8 @@ void thermal_pid_step_filtered(thermal_pid_state_t *state,
     if (output_q16 > INT32_MAX) output_q16 = INT32_MAX;
     else if (output_q16 < INT32_MIN) output_q16 = INT32_MIN;
 
-    /* Q16.16 -> raw PWM via arithmetic >> 16. */
-    int32_t output_pwm = (int32_t)(output_q16 >> 16);
+    /* Q16.16 -> raw PWM via sign-defined floor. */
+    int32_t output_pwm = q16_floor_to_i32(output_q16);
 
     /* PWM saturation to configured bounds. */
     uint8_t sat_hi = 0, sat_lo = 0;

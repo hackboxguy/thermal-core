@@ -103,14 +103,15 @@ Domain-specific context, such as vehicle speed from OBD-II, enters the core only
 +-----------------------------------------------------------+
 ```
 
-The core depends only on a configuration struct (`thermal_config_t`), caller-provided input snapshots, caller-owned output frames, and an optional callback surface for numeric logs and telemetry. It does not call any hardware, OS, file, CAN, serial, or actuator function. It does not allocate after init. It does not use floating point except optionally in the PID block (controlled by a build flag; default is Q16.16 fixed-point).
+The core depends only on a configuration struct (`thermal_config_t`), caller-provided input snapshots, caller-owned output frames, and an optional callback surface for numeric logs and telemetry. It does not call any hardware, OS, file, CAN, serial, or actuator function. It does not allocate after init. It does not use floating point in the portable core, protocol, or support layers; PID is Q16.16 fixed-point.
 
-### 4.2 Discipline constraints (apply to core code)
+### 4.2 Discipline constraints (apply to portable C layers)
 
 | Constraint | Rationale |
 |---|---|
 | No `malloc`/`free`/`calloc` after init | RH850-F1KM has no heap; static allocation avoids fragmentation and makes worst-case memory footprint exact. |
-| No floating point in hot path (PID is opt-in float) | Avoid reliance on FPU; Q16.16 is exact across platforms. |
+| No floating point in portable `core/`, `protocol/`, or `support/` | Avoid reliance on FPU or soft-float helper calls; Q16.16 is exact across platforms. |
+| Fixed-width arithmetic; 16-bit `int` clean | Public data and wide math use `stdint.h` types with explicit widening before multiply/divide, so AVR/MSP430-class compilers with 16-bit `int` remain valid targets. |
 | No strings in hot path | Strings are interned to numeric IDs at config-load; logs carry numeric event codes + up to 4 uint32 args. |
 | No syscalls or blocking I/O in core | The platform builds snapshots and applies output frames outside the core. |
 | Single control thread | Same model on Linux (one process) and MCU (one FreeRTOS task). |

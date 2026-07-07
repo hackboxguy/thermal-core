@@ -80,7 +80,7 @@ These traces confirm the \emph{shape} of the response, not its calibrated magnit
 
 \subsection{Continuous-Integration Coverage}
 
-The implementation is gated by twenty-three CI jobs spanning build and portability checks (Linux builds under GCC and Clang, a no-heap/no-syscall guard on \texttt{core/}, the three-mode ESP32-C3 build, and the CH32V003 cross-build with its tiny-profile unit run), correctness (unit tests, replay goldens, property-based config and command fuzzing), integration (daemon smoke and integration tests, the scenario suite with and without a virtual CAN bus, and the determinism gate above), and static analysis (\texttt{clang-tidy}, \texttt{cppcheck}, and an AddressSanitizer/UBSan run). A line-coverage report accompanies the suite; at this draft it stands at 90.0\,\% line and 96.3\,\% function coverage over \texttt{core/} and the platform code.
+The implementation is gated by twenty-three CI jobs spanning build and portability checks (Linux builds under GCC and Clang, a no-heap/no-syscall guard on the portable \texttt{core/}, \texttt{protocol/}, and \texttt{support/} layers, the three-mode ESP32-C3 build, and the CH32V003 cross-build with its tiny-profile unit run), correctness (unit tests, replay goldens, property-based config and command fuzzing), integration (daemon smoke and integration tests, the scenario suite with and without a virtual CAN bus, and the determinism gate above), and static analysis (\texttt{clang-tidy}, \texttt{cppcheck}, and an AddressSanitizer/UBSan run). A line-coverage report accompanies the suite; at this draft it stands at 90.0\,\% line and 96.3\,\% function coverage over \texttt{core/} and the platform code.
 
 \subsection{Hardware-in-the-Loop Bring-Up}
 

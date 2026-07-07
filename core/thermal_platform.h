@@ -1,6 +1,7 @@
 /* core/thermal_platform.h
  *
  * Platform callback surface. Sourced from PRD §4.4 (lines 523-531).
+ * See docs/porting.md for the full new-platform contract.
  *
  * Callbacks are invoked from thermal_core_step() and thermal_core_apply_command();
  * they must return promptly. Platforms must buffer, queue, coalesce, or drop

@@ -29,6 +29,11 @@ PROTOCOL_SRCS    = $(wildcard protocol/*.c)
 PROTOCOL_OBJS    = $(patsubst protocol/%.c,build/protocol/%.o,$(PROTOCOL_SRCS))
 PROTOCOL_ARCHIVE = build/protocol/libthermal_protocol.a
 
+# --- Support archive (portable config-hash helpers) ---
+SUPPORT_SRCS    = $(wildcard support/*.c)
+SUPPORT_OBJS    = $(patsubst support/%.c,build/support/%.o,$(SUPPORT_SRCS))
+SUPPORT_ARCHIVE = build/support/libthermal_support.a
+
 # --- Portability-guard runtime runner ---
 CORE_ONLY_RUNNER = build/test/core_only_runner
 WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc \
@@ -465,16 +470,26 @@ $(PROTOCOL_ARCHIVE): $(PROTOCOL_OBJS)
 	@mkdir -p build/protocol
 	ar rcs $@ $^
 
+# --- Support archive: portable reproducibility helpers ---
+build/support/%.o: support/%.c $(wildcard support/*.h) core/thermal_config.h
+	@mkdir -p build/support
+	$(CC) $(CFLAGS_BASE) -c -o $@ $<
+
+$(SUPPORT_ARCHIVE): $(SUPPORT_OBJS)
+	@mkdir -p build/support
+	ar rcs $@ $^
+
 # --- Portability guard: static nm -u + runtime --wrap'd runner ---
-verify-portability: $(CORE_ARCHIVE) $(CORE_ONLY_RUNNER)
+verify-portability: $(CORE_ARCHIVE) $(PROTOCOL_ARCHIVE) $(SUPPORT_ARCHIVE) $(CORE_ONLY_RUNNER)
 	@echo "--- Static check: nm -u vs ci/core-symbol-denylist.txt ---"
-	@grep -v '^#' ci/core-symbol-denylist.txt | grep -v '^$$' > build/core/denylist.active
-	@if nm -u --format=just-symbols $(CORE_ARCHIVE) \
-		| grep -E -f build/core/denylist.active; then \
-		echo "FAIL: core/ references forbidden symbols (above)"; \
+	@mkdir -p build/portability
+	@grep -v '^#' ci/core-symbol-denylist.txt | grep -v '^$$' > build/portability/denylist.active
+	@if nm -u --format=just-symbols $(CORE_ARCHIVE) $(PROTOCOL_ARCHIVE) $(SUPPORT_ARCHIVE) \
+		| grep -E -f build/portability/denylist.active; then \
+		echo "FAIL: portable archives reference forbidden symbols (above)"; \
 		exit 1; \
 	fi
-	@echo "PASS: no forbidden undefined symbols in core/"
+	@echo "PASS: no forbidden undefined symbols in core/ protocol/ support/"
 	@echo "--- Runtime check: core-only --wrap'd runner ---"
 	@$(CORE_ONLY_RUNNER)
 

@@ -117,7 +117,7 @@ From the repo root:
 ```bash
 make test                  # host unit suite (auto-discovers test_*.c)
 make replay                # C + Python-reference replay parity
-make verify-portability    # no-heap/no-syscall scan of core/
+make verify-portability    # no-heap/no-syscall scan of portable layers
 make test-tiny-profile     # the unit suite under the constrained MCU profile
 make scenario              # 11 PRD §9.1 scenarios on the sim plant
 make determinism           # scenarios * 2 + gcc-vs-clang SHA-256 parity

@@ -142,6 +142,7 @@ typedef struct {
 } thermal_sample_t;
 
 typedef struct {
+    /* Monotonic non-decreasing milliseconds; wraps modulo 2^32. */
     uint32_t now_ms;
     const thermal_sample_t *samples;
     uint8_t sample_count;

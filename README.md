@@ -442,8 +442,11 @@ Recent stages:
 - [Getting-started guides](docs/getting-started/) — full
   deployment writeups for each of the three demo topologies.
 - [White paper](docs/paper/) — work in progress.
+- [Porting guide](docs/porting.md) — contracts for a new MCU,
+  RTOS, Linux/QNX, or host-side integration.
 
 ## License + scope
 
-Concept piece; license file pending the white paper publication.
-Not for production use.
+Code and associated documentation in this repository are MIT licensed
+under [LICENSE](LICENSE). Third-party notices are collected in
+[THIRD-PARTY.md](THIRD-PARTY.md). Not for production use.

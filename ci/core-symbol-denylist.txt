@@ -1,4 +1,5 @@
-# Forbidden symbols in core/libthermal_core.a (PRD §4.2 portability discipline).
+# Forbidden symbols in the portable archives (core/, protocol/, support/;
+# PRD §4.2 portability discipline).
 #
 # Patterns are extended regex (grep -E), one per line, matched against
 # `nm -u --format=just-symbols` output. Anchored matches (^name$) preferred.
@@ -6,6 +7,10 @@
 #
 # Adding a symbol is fine. Removing one requires a concrete reason
 # (e.g., platform-callback model was extended to allow it).
+#
+# memcpy/memset are sanctioned exceptions for bounded caller-provided
+# storage and byte encoders. memmove stays forbidden because overlap
+# requirements should not appear in the portable hot path.
 
 # Heap allocation
 ^malloc$
@@ -19,6 +24,14 @@
 ^getline$
 ^getdelim$
 ^asprintf$
+
+# General libc helpers not allowed in the portable hot path
+^memmove$
+^qsort$
+^rand$
+^exit$
+^abort$
+^__assert_fail$
 
 # File-descriptor / I/O syscalls
 ^open$
@@ -49,6 +62,10 @@
 ^fread$
 ^fwrite$
 ^perror$
+^sprintf$
+^snprintf$
+^vsprintf$
+^vsnprintf$
 
 # Pthread (whole family)
 ^pthread_
@@ -57,3 +74,30 @@
 ^time$
 ^gettimeofday$
 ^clock_gettime$
+
+# Soft-float helper calls: any accidental float/double in portable code
+# should trip this gate on targets without hardware FP.
+^__adddf3$
+^__subdf3$
+^__muldf3$
+^__divdf3$
+^__negdf2$
+^__floatsidf$
+^__floatunsidf$
+^__fixdfsi$
+^__fixunsdfsi$
+^__extendsfdf2$
+^__truncdfsf2$
+^__addsf3$
+^__subsf3$
+^__mulsf3$
+^__divsf3$
+^__negsf2$
+^__floatsisf$
+^__floatunsisf$
+^__fixsfsi$
+^__fixunssfsi$
+^__aeabi_f(add|sub|mul|div)$
+^__aeabi_d(add|sub|mul|div)$
+^__aeabi_[ui]*2[fd]$
+^__aeabi_[fd]2[ui]*z$
